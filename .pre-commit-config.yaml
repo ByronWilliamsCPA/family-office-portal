@@ -37,6 +37,12 @@ repos:
       - id: interrogate
         args: [--fail-under=80]
 
+  - repo: https://github.com/terrencepreilly/darglint
+    rev: "abc26b768cd7135d848223ba53f68323593c33d5"  # v1.8.1  # pragma: allowlist secret
+    hooks:
+      - id: darglint
+        args: [-s, google]
+
   - repo: https://github.com/commitizen-tools/commitizen
     rev: "efb1a7dc7a81934ff473100ae3a5a716f3022534"  # v4.15.1  # pragma: allowlist secret
     hooks:
