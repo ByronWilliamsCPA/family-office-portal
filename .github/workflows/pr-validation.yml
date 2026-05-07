@@ -1,0 +1,37 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  pr-validation:
+    name: Dependency & Standards Validation
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-pr-validation.yml@main
+    with:
+      python-version: '3.12'
+      source-directory: 'app'
+      test-directory: 'tests'
+      require-tests: true
+      require-conventional-commits: true
+      require-description: true
+      min-description-length: 50
+      check-breaking-changes: true
+      add-size-labels: true
+      coverage-threshold: 80
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
