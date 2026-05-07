@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - "docs/**"
-      - "mkdocs.yml"
       - "app/**"
       - ".github/workflows/docs.yml"
   push:
@@ -16,12 +15,12 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   docstrings:
     name: Docstring Quality Gates
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Harden the runner
         uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
@@ -45,10 +44,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --no-interaction --all-extras
 
-      - name: Check docstring style
+      - name: Lint check (advisory)
         run: uv run ruff check app/
         continue-on-error: true
 
-      - name: Check docstring coverage (target 70%)
-        run: uv run interrogate -v app/
+      - name: Check docstring coverage (70% minimum)
+        run: uv run interrogate --fail-under=70 -v app/
         continue-on-error: true
