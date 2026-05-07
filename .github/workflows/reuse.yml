@@ -1,12 +1,11 @@
+# .github/workflows/reuse.yml
 name: REUSE Compliance
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -14,7 +13,6 @@ permissions:
 jobs:
   reuse:
     name: REUSE Compliance Check
-    # Permissions are inherited from the workflow-level block by the reusable workflow call below.
     uses: ByronWilliamsCPA/.github/.github/workflows/python-reuse.yml@e753ebbf3c2fac40177495137391f2a45adab93a  # main 2026-05-07
     with:
       generate-spdx: true
