@@ -88,11 +88,11 @@ documentation.
 
 ## Architecture
 
-Key design decisions are documented as ADRs in `docs/planning/adr/`:
+Key design decisions are documented as ADRs in `docs/architecture/adr/`:
 
-- [ADR-001](docs/planning/adr/adr-001-frontend-rendering-architecture.md) -- server-rendered HTML with HTMX
-- [ADR-002](docs/planning/adr/adr-002-authentication-cloudflare-zero-trust.md) -- Cloudflare Zero Trust authentication
-- [ADR-003](docs/planning/adr/adr-003-backend-data-aggregation.md) -- SQLite read-through cache
+- [ADR-001](docs/architecture/adr/adr-001-frontend-rendering-architecture.md) -- server-rendered HTML with HTMX
+- [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) -- Cloudflare Zero Trust authentication
+- [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md) -- SQLite read-through cache
 
 ## Contributing
 

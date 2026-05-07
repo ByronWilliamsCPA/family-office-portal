@@ -89,11 +89,11 @@ Phase 0 goal: scaffold, auth middleware, CI pipeline, and five empty section she
 Key documents to read before making architectural or data-model decisions:
 
 - `docs/planning/tech-spec.md` -- canonical stack, schema, endpoints, env vars
-- `docs/planning/adr/adr-001-frontend-rendering-architecture.md` -- server-rendered
+- `docs/architecture/adr/adr-001-frontend-rendering-architecture.md` -- server-rendered
   HTML is a settled decision; do not propose SPA patterns
-- `docs/planning/adr/adr-002-authentication-cloudflare-zero-trust.md` -- auth is at
+- `docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md` -- auth is at
   the network edge; do not add application-level password handling
-- `docs/planning/adr/adr-003-backend-data-aggregation.md` -- all data flows through
+- `docs/architecture/adr/adr-003-backend-data-aggregation.md` -- all data flows through
   the SQLite read-through cache; route handlers never call backend services directly
 - `docs/planning/roadmap.md` -- current phase and acceptance criteria
 

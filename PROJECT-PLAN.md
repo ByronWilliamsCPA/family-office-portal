@@ -10,9 +10,9 @@
 > [Project Vision](docs/planning/project-vision.md) |
 > [Tech Spec](docs/planning/tech-spec.md) |
 > [Roadmap](docs/planning/roadmap.md) |
-> [ADR-001](docs/planning/adr/adr-001-frontend-rendering-architecture.md) |
-> [ADR-002](docs/planning/adr/adr-002-authentication-cloudflare-zero-trust.md) |
-> [ADR-003](docs/planning/adr/adr-003-backend-data-aggregation.md)
+> [ADR-001](docs/architecture/adr/adr-001-frontend-rendering-architecture.md) |
+> [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) |
+> [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md)
 
 ---
 
@@ -124,7 +124,7 @@ HTMX handles partial updates (search results, chart refreshes) without a JavaScr
 - Chart.js v4 is vendored as a static asset; HTMX v2 is loaded as a static asset.
   Neither is loaded from a CDN in production.
 
-See [ADR-001](docs/planning/adr/adr-001-frontend-rendering-architecture.md) for the full
+See [ADR-001](docs/architecture/adr/adr-001-frontend-rendering-architecture.md) for the full
 decision record.
 
 ### ADR-002: Cloudflare Zero Trust Authentication (Settled)
@@ -147,7 +147,7 @@ login instruction fits in one sentence: "Check your email and tap the link."
   `ADMIN_EMAILS` env vars.
 - No password-based auth, OAuth flows, or session cookies are implemented.
 
-See [ADR-002](docs/planning/adr/adr-002-authentication-cloudflare-zero-trust.md) for the
+See [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) for the
 full decision record.
 
 ### ADR-003: SQLite Read-Through Cache (Settled)
@@ -180,7 +180,7 @@ Refresh cadences from ADR-003:
 | `xero_crypto` | Every 2 hours | 4 hours |
 | `family_office` | On document events (24-hour poll fallback) | 24 hours |
 
-See [ADR-003](docs/planning/adr/adr-003-backend-data-aggregation.md) for the full
+See [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md) for the full
 decision record.
 
 ---
@@ -770,6 +770,6 @@ Immediate environment setup tasks to begin Phase 0:
 - *[Project Vision and Scope](docs/planning/project-vision.md) v1.0*
 - *[Technical Implementation Spec](docs/planning/tech-spec.md) v1.0*
 - *[Development Roadmap](docs/planning/roadmap.md) (2026-05-06)*
-- *[ADR-001: Frontend Rendering Architecture](docs/planning/adr/adr-001-frontend-rendering-architecture.md)*
-- *[ADR-002: Authentication via Cloudflare Zero Trust](docs/planning/adr/adr-002-authentication-cloudflare-zero-trust.md)*
-- *[ADR-003: Backend Data Aggregation Pattern](docs/planning/adr/adr-003-backend-data-aggregation.md)*
+- *[ADR-001: Frontend Rendering Architecture](docs/architecture/adr/adr-001-frontend-rendering-architecture.md)*
+- *[ADR-002: Authentication via Cloudflare Zero Trust](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)*
+- *[ADR-003: Backend Data Aggregation Pattern](docs/architecture/adr/adr-003-backend-data-aggregation.md)*
