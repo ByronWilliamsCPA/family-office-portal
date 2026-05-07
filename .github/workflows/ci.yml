@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+  push:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI_ENVIRONMENT: true
+  UV_CACHE_DIR: ~/.cache/uv
+
+jobs:
+  setup-optimized:
+    name: Setup with UV Caching
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      uv-hash: ${{ steps.cache-key.outputs.uv-hash }}
+    steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Generate cache keys
+        id: cache-key
+        run: |
+          echo "uv-hash=${{ hashFiles('**/uv.lock') }}" >> $GITHUB_OUTPUT
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Cache UV dependencies
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            .venv
+            ~/.cache/uv
+          key: py-deps-${{ runner.os }}-${{ steps.cache-key.outputs.uv-hash }}
+          restore-keys: |
+            py-deps-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync --no-interaction --all-extras
+
+      - name: Dependency validation
+        run: |
+          uv run python -c "
+          import sys
+          required_deps = ['fastapi', 'structlog']
+          for dep in required_deps:
+              try:
+                  mod = __import__(dep)
+                  version = getattr(mod, '__version__', 'unknown')
+                  print(f'  OK {dep} ({version})')
+              except ImportError as e:
+                  print(f'  FAIL {dep}: {e}')
+                  sys.exit(1)
+          print('All core dependencies validated')
+          "
+
+  test:
+    name: Test Suite (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: setup-optimized
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+      fail-fast: false
+
+    steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Restore dependency cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            .venv
+            ~/.cache/uv
+          key: py-deps-${{ runner.os }}-${{ needs.setup-optimized.outputs.uv-hash }}
+          restore-keys: |
+            py-deps-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync --no-interaction --all-extras
+
+      - name: Run test suite
+        run: |
+          uv run pytest -v \
+            --cov=app \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-report=html:htmlcov \
+            --cov-fail-under=80 \
+            --junitxml=junit.xml \
+            -o junit_family=xunit2 \
+            --tb=short \
+            --maxfail=10 \
+            tests/
+        env:
+          CI_ENVIRONMENT: true
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: |
+            junit.xml
+            coverage.xml
+            htmlcov/
+
+  quality-checks:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    needs: setup-optimized
+    steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Restore dependency cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            .venv
+            ~/.cache/uv
+          key: py-deps-${{ runner.os }}-${{ needs.setup-optimized.outputs.uv-hash }}
+          restore-keys: |
+            py-deps-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync --no-interaction --all-extras
+
+      - name: Type checking with BasedPyright
+        run: uv run basedpyright app
+
+      - name: Code formatting validation
+        run: uv run ruff format --check
+
+      - name: Linting with enhanced rules
+        run: uv run ruff check . --config=pyproject.toml
+
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    needs: [setup-optimized, test, quality-checks]
+    if: always()
+    steps:
+      - name: CI Gate
+        run: |
+          if [[ "${{ needs.setup-optimized.result }}" == "success" && \
+                "${{ needs.test.result }}" == "success" && \
+                "${{ needs.quality-checks.result }}" == "success" ]]; then
+            echo "CI Gate - Production Ready"
+          else
+            echo "CI Gate - Quality Standards Not Met"
+            echo "setup-optimized: ${{ needs.setup-optimized.result }}"
+            echo "test: ${{ needs.test.result }}"
+            echo "quality-checks: ${{ needs.quality-checks.result }}"
+            exit 1
+          fi
