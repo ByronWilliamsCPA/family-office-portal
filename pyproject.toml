@@ -2,6 +2,9 @@
 name = "family-office-portal"
 version = "0.1.0"
 description = "Secure family estate portal: consolidated view of entities, finances, documents, and portfolio."
+authors = [
+    {name = "Byron Williams", email = "byronawilliams@gmail.com"},
+]
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
@@ -22,6 +25,7 @@ dev = [
     "basedpyright>=1.18",
     "ruff>=0.4",
     "pip-audit>=2.7",
+    "darglint>=1.8",
     "interrogate>=1.7",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
