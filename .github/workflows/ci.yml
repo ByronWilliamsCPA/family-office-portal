@@ -92,7 +92,7 @@ jobs:
     needs: setup-optimized
     strategy:
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12"]
       fail-fast: false
 
     steps:

@@ -20,7 +20,10 @@ Only the current `main` branch is actively supported.
 
 Do not open a public GitHub issue for security vulnerabilities.
 
-To report a security issue, email <byronawilliams@gmail.com> with:
+To report a security issue, use the GitHub private vulnerability reporting form:
+**<https://github.com/ByronWilliamsCPA/family-office-portal/security/advisories/new>**
+
+Alternatively, email <byronawilliams@gmail.com> with:
 
 - A description of the vulnerability
 - Steps to reproduce or a proof-of-concept

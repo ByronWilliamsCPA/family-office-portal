@@ -21,6 +21,3 @@ flags:
   python-3.12:
     paths:
       - app/
-  python-3.13:
-    paths:
-      - app/
