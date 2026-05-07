@@ -1,0 +1,27 @@
+# .github/workflows/scorecard.yml
+name: OpenSSF Scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 0'
+
+permissions:
+  security-events: write
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  scorecard:
+    name: Scorecard Analysis
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-scorecard.yml@main
+    with:
+      publish-results: true
+      upload-sarif: true
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
