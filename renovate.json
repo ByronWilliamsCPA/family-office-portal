@@ -10,7 +10,8 @@
       "automerge": false
     },
     {
-      "matchDepTypes": ["devDependencies"],
+      "matchManagers": ["uv"],
+      "matchDepTypes": ["dev"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
     }

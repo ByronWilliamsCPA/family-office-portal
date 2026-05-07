@@ -41,12 +41,10 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        run: uv sync --no-interaction --all-extras
+        run: uv sync --frozen --all-extras
 
-      - name: Lint check (advisory)
+      - name: Lint check
         run: uv run ruff check app/
-        continue-on-error: true
 
-      - name: Check docstring coverage (70% minimum)
-        run: uv run interrogate --fail-under=70 -v app/
-        continue-on-error: true
+      - name: Check docstring coverage (80% minimum)
+        run: uv run interrogate --fail-under=80 -v app/

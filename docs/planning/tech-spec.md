@@ -32,21 +32,21 @@ is handled entirely by Cloudflare Zero Trust at the network edge.
 
 ### Data Layer
 
-- **Cache Database**: SQLite (see [ADR-003](./adr/adr-003-backend-data-aggregation.md))
+- **Cache Database**: SQLite (see [ADR-003](../architecture/adr/adr-003-backend-data-aggregation.md))
 - **ORM**: None; raw SQL via `aiosqlite` for async reads during page render
 - **Cache write**: synchronous during refresh job (APScheduler context)
 
 ### Infrastructure
 
 - **CI/CD**: GitHub Actions
-- **Authentication**: Cloudflare Zero Trust (see [ADR-002](./adr/adr-002-authentication-cloudflare-zero-trust.md))
+- **Authentication**: Cloudflare Zero Trust (see [ADR-002](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md))
 - **Container**: Docker (single container; SQLite volume-mounted)
 
 ## 2. Architecture
 
 ### Pattern
 
-Server-rendered monolith with a background refresh scheduler. See [ADR-001](./adr/adr-001-frontend-rendering-architecture.md).
+Server-rendered monolith with a background refresh scheduler. See [ADR-001](../architecture/adr/adr-001-frontend-rendering-architecture.md).
 
 ### Component Diagram
 
@@ -235,7 +235,7 @@ All variables are required at startup; the application must fail fast if any are
 
 ### Authentication
 
-Cloudflare Zero Trust (magic link) -- see [ADR-002](./adr/adr-002-authentication-cloudflare-zero-trust.md).
+Cloudflare Zero Trust (magic link) -- see [ADR-002](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md).
 
 CF JWT middleware must validate three things on every request:
 
@@ -313,7 +313,7 @@ or an error message visible to primary users. Backend errors during refresh are 
 ## Related Documents
 
 - [Project Vision](./project-vision.md)
-- [ADR-001: Frontend Rendering](./adr/adr-001-frontend-rendering-architecture.md)
-- [ADR-002: Authentication](./adr/adr-002-authentication-cloudflare-zero-trust.md)
-- [ADR-003: Backend Data Aggregation](./adr/adr-003-backend-data-aggregation.md)
+- [ADR-001: Frontend Rendering](../architecture/adr/adr-001-frontend-rendering-architecture.md)
+- [ADR-002: Authentication](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)
+- [ADR-003: Backend Data Aggregation](../architecture/adr/adr-003-backend-data-aggregation.md)
 - [Development Roadmap](./roadmap.md)

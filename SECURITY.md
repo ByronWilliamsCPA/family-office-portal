@@ -20,10 +20,10 @@ Only the current `main` branch is actively supported.
 
 Do not open a public GitHub issue for security vulnerabilities.
 
-To report a security issue, use the GitHub private vulnerability reporting form:
-**<https://github.com/ByronWilliamsCPA/family-office-portal/security/advisories/new>**
+**Use GitHub Private Vulnerability Reporting (PVR):**
+[https://github.com/ByronWilliamsCPA/family-office-portal/security/advisories/new](https://github.com/ByronWilliamsCPA/family-office-portal/security/advisories/new)
 
-Alternatively, email <byronawilliams@gmail.com> with:
+Include in your report:
 
 - A description of the vulnerability
 - Steps to reproduce or a proof-of-concept
@@ -31,7 +31,7 @@ Alternatively, email <byronawilliams@gmail.com> with:
 - Any suggested mitigations
 
 You will receive an acknowledgment within 72 hours and a resolution update
-within 14 days. Please allow reasonable time before public disclosure.
+within 14 days.
 
 ## Security Architecture
 

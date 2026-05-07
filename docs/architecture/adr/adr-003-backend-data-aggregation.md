@@ -182,7 +182,7 @@ These endpoint contracts must be validated with each backend team before Phase 1
 
 - [ADR-001](./adr-001-frontend-rendering-architecture.md): Server-rendered templates
   read from the cache layer, which is populated by the refresher
-- [Tech Spec](../tech-spec.md#3-data-model): SQLite cache schema
-- [Project Vision](../project-vision.md#44-resilient-to-data-freshness): Resilience
+- [Tech Spec](../../planning/tech-spec.md#3-data-model): SQLite cache schema
+- [Project Vision](../../planning/project-vision.md#44-resilient-to-data-freshness): Resilience
   requirement driving this decision
-- [Roadmap](../roadmap.md): Phase-by-phase backend integration order
+- [Roadmap](../../planning/roadmap.md): Phase-by-phase backend integration order

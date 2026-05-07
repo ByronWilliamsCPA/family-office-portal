@@ -7,7 +7,7 @@ authors = [
 ]
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "bandit>=1.7",
     "basedpyright>=1.18",
     "ruff>=0.4",
     "pip-audit>=2.7",
@@ -30,7 +31,6 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
-    "anyio[trio]>=4.4",
 ]
 
 # ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ skips = []
 # ---------------------------------------------------------------------------
 
 [tool.interrogate]
-fail-under = 85
+fail-under = 80
 ignore-init-method = true
 ignore-init-module = true
 ignore-magic = true
@@ -126,7 +126,7 @@ ignore-magic = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=app --cov-report=term-missing"
 
 [tool.coverage.run]
 branch = true

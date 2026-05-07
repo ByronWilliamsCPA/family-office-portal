@@ -11,7 +11,7 @@ It runs behind Cloudflare Zero Trust and is read-only from the user's perspectiv
 ## Key conventions
 
 - **Source root**: `app/` (not `src/`)
-- **Python**: 3.12+ syntax; use `X | Y` union types (not `Optional[X]`)
+- **Python**: 3.12 only (not 3.13+); use `X | Y` union types (not `Optional[X]`)
 - **Package manager**: uv; lock file is `uv.lock`
 - **Type checker**: basedpyright strict (not mypy)
 - **Linter**: ruff (88 chars, PyStrict-aligned rules)

@@ -21,14 +21,14 @@ pyproject.toml uv project manifest and tool configuration
 
 ## Key conventions
 
-- **Language**: Python 3.12+, no 3.10/3.11 compatibility shims
+- **Language**: Python 3.12 only (not 3.13 or later), no 3.10/3.11 compatibility shims
 - **Package manager**: uv (not pip, not Poetry)
 - **Type checker**: basedpyright strict mode (not mypy)
 - **Linter/formatter**: ruff
 - **Test framework**: pytest with pytest-asyncio and pytest-cov
 - **Source root**: `app/` (not `src/`)
 - **Commits**: conventional commits (`feat:`, `fix:`, `docs:`, etc.)
-- **Pre-commit**: always run `pre-commit run --all-files` before committing
+- **Pre-commit**: always run `uv run pre-commit run --all-files` before committing
 
 ## What NOT to do
 

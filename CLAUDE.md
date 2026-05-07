@@ -36,7 +36,7 @@ uv run ruff format .
 uv run pip-audit
 
 # Run all pre-commit hooks against every file (required before committing)
-pre-commit run --all-files
+uv run pre-commit run --all-files
 
 # Compile Tailwind CSS (run once; use --watch during active template development)
 tailwindcss -i static/css/input.css -o static/css/output.css --minify

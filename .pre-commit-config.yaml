@@ -59,7 +59,7 @@ repos:
     rev: "e72a3ca1632f0b11a07d171449fe447a7ff6795e"  # v0.48.0  # pragma: allowlist secret
     hooks:
       - id: markdownlint
-        args: [--ignore, docs/superpowers/plans/]
+        args: [--ignore, "docs/superpowers/plans/**"]
 
   - repo: local
     hooks:

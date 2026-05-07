@@ -602,7 +602,7 @@ authoritative source; the versions here are adapted for this project's conventio
 **Source template:** `/home/byron/dev/.github/workflow-templates/python-ci.yml`
 
 **Adaptations from template:**
-- Matrix: `["3.12", "3.13"]` only (project requires Python 3.12+)
+- Matrix: `["3.12"]` only (project requires Python 3.12 exclusively; 3.13 is not supported)
 - Type checker: `basedpyright` replaces `mypy`
 - Source root: `app/` replaces `src/`
 - Remove `scripts/check_type_hints.py` step (not present in this project)
@@ -1945,10 +1945,20 @@ gh api \
   --method PUT \
   repos/ByronWilliamsCPA/family-office-portal/branches/main/protection \
   -H "Accept: application/vnd.github+json" \
-  --field required_status_checks='{"strict":true,"contexts":["CI Gate","Security Gate Validation","Dependency & Standards Validation","Scorecard Analysis"]}' \
-  --field enforce_admins=true \
-  --field required_pull_request_reviews='{"required_approving_review_count":1,"dismiss_stale_reviews":true}' \
-  --field restrictions=null
+  --input - <<'EOF'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["CI Gate", "Security Gate Validation", "Dependency & Standards Validation", "Scorecard Analysis"]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true
+  },
+  "restrictions": null
+}
+EOF
 ```
 
 - [ ] **Step 2: Verify**

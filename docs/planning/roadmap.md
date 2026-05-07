@@ -367,6 +367,6 @@ A feature is complete when:
 
 - [Project Vision](./project-vision.md)
 - [Technical Spec](./tech-spec.md)
-- [ADR-001: Frontend Architecture](./adr/adr-001-frontend-rendering-architecture.md)
-- [ADR-002: Authentication](./adr/adr-002-authentication-cloudflare-zero-trust.md)
-- [ADR-003: Backend Data Aggregation](./adr/adr-003-backend-data-aggregation.md)
+- [ADR-001: Frontend Architecture](../architecture/adr/adr-001-frontend-rendering-architecture.md)
+- [ADR-002: Authentication](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)
+- [ADR-003: Backend Data Aggregation](../architecture/adr/adr-003-backend-data-aggregation.md)

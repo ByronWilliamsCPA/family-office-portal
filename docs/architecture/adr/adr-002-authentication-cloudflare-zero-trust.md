@@ -151,6 +151,6 @@ a primary user is: "Check your email and tap the link."
 
 - [ADR-001](./adr-001-frontend-rendering-architecture.md): Server-side session
   validation is consistent with server-rendered architecture
-- [Tech Spec](../tech-spec.md#6-security): JWT validation middleware details
-- [Project Vision](../project-vision.md#authentication-and-session-behavior):
+- [Tech Spec](../../planning/tech-spec.md#6-security): JWT validation middleware details
+- [Project Vision](../../planning/project-vision.md#authentication-and-session-behavior):
   Session behavior requirements (magic link, 30-day sessions)

@@ -116,6 +116,6 @@ graceful degradation when any backend is slow.
 
 ## Related Documents
 
-- [Architecture Decisions](./adr/)
+- [Architecture Decisions](../architecture/adr/)
 - [Technical Spec](./tech-spec.md)
 - [Roadmap](./roadmap.md)
