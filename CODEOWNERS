@@ -1,0 +1,6 @@
+# All files default to Byron Williams for review routing.
+* @ByronWilliamsCPA
+
+# Security-sensitive paths require explicit review.
+SECURITY.md @ByronWilliamsCPA
+.claude/ @ByronWilliamsCPA

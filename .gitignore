@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+*.egg-link
+MANIFEST
+
+# UV / virtualenv
+.venv/
+venv/
+ENV/
+env/
+.uv/
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Type checker
+.basedpyright/
+
+# Ruff
+.ruff_cache/
+
+# Tailwind compiled output (generated at build time)
+static/tailwind.css
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+!.vscode/settings.json
+*.swp
+*.swo
+
+# Node (tailwind CLI only; no runtime)
+node_modules/
+package-lock.json
+
+# Worktrees (per global CLAUDE.md convention)
+.worktrees/
+
+# Logs
+*.log
+logs/
