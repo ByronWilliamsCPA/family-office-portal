@@ -18,6 +18,7 @@ dependencies = [
     "structlog>=24.0",
     "python-multipart>=0.0.9",
     "pyjwt[crypto]>=2.8",
+    "pydantic-settings>=2.5",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,10 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "pre-commit>=3.7",
+    "commitizen>=3.27",
+    "hypothesis>=6.110",
+    "freezegun>=1.5",
 ]
 
 # ---------------------------------------------------------------------------
@@ -103,9 +108,11 @@ strictSetInference = true
 # Bandit
 # ---------------------------------------------------------------------------
 
+# Targets are passed via CLI args in pre-commit and CI invocations
+# (`bandit -r app`); listing them here is redundant when bandit runs per-file.
 [tool.bandit]
-targets = ["app"]
-skips = []
+exclude_dirs = ["tests", ".venv", ".worktrees"]
+skips = ["B101"]  # assert is acceptable in tests; production code blocks via ruff S101
 
 # ---------------------------------------------------------------------------
 # interrogate
@@ -116,6 +123,18 @@ fail-under = 80
 ignore-init-method = true
 ignore-init-module = true
 ignore-magic = true
+ignore-private = true
+ignore-semiprivate = true
+ignore-property-decorators = true
+exclude = ["tests", ".venv", ".worktrees"]
+
+# ---------------------------------------------------------------------------
+# darglint
+# ---------------------------------------------------------------------------
+
+[tool.darglint]
+docstring_style = "google"
+strictness = "short"
 
 # ---------------------------------------------------------------------------
 # pytest
