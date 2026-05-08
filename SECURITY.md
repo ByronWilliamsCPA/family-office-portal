@@ -33,6 +33,12 @@ Include in your report:
 You will receive an acknowledgment within 72 hours and a resolution update
 within 14 days.
 
+### Acknowledgement Policy
+
+Reporters who follow this private disclosure process will be credited in the
+published security advisory unless they explicitly request anonymity. We do
+not currently operate a paid bug bounty program.
+
 ## Security Architecture
 
 Authentication is handled entirely by Cloudflare Zero Trust at the network
