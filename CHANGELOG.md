@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- CI: SonarCloud quality gate now evaluates correctly after passing `sonar.projectVersion=0.1.0` to the scan action; without a project version the quality gate returned `NONE` and the gate action failed
-- CI: placeholder test `assert True` replaced with a docstring-only sentinel function to resolve SonarCloud rule S5914 (constant boolean expression in assertion)
+- CI: SonarCloud quality gate now evaluates correctly after passing the project version (read dynamically from `pyproject.toml`) to the scan action; without a project version the quality gate returned `NONE` and the gate action failed
+- CI: placeholder test `assert True` removed so the function body is just its existing docstring, resolving SonarCloud rule S5914 (constant boolean expression in assertion); pytest still collects and passes the function
 - CI: OpenSSF Scorecard workflow now sets `publish-results: false` to prevent OIDC token mismatch when running as a callee reusable workflow (the token resolves to the .github repo, not the calling repo)
+- CI: pip-audit invocation now passes `--ignore-vuln PYSEC-2022-42969` to honor the project's documented exemption in `docs/known-vulnerabilities.md` (transitive `py@1.11.0` via `interrogate`, dev-only, mitigation accepted); the OpenSSF release gate still blocks releases for any documented entry older than 60 days

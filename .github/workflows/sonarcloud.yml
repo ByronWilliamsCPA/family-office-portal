@@ -63,6 +63,20 @@ jobs:
             echo '<?xml version="1.0" ?><coverage version="1.0"></coverage>' > coverage.xml
           fi
 
+      - name: Read project version
+        # SonarCloud requires a project version to establish the new-code period
+        # baseline; without it, every `new_*` quality gate condition returns
+        # NONE. Read it from pyproject.toml so this workflow stays in sync with
+        # the package metadata on every release rather than drifting silently.
+        id: pyproj
+        run: |
+          version=$(awk -F'"' '/^version[[:space:]]*=/ {print $2; exit}' pyproject.toml)
+          if [ -z "$version" ]; then
+            echo "ERROR: could not parse version from pyproject.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@689fb39b34b9aa95ebc5f8f119343ddd51542402  # v4
         env:
@@ -73,7 +87,7 @@ jobs:
             -Dsonar.organization=byronwilliamscpa
             -Dsonar.projectKey=ByronWilliamsCPA_family-office-portal
             -Dsonar.python.version=3.12
-            -Dsonar.projectVersion=0.1.0
+            -Dsonar.projectVersion=${{ steps.pyproj.outputs.version }}
 
       - name: Check Quality Gate
         uses: sonarsource/sonarqube-quality-gate-action@8e9b0ca0a7273d6f16986388d98393efdfcf56fd  # master
