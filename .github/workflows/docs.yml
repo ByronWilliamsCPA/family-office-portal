@@ -1,0 +1,50 @@
+name: Documentation
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "app/**"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main, develop]
+    paths:
+      - "docs/**"
+      - "app/**"
+
+permissions:
+  contents: read
+
+jobs:
+  docstrings:
+    name: Docstring Quality Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Lint check
+        run: uv run ruff check app/
+
+      - name: Check docstring coverage (80% minimum)
+        run: uv run interrogate --fail-under=80 -v app/

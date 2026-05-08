@@ -1,0 +1,72 @@
+# .pre-commit-config.yaml
+# All rev fields are SHA-pinned to commit SHAs resolved on 2026-05-07.
+# To update: pre-commit autoupdate, then re-pin with commit SHAs.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: "6fec9b7edb08fd9989088709d864a7826dc74e80"  # v0.15.12  # pragma: allowlist secret
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: basedpyright
+        name: basedpyright
+        language: system
+        entry: uv run basedpyright
+        types: [python]
+        pass_filenames: false
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: "92ae8b82fb422a639f0ed8d99e96cea769594e08"  # 1.9.4  # pragma: allowlist secret
+    hooks:
+      - id: bandit
+        args: [-c, pyproject.toml]
+        exclude: '^tests/'
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: "01886c8a910c64595c47f186ca1ffc0b77fa5458"  # v1.5.0  # pragma: allowlist secret
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+
+  - repo: https://github.com/econchick/interrogate
+    rev: "4894019dc8876092bc9b6d56878798c550fad998"  # 1.7.0  # pragma: allowlist secret
+    hooks:
+      - id: interrogate
+        args: [--fail-under=80]
+
+  - repo: https://github.com/terrencepreilly/darglint
+    rev: "abc26b768cd7135d848223ba53f68323593c33d5"  # v1.8.1  # pragma: allowlist secret
+    hooks:
+      - id: darglint
+        args: [-s, google]
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: "efb1a7dc7a81934ff473100ae3a5a716f3022534"  # v4.15.1  # pragma: allowlist secret
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: "cba56bcde1fdd01c1deb3f945e69764c291a6530"  # v1.38.0  # pragma: allowlist secret
+    hooks:
+      - id: yamllint
+        args: [-d, relaxed]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: "e72a3ca1632f0b11a07d171449fe447a7ff6795e"  # v0.48.0  # pragma: allowlist secret
+    hooks:
+      - id: markdownlint
+        args: [--ignore, "docs/superpowers/plans/**"]
+
+  - repo: local
+    hooks:
+      - id: no-em-dash
+        name: no em-dash
+        language: pygrep
+        entry: "—"
+        types: [text]
+        exclude: '^\.pre-commit-config\.yaml$'
