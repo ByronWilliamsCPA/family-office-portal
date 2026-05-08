@@ -5,4 +5,3 @@
 
 def test_placeholder() -> None:
     """Phase 0 sentinel: confirms pytest can collect and run tests."""
-    assert True
