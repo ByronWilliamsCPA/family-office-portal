@@ -27,5 +27,18 @@ jobs:
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
           fail-on-severity: high
-          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, LGPL-2.1, LGPL-3.0, Python-2.0, Unlicense, CC0-1.0, GPL-3.0-or-later
+          # SPDX expressions for permissive open-source licenses we accept.
+          # PSF-2.0 (Python Software Foundation) and HPND-Markus-Kuhn are both
+          # OSI-approved permissive licenses; included to admit `distlib` and
+          # `wcwidth` whose composite licenses are not covered by the base list.
+          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, LGPL-2.1, LGPL-3.0, Python-2.0, Unlicense, CC0-1.0, GPL-3.0-or-later, PSF-2.0, HPND-Markus-Kuhn
+          # Dev-only dependencies that PyPI metadata reports without an SPDX
+          # license expression. Each has a documented permissive license on its
+          # repository or PyPI classifier; vetted manually:
+          #   - commitizen: MIT
+          #   - hypothesis: MPL-2.0
+          #   - pydantic-settings: MIT
+          #   - python-discovery: MIT
+          #   - virtualenv: MIT
+          allow-dependencies-licenses: pkg:pypi/commitizen, pkg:pypi/hypothesis, pkg:pypi/pydantic-settings, pkg:pypi/python-discovery, pkg:pypi/virtualenv
           comment-summary-in-pr: on-failure

@@ -18,7 +18,7 @@ The portal aggregates data from four backend services at different maturity leve
 | Service | What it provides | Maturity |
 | --- | --- | --- |
 | `llc-manager` | LLC and trust entities, compliance dates, ownership | v0.1.0 (stable) |
-| `pp-security-master` | Investment holdings, classifications, performance | Alpha |
+| `pp-security-master` | Investment holdings, classifications, performance | Alpha `#ASSUME` (contract unstable, `#VERIFY` before Phase 1) |
 | `xero_crypto` | Crypto portfolio positions and reconciliation | v1.0.0 (stable) |
 | `family_office` | Tax and estate law knowledge base (future Q&A) | Active |
 
@@ -147,10 +147,10 @@ the portal's required data in JSON. Current assumptions:
 
 | Service | Expected endpoint | Data returned |
 | --- | --- | --- |
-| `llc-manager` | `GET /api/entities` | Entity list with compliance status and dates |
-| `pp-security-master` | `GET /api/portfolio/summary` | Holdings, performance, sector allocation |
-| `xero_crypto` | `GET /api/positions` | Crypto positions and USD conversion |
-| `family_office` | `GET /api/documents` | Document metadata list |
+| `llc-manager` | `GET /api/v1/entities` | Entity list with compliance status and dates |
+| `pp-security-master` | `GET /api/v1/portfolio/summary` | Holdings, performance, sector allocation |
+| `xero_crypto` | `GET /api/v1/positions` | Crypto positions and USD conversion |
+| `family_office` | `GET /api/v1/documents` | Document metadata list |
 
 These endpoint contracts must be validated with each backend team before Phase 1 begins.
 
@@ -183,6 +183,6 @@ These endpoint contracts must be validated with each backend team before Phase 1
 - [ADR-001](./adr-001-frontend-rendering-architecture.md): Server-rendered templates
   read from the cache layer, which is populated by the refresher
 - [Tech Spec](../../planning/tech-spec.md#3-data-model): SQLite cache schema
-- [Project Vision](../../planning/project-vision.md#44-resilient-to-data-freshness): Resilience
+- [Project Vision](../../planning/project-vision.md): Resilience
   requirement driving this decision
 - [Roadmap](../../planning/roadmap.md): Phase-by-phase backend integration order

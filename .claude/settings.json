@@ -1,9 +1,18 @@
 {
+  "model": "sonnet",
   "permissions": {
     "allow": [
       "Bash(uv:*)",
+      "Bash(uvx:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
       "Bash(pre-commit:*)",
-      "Bash(git status)",
+      "Bash(ruff:*)",
+      "Bash(pytest:*)",
+      "Bash(basedpyright:*)",
+      "Bash(tailwindcss:*)",
+      "Bash(detect-secrets:*)",
+      "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",
       "Bash(git add*)",
@@ -11,8 +20,7 @@
       "Bash(git branch*)",
       "Bash(find:*)",
       "Bash(grep:*)",
-      "Bash(ls:*)",
-      "Bash(detect-secrets:*)"
+      "Bash(ls:*)"
     ],
     "deny": []
   }

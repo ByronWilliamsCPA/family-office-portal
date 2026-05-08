@@ -119,7 +119,7 @@ a primary user is: "Check your email and tap the link."
 1. **Portal middleware**: Validate `CF-Access-JWT-Assertion` header on every request;
    extract email; return 403 if JWT is absent or invalid (defense in depth -- Cloudflare
    should block unauthenticated requests before they reach the server)
-2. **JWT audience validation**: Verify the `aud` claim in the JWT against the
+2. **JWT audience validation** `#CRITICAL`: Verify the `aud` claim in the JWT against the
    Cloudflare Access Application ID (`CF_ACCESS_APP_ID` env var). Without this check,
    the middleware will accept valid tokens issued to any other application in the same
    Cloudflare tenant -- a critical security gap in multi-app Zero Trust deployments.
@@ -152,5 +152,5 @@ a primary user is: "Check your email and tap the link."
 - [ADR-001](./adr-001-frontend-rendering-architecture.md): Server-side session
   validation is consistent with server-rendered architecture
 - [Tech Spec](../../planning/tech-spec.md#6-security): JWT validation middleware details
-- [Project Vision](../../planning/project-vision.md#authentication-and-session-behavior):
+- [Project Vision](../../planning/project-vision.md):
   Session behavior requirements (magic link, 30-day sessions)

@@ -7,10 +7,25 @@ coverage:
       default:
         target: 80%
         threshold: 1%
+      critical:
+        target: 95%
+        threshold: 0%
+        if_not_found: success
+        paths:
+          - app/middleware/
+          - app/cache.py
     patch:
       default:
         target: 90%
         threshold: 1%
+      critical:
+        target: 95%
+        threshold: 0%
+        if_not_found: success
+        only_pulls: true
+        paths:
+          - app/middleware/
+          - app/cache.py
 
 comment:
   layout: "reach,diff,flags,files"

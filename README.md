@@ -15,7 +15,7 @@ Five sections: Home, Documents, Finances, Portfolio, Entities.
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.12 (only; 3.13 is not yet supported)
 - [UV](https://docs.astral.sh/uv/) package manager
 - Cloudflare Zero Trust application configured (see ADR-002)
 - Backend services accessible: `llc-manager`, `pp-security-master`, `xero_crypto`,
@@ -34,11 +34,10 @@ cp .env.example .env
 # Install pre-commit hooks
 pre-commit install
 pre-commit install --hook-type commit-msg
-
-# Generate secrets baseline (required for detect-secrets hook)
-detect-secrets scan > .secrets.baseline
-git add .secrets.baseline
 ```
+
+The `.secrets.baseline` file is committed to the repository and updated only when
+new secrets are intentionally introduced. Do not regenerate it on first checkout.
 
 ## Running
 
@@ -96,9 +95,10 @@ Key design decisions are documented as ADRs in `docs/architecture/adr/`:
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/ByronWilliamsCPA/.github/blob/main/CONTRIBUTING.md)
-for contribution guidelines. This is a private family tool; external contributions
-are not accepted.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines, the
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community standards, and
+[CHANGELOG.md](CHANGELOG.md) for release history. This is a private family tool;
+external contributions are not accepted.
 
 ## Security
 

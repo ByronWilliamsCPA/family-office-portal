@@ -46,7 +46,7 @@ five section shells (empty pages, correct navigation, no data yet).
 - [ ] Cloudflare Zero Trust configured; CF JWT middleware validating all requests
 - [ ] SQLite database initialized with all cache tables (see [Tech Spec §3](./tech-spec.md#3-data-model))
 - [ ] All five navigation sections render (empty state, no backend calls yet)
-- [ ] `.env.example` documenting all required environment variables (see [Tech Spec §4](./tech-spec.md#4-api-endpoints))
+- [ ] `.env.example` documenting all required environment variables (see [Tech Spec §4](./tech-spec.md#4-api-endpoints-internal-portal-routes))
 - [ ] Docker container builds and runs locally
 - [ ] GitHub Actions CI: lint, type-check, test, Docker build
 

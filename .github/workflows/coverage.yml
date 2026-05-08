@@ -43,7 +43,6 @@ jobs:
           flags: python-3.12
           name: family-office-portal Coverage (Python 3.12)
           commit_parent: ${{ github.event.workflow_run.head_sha }}
-        continue-on-error: true
 
       - name: Coverage upload summary
         if: always()

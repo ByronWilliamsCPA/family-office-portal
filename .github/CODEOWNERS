@@ -1,6 +1,24 @@
-# All files default to Byron Williams for review routing.
+# Default reviewer for everything in the repository.
 * @ByronWilliamsCPA
 
 # Security-sensitive paths require explicit review.
 SECURITY.md @ByronWilliamsCPA
 .claude/ @ByronWilliamsCPA
+
+# Build, CI, and supply-chain configuration.
+/.github/workflows/ @ByronWilliamsCPA
+/.github/CODEOWNERS @ByronWilliamsCPA
+/.pre-commit-config.yaml @ByronWilliamsCPA
+/pyproject.toml @ByronWilliamsCPA
+/uv.lock @ByronWilliamsCPA
+/renovate.json @ByronWilliamsCPA
+/sonar-project.properties @ByronWilliamsCPA
+/.codecov.yml @ByronWilliamsCPA
+
+# Application source and test trees (Phase 1 onward).
+/app/ @ByronWilliamsCPA
+/tests/ @ByronWilliamsCPA
+
+# Architecture and planning documents.
+/docs/planning/ @ByronWilliamsCPA
+/docs/architecture/ @ByronWilliamsCPA
