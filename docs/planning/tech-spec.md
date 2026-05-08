@@ -211,7 +211,7 @@ Upstream commercial systems -- **Kubera** (net worth aggregation), **Portfolio P
 contacted by the portal. Each backend service owns its own integration with these systems.
 
 **Outbound auth**: The mechanism by which the portal authenticates to each backend
-(API key in header, private network restriction, mTLS) must be confirmed with each
+(API key in header, private network restriction, mTLS) must be confirmed with each `#ASSUME` `#VERIFY`
 backend team before Phase 1 begins. Configure via `BACKEND_*_API_KEY` or equivalent
 env vars once the mechanism is decided.
 

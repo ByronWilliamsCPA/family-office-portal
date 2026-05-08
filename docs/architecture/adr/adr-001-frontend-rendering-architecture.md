@@ -106,8 +106,9 @@ hydration concerns, and a JavaScript build pipeline the project doesn't need.
 ### Components Affected
 
 1. **App server**: Must render Jinja2 templates and serve HTMX partial responses
-2. **Static assets**: Tailwind CSS compiled at build time; Chart.js loaded as CDN or
-   vendored static file; HTMX loaded as static script
+2. **Static assets**: Tailwind CSS compiled at build time; Chart.js v4 loaded as a
+   vendored static file (never CDN-loaded in production); HTMX loaded as a
+   vendored static script (never CDN-loaded in production)
 3. **Route layer**: Every page route returns a full HTML document; partial routes
    (used by HTMX `hx-get`) return fragment HTML only
 
