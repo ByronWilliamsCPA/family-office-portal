@@ -90,7 +90,7 @@ jobs:
             -Dsonar.projectVersion=${{ steps.pyproj.outputs.version }}
 
       - name: Check Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@8e9b0ca0a7273d6f16986388d98393efdfcf56fd  # master
+        uses: sonarsource/sonarqube-quality-gate-action@d304d050d930b02a896b0f85935344f023928496  # v1.1.0
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
