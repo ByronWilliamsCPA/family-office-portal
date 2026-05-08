@@ -8,6 +8,10 @@ on:
 
 permissions: read-all
 
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   upload-coverage:
     name: Upload Coverage to Codecov
