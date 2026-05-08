@@ -48,7 +48,6 @@ repos:
       - id: interrogate
         args:
           - --fail-under=80
-          - --ignore-init-module
           - --ignore-init-method
           - --ignore-magic
           - --ignore-private

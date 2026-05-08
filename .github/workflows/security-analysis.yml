@@ -250,7 +250,7 @@ jobs:
       - name: Validate Security Results
         run: |
           is_acceptable() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
-             is_acceptable "${{ needs.dependency-security.result }}" && \
+          if is_acceptable "${{ needs.dependency-security.result }}" && \
              is_acceptable "${{ needs.security-scanning.result }}" && \
              is_acceptable "${{ needs.osv-scanner.result }}" && \
              is_acceptable "${{ needs.owasp-dependency-check.result }}"; then

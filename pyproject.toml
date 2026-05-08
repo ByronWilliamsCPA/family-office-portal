@@ -121,7 +121,13 @@ skips = ["B101"]  # assert is acceptable in tests; production code blocks via ru
 [tool.interrogate]
 fail-under = 80
 ignore-init-method = true
-ignore-init-module = true
+# Note: ignore-init-module intentionally kept false at Phase 0 because
+# `app/__init__.py` is the only Python file in `app/` and it carries a
+# real docstring; ignoring it would leave interrogate with zero countable
+# units and `--fail-under=80` would error with "no Python files found".
+# Re-enable once `app/` has enough non-init modules to make the ignore
+# meaningful again.
+ignore-init-module = false
 ignore-magic = true
 ignore-private = true
 ignore-semiprivate = true
