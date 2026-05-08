@@ -1,0 +1,28 @@
+# .github/workflows/scorecard.yml
+name: OpenSSF Scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 0'
+
+# Workflow-level permissions provide an audit surface; job-level block below is required by GitHub for reusable workflow inheritance.
+permissions:
+  security-events: write
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  scorecard:
+    name: Scorecard Analysis
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-scorecard.yml@e753ebbf3c2fac40177495137391f2a45adab93a  # main 2026-05-07
+    with:
+      publish-results: true
+      upload-sarif: true
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
