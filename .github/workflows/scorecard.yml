@@ -19,7 +19,7 @@ jobs:
     name: Scorecard Analysis
     uses: ByronWilliamsCPA/.github/.github/workflows/python-scorecard.yml@e753ebbf3c2fac40177495137391f2a45adab93a  # main 2026-05-07
     with:
-      publish-results: true
+      publish-results: false
       upload-sarif: true
     permissions:
       security-events: write

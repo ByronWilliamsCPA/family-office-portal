@@ -35,3 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ADRs migrated from docs/planning/adr/ to docs/architecture/adr/
 - LICENSE: added SPDX-License-Identifier header
 - SECURITY.md: switched from email reporting to GitHub Private Vulnerability Reporting (PVR) only
+
+### Fixed
+
+- CI: SonarCloud quality gate now evaluates correctly after passing `sonar.projectVersion=0.1.0` to the scan action; without a project version the quality gate returned `NONE` and the gate action failed
+- CI: placeholder test `assert True` replaced with a docstring-only sentinel function to resolve SonarCloud rule S5914 (constant boolean expression in assertion)
+- CI: OpenSSF Scorecard workflow now sets `publish-results: false` to prevent OIDC token mismatch when running as a callee reusable workflow (the token resolves to the .github repo, not the calling repo)

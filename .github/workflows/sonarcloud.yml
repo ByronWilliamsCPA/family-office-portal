@@ -73,6 +73,7 @@ jobs:
             -Dsonar.organization=byronwilliamscpa
             -Dsonar.projectKey=ByronWilliamsCPA_family-office-portal
             -Dsonar.python.version=3.12
+            -Dsonar.projectVersion=0.1.0
 
       - name: Check Quality Gate
         uses: sonarsource/sonarqube-quality-gate-action@8e9b0ca0a7273d6f16986388d98393efdfcf56fd  # master
