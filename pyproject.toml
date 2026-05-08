@@ -77,8 +77,6 @@ select = [
     "RUF",          # Ruff-native rules
 ]
 ignore = [
-    "ANN101",   # self annotation not required
-    "ANN102",   # cls annotation not required
     "TRY003",   # long exception messages acceptable at this project scale
 ]
 

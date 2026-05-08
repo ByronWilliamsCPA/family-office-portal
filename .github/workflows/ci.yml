@@ -23,7 +23,6 @@ concurrency:
 
 env:
   CI_ENVIRONMENT: true
-  UV_CACHE_DIR: ~/.cache/uv
 
 jobs:
   setup-optimized:
