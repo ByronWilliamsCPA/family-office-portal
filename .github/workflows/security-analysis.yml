@@ -12,6 +12,10 @@ on:
 
 permissions: read-all
 
+concurrency:
+  group: security-analysis-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   detect-changes:
     name: Detect Security-Relevant Changes
