@@ -110,9 +110,13 @@ strictSetInference = true
 
 # Targets are passed via CLI args in pre-commit and CI invocations
 # (`bandit -r app`); listing them here is redundant when bandit runs per-file.
+# Tests are excluded above, so the B101 (assert-in-production) check stays on
+# for `app/` -- assertions are stripped under `python -O` and must not be used
+# as security checks. Re-add B101 to `skips` only if a documented exception
+# applies.
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", ".worktrees"]
-skips = ["B101"]  # assert is acceptable in tests; production code blocks via ruff S101
+skips = []
 
 # ---------------------------------------------------------------------------
 # interrogate
