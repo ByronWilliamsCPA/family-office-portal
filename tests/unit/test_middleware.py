@@ -20,6 +20,7 @@ package level, individual tests fall back to expected submodule paths.
 
 from __future__ import annotations
 
+import importlib
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -38,18 +39,25 @@ if TYPE_CHECKING:
 def _resolve(name: str) -> Any:
     """Return ``app.middleware.<name>`` if present, else attempt common submodules.
 
+    Once ``app.middleware`` exists, missing required symbols are a contract
+    violation -- the test must fail loudly, not skip silently. Skipping would
+    let a Phase 1 implementation that omits these APIs report green coverage.
+
     # noqa
     """
     if hasattr(middleware, name):
         return getattr(middleware, name)
     for sub in ("cf_jwt", "jwt", "auth"):
         try:
-            mod = pytest.importorskip(f"app.middleware.{sub}")
-        except pytest.skip.Exception:  # type: ignore[attr-defined]
+            mod = importlib.import_module(f"app.middleware.{sub}")
+        except ModuleNotFoundError:
             continue
         if hasattr(mod, name):
             return getattr(mod, name)
-    pytest.skip(f"app.middleware.{name} not implemented yet")
+    pytest.fail(
+        f"Spec contract violation: app.middleware exists but does not expose "
+        f"'{name}' at the package level or in any of (cf_jwt, jwt, auth)."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -170,15 +178,20 @@ def patch_jwks(
     target = middleware
     for sub in ("cf_jwt", "jwt", "auth"):
         try:
-            mod = pytest.importorskip(f"app.middleware.{sub}")
-        except pytest.skip.Exception:  # type: ignore[attr-defined]
+            mod = importlib.import_module(f"app.middleware.{sub}")
+        except ModuleNotFoundError:
             continue
         if hasattr(mod, "fetch_cf_public_keys"):
             target = mod
             break
 
     if not hasattr(target, "fetch_cf_public_keys"):
-        pytest.skip("fetch_cf_public_keys not implemented yet")
+        pytest.fail(
+            "Spec contract violation: app.middleware exists but does not "
+            "expose a patchable 'fetch_cf_public_keys' hook. JWT validation "
+            "tests require this hook to inject a test JWKS without making a "
+            "real network call to Cloudflare."
+        )
 
     def _stub(*_args: object, **_kw: object) -> JWKSDocument:
         """Return the static test JWKS document.

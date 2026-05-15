@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from freezegun import freeze_time
 
 cache = pytest.importorskip("app.cache")
 db = pytest.importorskip("app.db")
@@ -305,14 +306,38 @@ async def test_is_stale_true_for_data_older_than_threshold(
     assert await cache.is_stale("entities", threshold_hours=8) is True
 
 
-async def test_is_stale_false_at_threshold_boundary(initialized_db: Path) -> None:
-    """Data fetched exactly at the threshold boundary is not yet stale.
+async def test_is_stale_just_under_threshold_is_fresh(
+    initialized_db: Path,
+) -> None:
+    """1 second younger than the threshold is fresh.
+
+    Time is frozen so the comparison is exact -- catches off-by-one
+    implementations that use ``>=`` vs ``>``.
 
     # noqa
     """
-    boundary = (datetime.now(UTC) - timedelta(hours=7, minutes=59)).isoformat()
-    _seed_entity(initialized_db, fetched_at=boundary)
-    assert await cache.is_stale("entities", threshold_hours=8) is False
+    frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    just_under = (frozen_now - timedelta(hours=8) + timedelta(seconds=1)).isoformat()
+    _seed_entity(initialized_db, fetched_at=just_under)
+    with freeze_time(frozen_now):
+        assert await cache.is_stale("entities", threshold_hours=8) is False
+
+
+async def test_is_stale_just_over_threshold_is_stale(
+    initialized_db: Path,
+) -> None:
+    """1 second older than the threshold is stale.
+
+    Time is frozen so the comparison is exact -- catches off-by-one
+    implementations.
+
+    # noqa
+    """
+    frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    just_over = (frozen_now - timedelta(hours=8) - timedelta(seconds=1)).isoformat()
+    _seed_entity(initialized_db, fetched_at=just_over)
+    with freeze_time(frozen_now):
+        assert await cache.is_stale("entities", threshold_hours=8) is True
 
 
 async def test_is_stale_uses_most_recent_fetched_at(initialized_db: Path) -> None:

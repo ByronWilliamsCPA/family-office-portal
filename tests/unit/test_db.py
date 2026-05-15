@@ -124,12 +124,29 @@ def test_refresh_log_table_has_required_columns(tmp_db_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def test_async_connection_uses_wal_journal(tmp_db_path: Path) -> None:
+@pytest.fixture
+def configured_db(
+    tmp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Init the schema and point ``SQLITE_PATH`` at it for ``get_connection()``.
+
+    Without this, ``db.get_connection()`` (which reads ``SQLITE_PATH`` from
+    env) would open a different file than ``init_schema`` just populated.
+
+    # noqa
+    """
+    monkeypatch.setenv("SQLITE_PATH", str(tmp_db_path))
+    db.init_schema(str(tmp_db_path))
+    return tmp_db_path
+
+
+async def test_async_connection_uses_wal_journal(configured_db: Path) -> None:
     """Async readers must be on a WAL-mode database (concurrent reads safe).
 
     # noqa
     """
-    db.init_schema(str(tmp_db_path))
+    del configured_db
     async with db.get_connection() as conn:
         cursor = await conn.execute("PRAGMA journal_mode")
         row = await cursor.fetchone()
@@ -137,12 +154,12 @@ async def test_async_connection_uses_wal_journal(tmp_db_path: Path) -> None:
     assert str(row[0]).lower() == "wal"
 
 
-async def test_async_connection_sets_busy_timeout(tmp_db_path: Path) -> None:
+async def test_async_connection_sets_busy_timeout(configured_db: Path) -> None:
     """The connection's busy_timeout is at least the spec-required 5000 ms.
 
     # noqa
     """
-    db.init_schema(str(tmp_db_path))
+    del configured_db
     async with db.get_connection() as conn:
         cursor = await conn.execute("PRAGMA busy_timeout")
         row = await cursor.fetchone()
@@ -150,12 +167,12 @@ async def test_async_connection_sets_busy_timeout(tmp_db_path: Path) -> None:
     assert int(row[0]) >= 5000
 
 
-async def test_async_connection_round_trip_select(tmp_db_path: Path) -> None:
+async def test_async_connection_round_trip_select(configured_db: Path) -> None:
     """A trivial SELECT through the async connection returns the expected row.
 
     # noqa
     """
-    db.init_schema(str(tmp_db_path))
+    del configured_db
     async with db.get_connection() as conn:
         cursor = await conn.execute("SELECT 1")
         row = await cursor.fetchone()

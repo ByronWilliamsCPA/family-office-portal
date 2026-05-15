@@ -19,6 +19,7 @@ patched so ``jwt_factory``-minted tokens validate.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -28,8 +29,15 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-main = pytest.importorskip("app.main")
-db = pytest.importorskip("app.db")
+# Defer the actual import of ``app.main``/``app.db`` into the ``client``
+# fixture: ``app.main`` is fail-fast on missing env vars, so importing it at
+# module-collection time -- before ``cf_env`` populates the environment --
+# would raise ``SystemExit`` and abort the suite.
+if (
+    importlib.util.find_spec("app.main") is None
+    or importlib.util.find_spec("app.db") is None
+):
+    pytest.skip("app.main / app.db not implemented yet", allow_module_level=True)
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import (
@@ -59,7 +67,12 @@ async def client(
     """
     import base64
 
+    del cf_env
     monkeypatch.setenv("SQLITE_PATH", str(tmp_db_path))
+
+    db = importlib.import_module("app.db")
+    main = importlib.import_module("app.main")
+
     db.init_schema(str(tmp_db_path))
 
     _, public = rsa_key_pair
