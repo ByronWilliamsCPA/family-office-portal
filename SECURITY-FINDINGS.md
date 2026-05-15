@@ -120,6 +120,20 @@ Phase-1 commitments that future code must honor.
   code change is possible in Phase 0 -- there is no `app/main.py` yet --
   but this finding must be addressed in the Phase 1 acceptance criteria.
 
+### F-07 Transitive urllib3 2.6.3 had two open CVEs | **High**
+
+- **File**: `uv.lock` (transitive: `pip-audit -> cachecontrol -> requests -> urllib3`)
+- **Category**: A06 Vulnerable and Outdated Components
+- **Issue**: `pip-audit` on the Phase 0 PR surfaced `CVE-2026-44431` and
+  `CVE-2026-44432` in `urllib3 2.6.3`, both fixed in `urllib3 2.7.0`.
+  `urllib3` is a dev-only transitive dependency (pulled in by `pip-audit`
+  via `requests`), so the runtime path is unaffected; the CI Multi-Tool
+  Security Scan still failed the gate because pip-audit returns non-zero
+  on any unignored vulnerability.
+- **Fix applied**: `uv lock --upgrade-package urllib3` -> 2.7.0.
+  Confirmed by re-running `uv run pip-audit --ignore-vuln PYSEC-2022-42969`:
+  "No known vulnerabilities found, 1 ignored".
+
 ### F-06 CF JWT `aud` claim validation is unimplemented | **Critical (forward-looking)**
 
 - **File**: To be created at `app/middleware/` in Phase 1
@@ -181,6 +195,7 @@ posture weekly.
 | Tighten CI workflow permissions to `contents: read` | `.github/workflows/ci.yml` | F-02 -- remove unused `pull-requests: write` and `checks: write` |
 | Add `step-security/harden-runner` step | `.github/workflows/dependency-review.yml` | F-03 -- consistent egress-audit posture across workflows |
 | Remove `B101` from Bandit `skips` | `pyproject.toml` | F-01 -- assert-in-production gap; tests still excluded via `exclude_dirs` |
+| Upgrade transitive `urllib3` 2.6.3 -> 2.7.0 | `uv.lock` | F-07 -- close `CVE-2026-44431` and `CVE-2026-44432` |
 | This findings document | `SECURITY-FINDINGS.md` | OWASP audit record |
 
 ## Items Deferred to Phase 1
