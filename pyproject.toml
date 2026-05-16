@@ -88,6 +88,10 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.per-file-ignores]
+# Standalone CLI helpers in scripts/ are intentionally not a package.
+"scripts/*.py" = ["INP001"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
