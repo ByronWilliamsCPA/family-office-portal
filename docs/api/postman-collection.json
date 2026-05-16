@@ -1,0 +1,577 @@
+{
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "exec": [
+          "if (!pm.variables.get('baseUrl')) { pm.variables.set('baseUrl', 'http://localhost:8000'); }"
+        ],
+        "type": "text/javascript"
+      }
+    }
+  ],
+  "info": {
+    "_postman_id": "family-office-portal-collection",
+    "description": "Private read-only family estate portal. The portal aggregates four backend services (llc-manager, pp-security-master, xero_crypto, family_office) behind a SQLite read-through cache and exposes five primary sections (home, documents, finances, portfolio, entities) plus an admin surface for refresh control. Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the full contract.",
+    "name": "Family Office Portal API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('response body is valid JSON', function () {",
+                  "    pm.response.to.have.jsonBody();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Per-service refresh log",
+          "request": {
+            "description": "Return the most recent refresh outcome per backend service.\n\nAuthentication: Admin only via Cloudflare Access. Reads the ``refresh_log``\ntable populated by the APScheduler jobs.\n\nReturns:\n    RefreshStatusResponse: One entry per tracked backend.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "refresh-status"
+              ],
+              "raw": "{{baseUrl}}/admin/refresh-status"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([202, 422]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('response body is valid JSON', function () {",
+                  "    pm.response.to.have.jsonBody();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Trigger a manual refresh",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"force\": true\n}"
+            },
+            "description": "Enqueue an out-of-band refresh for the named backend service.\n\nAuthentication: Admin only via Cloudflare Access. Phase 0 returns a stub\nresponse; Phase 1 will dispatch to the APScheduler job for the matching\nservice (``entities``, ``holdings``, ``positions``, ``documents``).\n\nArgs:\n    service: Backend service identifier to refresh.\n    body: Trigger options; set ``force`` to bypass the staleness check.\n\nReturns:\n    RefreshTriggerResponse: Confirmation of the scheduling decision.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "type": "text",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "refresh",
+                ":service"
+              ],
+              "raw": "{{baseUrl}}/admin/refresh/:service",
+              "variable": [
+                {
+                  "key": "service",
+                  "value": "example"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "admin"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "List document folders",
+          "request": {
+            "description": "Render the document folder view.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Data is read from\nthe SQLite cache populated by the ``refresh_documents`` job; the route\nnever calls the upstream ``family_office`` service directly (ADR-003).\n\nReturns:\n    HTMLResponse: Placeholder folder listing page.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents"
+              ],
+              "raw": "{{baseUrl}}/documents"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('response body is valid JSON', function () {",
+                  "    pm.response.to.have.jsonBody();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Search documents by name",
+          "request": {
+            "description": "Return documents whose name matches ``q``.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Designed as an HTMX\npartial in Phase 1; the JSON shape is returned at Phase 0 so the contract\nis OpenAPI-described from the start.\n\nArgs:\n    q: Free-text query string; must be at least one character.\n\nReturns:\n    DocumentSearchResponse: Matching documents in ranked order.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                "search"
+              ],
+              "query": [
+                {
+                  "description": "Free-text search query.",
+                  "disabled": false,
+                  "key": "q",
+                  "value": "example"
+                }
+              ],
+              "raw": "{{baseUrl}}/documents/search"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Download original document",
+          "request": {
+            "description": "Stream the original document as a file download.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content with a\n``Content-Disposition: attachment`` header.\n\nArgs:\n    document_id: Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder binary response.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                ":document_id",
+                "download"
+              ],
+              "raw": "{{baseUrl}}/documents/:document_id/download",
+              "variable": [
+                {
+                  "key": "document_id",
+                  "value": "example"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Inline document preview",
+          "request": {
+            "description": "Stream a PDF preview proxied from the ``family_office`` backend.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content.\n\nArgs:\n    document_id: Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder PDF response.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                ":document_id",
+                "preview"
+              ],
+              "raw": "{{baseUrl}}/documents/:document_id/preview",
+              "variable": [
+                {
+                  "key": "document_id",
+                  "value": "example"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "documents"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "List entities",
+          "request": {
+            "description": "Render the entity list with compliance status.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Reads the cached\n``entities`` dataset sourced from the ``llc-manager`` backend.\n\nReturns:\n    HTMLResponse: Placeholder entity list page.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "entities"
+              ],
+              "raw": "{{baseUrl}}/entities"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Entity detail",
+          "request": {
+            "description": "Render a single entity detail view.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Raw identifiers\nare not surfaced to primary users (see CLAUDE.md frontend conventions);\nPhase 1 will render a plain-English summary backed by the cache.\n\nArgs:\n    entity_id: Opaque entity identifier sourced from the cache.\n\nReturns:\n    HTMLResponse: Placeholder entity detail page.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "entities",
+                ":entity_id"
+              ],
+              "raw": "{{baseUrl}}/entities/:entity_id",
+              "variable": [
+                {
+                  "key": "entity_id",
+                  "value": "example"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "entities"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Net worth and asset allocation",
+          "request": {
+            "description": "Render the finances dashboard.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Aggregates the\n``holdings`` dataset (``pp-security-master``) with the ``positions``\ndataset (``xero_crypto``) from the SQLite cache.\n\nReturns:\n    HTMLResponse: Placeholder finances page.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "finances"
+              ],
+              "raw": "{{baseUrl}}/finances"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "finances"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('response body is valid JSON', function () {",
+                  "    pm.response.to.have.jsonBody();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Liveness probe",
+          "request": {
+            "description": "Return a static liveness payload.\n\nUnauthenticated. Intended for orchestrator probes and the Newman CI\nworkflow so polling can begin before any backend services are reachable.\n\nReturns:\n    HealthResponse: Status indicator and service name.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ],
+              "raw": "{{baseUrl}}/health"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "health"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Home dashboard",
+          "request": {
+            "description": "Render the landing dashboard.\n\nAuthentication: Viewer or Admin via Cloudflare Access (see ADR-002). Phase 0\nreturns a static HTML placeholder; Phase 1 will swap in a Jinja2 template\nthat aggregates the five sections.\n\nReturns:\n    HTMLResponse: Placeholder dashboard page.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [],
+              "raw": "{{baseUrl}}/"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "home"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is in the expected range', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Holdings and performance",
+          "request": {
+            "description": "Render the portfolio page.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Reads the cached\n``holdings`` and ``performance`` datasets sourced from the\n``pp-security-master`` backend.\n\nReturns:\n    HTMLResponse: Placeholder portfolio page.",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "type": "text",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "portfolio"
+              ],
+              "raw": "{{baseUrl}}/portfolio"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "portfolio"
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "type": "string",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "apiKey",
+      "type": "string",
+      "value": ""
+    }
+  ]
+}
