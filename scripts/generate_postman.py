@@ -52,7 +52,7 @@ def _resolve_ref(ref: str, spec: dict[str, Any]) -> dict[str, Any]:
     if not ref.startswith("#/"):
         return {}
     cursor: Any = spec
-    for part in ref.lstrip("#/").split("/"):
+    for part in ref.removeprefix("#/").split("/"):
         if not isinstance(cursor, dict) or part not in cursor:
             return {}
         cursor = cursor[part]
@@ -247,19 +247,27 @@ def _query_parameters(operation: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _test_script(success_status: int, expects_json: bool) -> str:
+def _test_script(
+    success_status: int,
+    expects_json: bool,
+    declares_422: bool,
+) -> str:
     """Build the Postman test script for an operation.
 
     Args:
         success_status: The 2xx status code the route normally returns.
         expects_json: True when the success response declares JSON content.
+        declares_422: True when the operation declares a 422 response (i.e.
+            it accepts a request body or validated parameters).
 
     Returns:
         str: JavaScript test script for the Postman request.
     """
+    allowed = [success_status, 422] if declares_422 else [success_status]
+    allowed_js = ", ".join(str(code) for code in allowed)
     lines: list[str] = [
         "pm.test('status is in the expected range', function () {",
-        f"    pm.expect([{success_status}, 422]).to.include(pm.response.code);",
+        f"    pm.expect([{allowed_js}]).to.include(pm.response.code);",
         "});",
     ]
     if expects_json:
@@ -357,6 +365,7 @@ def _build_item(
                     "exec": _test_script(
                         success_status,
                         _operation_returns_json(operation),
+                        "422" in (operation.get("responses") or {}),
                     ).split("\n"),
                 },
             },
