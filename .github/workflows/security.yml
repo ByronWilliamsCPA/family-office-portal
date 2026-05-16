@@ -81,4 +81,8 @@ jobs:
         run: uv sync --frozen --all-extras
 
       - name: Run pip-audit
-        run: uv run pip-audit
+        # PYSEC-2022-42969: ReDoS in py.path.svnwc; py 1.x is unmaintained and
+        # has no fix. We pull `py` only as a transitive of `interrogate`, do
+        # not touch SVN, and document the deferral in
+        # docs/known-vulnerabilities.md.
+        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
