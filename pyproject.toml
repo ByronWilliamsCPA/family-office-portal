@@ -103,6 +103,10 @@ known-first-party = ["app"]
     "ANN401",    # JSON values are by definition Any
     "FBT001",    # script-internal helpers, not a public API
 ]
+"tests/*" = [
+    "PLR2004",   # HTTP status codes are clearer as literals in assertions
+    "S101",      # assert is the standard pytest assertion mechanism
+]
 
 [tool.ruff.format]
 quote-style = "double"
