@@ -5,17 +5,40 @@
   ],
   "packageRules": [
     {
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "pinDigests": true,
       "automerge": false
     },
     {
-      "matchManagers": ["uv"],
-      "matchDepTypes": ["dev"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": [
+        "uv"
+      ],
+      "matchDepTypes": [
+        "dev"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "automerge": true
+    },
+    {
+      "description": "Track org workflow floating v1 tag for SHA pin updates",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackagePatterns": [
+        "ByronWilliamsCPA/.github",
+        "williaby/.github"
+      ],
+      "versioning": "semver",
+      "followTag": "v1"
     }
   ],
   "prConcurrentLimit": 5,
-  "schedule": ["before 6am on Monday"]
+  "schedule": [
+    "before 6am on Monday"
+  ]
 }
