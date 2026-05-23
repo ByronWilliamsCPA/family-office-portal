@@ -5,6 +5,12 @@
   ],
   "packageRules": [
     {
+      "description": "Do not auto-update requires-python; version range is managed manually via the CI matrix strategy",
+      "matchManagers": ["pep621"],
+      "matchDepNames": ["python"],
+      "enabled": false
+    },
+    {
       "matchManagers": [
         "github-actions"
       ],
