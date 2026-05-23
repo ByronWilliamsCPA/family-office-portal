@@ -33,11 +33,13 @@ import pytest
 
 middleware = pytest.importorskip("app.middleware")
 
+_SUBMODULE_CANDIDATES = ("cf_jwt", "jwt", "auth", "cloudflare_access")
+_PHASE1_SENTINELS = ("validate_cf_jwt", "get_role_from_email")
+
 # Phase 1 readiness gate: the Phase 0 middleware stub is importable but
 # does not expose the JWT validation API. Skip the whole file until Phase 1
 # implements validate_cf_jwt and get_role_from_email -- at that point,
 # _resolve() failing means a broken implementation, not an absent one.
-_PHASE1_SENTINELS = ("validate_cf_jwt", "get_role_from_email")
 _has_phase1_api = any(hasattr(middleware, _s) for _s in _PHASE1_SENTINELS)
 if not _has_phase1_api:
     for _sub in ("cf_jwt", "jwt", "auth"):
@@ -61,9 +63,6 @@ if TYPE_CHECKING:
         RSAPrivateKey,
         RSAPublicKey,
     )
-
-_SUBMODULE_CANDIDATES = ("cf_jwt", "jwt", "auth", "cloudflare_access")
-_PHASE1_SENTINELS = ("validate_cf_jwt", "get_role_from_email")
 
 
 def _phase1_present() -> bool:

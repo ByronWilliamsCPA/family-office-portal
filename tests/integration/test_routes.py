@@ -50,7 +50,7 @@ def _phase1_routes_present() -> bool:
     try:
         main = importlib.import_module("app.main")
     except SystemExit:
-        return True
+        return False
     paths = {getattr(r, "path", "") for r in main.app.routes}
     return "/documents" in paths
 
