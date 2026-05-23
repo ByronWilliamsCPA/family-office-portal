@@ -1,4 +1,3 @@
-# .github/workflows/reuse.yml
 name: REUSE Compliance
 
 on:
@@ -12,10 +11,30 @@ permissions:
 
 jobs:
   reuse:
-    name: REUSE Compliance Check
-    uses: ByronWilliamsCPA/.github/.github/workflows/python-reuse.yml@e753ebbf3c2fac40177495137391f2a45adab93a  # main 2026-05-07
-    with:
-      generate-spdx: true
-      fail-on-missing: true
-    permissions:
-      contents: read
+    name: Check REUSE Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install reuse
+        run: pip install reuse
+
+      - name: REUSE lint
+        run: reuse lint
+
+      - name: Generate SPDX bill of materials
+        run: reuse spdx -o reuse-spdx-sbom.spdx
+
+      - name: Upload SPDX
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: reuse-spdx-sbom
+          path: reuse-spdx-sbom.spdx
+          if-no-files-found: warn
