@@ -99,7 +99,7 @@ Key documents to read before making architectural or data-model decisions:
 
 ## Tech stack conventions
 
-- **Language**: Python 3.12 only. Do not introduce 3.13 syntax or features.
+- **Language**: Python 3.12 primary; minimum supported runtime is 3.10 (tested in CI via 3.10-3.15 matrix). Do not introduce syntax or stdlib additions from 3.11+ (e.g. `tomllib`, `Self`, `ExceptionGroup`, `asyncio.timeout`) or 3.13+ in application code. BasedPyright is pinned to 3.12 for type checking.
 - **Package management**: UV. Never use pip or conda directly. Use `uv run` for
   tool invocations and `uv add` for dependencies.
 - **Web framework**: FastAPI with Starlette's `Jinja2Templates`. Route handlers

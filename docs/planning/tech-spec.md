@@ -1,7 +1,7 @@
 # Technical Implementation Spec: Family Office Estate Portal
 
 > **Status**: Draft
-> **Version**: 1.0 | **Updated**: 2026-05-06
+> **Version**: 1.1 | **Updated**: 2026-05-23
 
 ## TL;DR
 
@@ -14,7 +14,7 @@ is handled entirely by Cloudflare Zero Trust at the network edge.
 
 ### Core
 
-- **Language**: Python 3.12
+- **Language**: Python 3.12 (primary development and deployment runtime); minimum supported runtime is 3.10. CI matrix covers 3.10-3.14. Do not use stdlib additions from 3.11+ (e.g. `tomllib`, `Self`, `ExceptionGroup`, `asyncio.timeout`) in application code; BasedPyright type checking is pinned to 3.12.
 - **Package Manager**: UV
 - **Web Framework**: FastAPI (with Starlette's `Jinja2Templates` for server-side rendering)
 - **Template Engine**: Jinja2 (partials for HTMX responses; full pages for initial loads)
