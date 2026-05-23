@@ -246,6 +246,44 @@ async def test_get_positions_returns_seeded_row(initialized_db: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# get_performance (portfolio chart data, backs Portfolio section)
+# --------------------------------------------------------------------------- #
+
+
+async def test_get_performance_round_trips_seeded_rows(
+    initialized_db: Path,
+) -> None:
+    """If a ``get_performance`` reader exists, it returns the seeded timeseries.
+
+    The performance table backs the Portfolio section's chart and per
+    ``tech-spec.md`` is populated alongside holdings by pp-security-master.
+    Phase 1 may expose this either as ``cache.get_performance()`` or fold it
+    into ``get_holdings`` -- the test skips if the dedicated reader isn't
+    present. #ASSUME
+
+    # noqa
+    """
+    if not hasattr(cache, "get_performance"):
+        pytest.skip(
+            "cache.get_performance not exposed; performance data may be "
+            "returned alongside holdings -- verify in Phase 1."
+        )
+
+    fetched = datetime.now(UTC).isoformat()
+    with sqlite3.connect(initialized_db) as conn:
+        conn.execute(
+            "INSERT INTO performance (date, total_value, benchmark, fetched_at) "
+            "VALUES ('2026-05-01', 1000000.0, 950000.0, ?)",
+            (fetched,),
+        )
+        conn.commit()
+
+    rows = list(await cache.get_performance())
+    assert len(rows) == 1
+    assert rows[0]["date"] == "2026-05-01"
+
+
+# --------------------------------------------------------------------------- #
 # get_documents
 # --------------------------------------------------------------------------- #
 

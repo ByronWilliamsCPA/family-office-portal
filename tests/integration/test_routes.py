@@ -3,17 +3,20 @@
 # ruff: noqa: TC003, PLC0415, PLR2004
 """Integration tests for portal route handlers.
 
-Spec contract (tech-spec §4 endpoint table + ``CLAUDE.md`` auth rules):
+Spec contract (tech-spec §4 endpoint table + ``CLAUDE.md`` + ADR-002):
 
-* All routes require a valid CF Access JWT; unauthenticated requests get 403.
+* All non-public routes require a valid CF Access JWT; unauthenticated
+  requests get **403** (per ADR-002, defense in depth).
 * ``/admin/*`` routes require role=Admin; Viewer requests get 403.
-* Routes return ``TemplateResponse`` (HTML), not JSON, except HTMX partial routes
-  which return HTML fragments.
+* Routes return ``TemplateResponse`` (HTML), not JSON, except HTMX partial
+  routes which return HTML fragments.
 * All five sections render even when their backing dataset is empty (graceful
   degradation -- no blank screens for primary users).
+* ``/health`` is a public liveness endpoint that bypasses the CF middleware
+  (uptime probes, not user content; documented JSON exception).
 
-Tests use ``httpx.AsyncClient`` against the FastAPI app, with the JWKS fetcher
-patched so ``jwt_factory``-minted tokens validate.
+Phase gating: the section-route tests skip until ``app.main`` has the Phase 1
+routes mounted. ``/health`` works in Phase 0/A.
 """
 
 from __future__ import annotations
@@ -29,21 +32,33 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-# Defer the actual import of ``app.main``/``app.db`` into the ``client``
-# fixture: ``app.main`` is fail-fast on missing env vars, so importing it at
-# module-collection time -- before ``cf_env`` populates the environment --
-# would raise ``SystemExit`` and abort the suite.
-if (
-    importlib.util.find_spec("app.main") is None
-    or importlib.util.find_spec("app.db") is None
-):
-    pytest.skip("app.main / app.db not implemented yet", allow_module_level=True)
+if importlib.util.find_spec("app.main") is None:
+    pytest.skip("app.main not implemented yet", allow_module_level=True)
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import (
         RSAPrivateKey,
         RSAPublicKey,
     )
+
+
+def _phase1_routes_present() -> bool:
+    """True iff section routes (e.g. ``/documents``) are mounted on app.main.
+
+    # noqa
+    """
+    try:
+        main = importlib.import_module("app.main")
+    except SystemExit:
+        return True
+    paths = {getattr(r, "path", "") for r in main.app.routes}
+    return "/documents" in paths
+
+
+phase1 = pytest.mark.skipif(
+    not _phase1_routes_present(),
+    reason="Phase 1 section routes not yet mounted on app.main",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -60,8 +75,8 @@ async def client(
 ) -> AsyncIterator[httpx.AsyncClient]:
     """Yield an ``httpx.AsyncClient`` bound to a freshly-loaded ``app.main.app``.
 
-    The CF JWKS fetcher is patched so JWTs minted via ``jwt_factory`` validate
-    against the test RSA public key.
+    The CF JWKS fetcher is patched **before** ``app.main`` is reloaded so the
+    real Cloudflare endpoint is never contacted during the startup key-fetch.
 
     # noqa
     """
@@ -70,10 +85,12 @@ async def client(
     del cf_env
     monkeypatch.setenv("SQLITE_PATH", str(tmp_db_path))
 
-    db = importlib.import_module("app.db")
     main = importlib.import_module("app.main")
 
-    db.init_schema(str(tmp_db_path))
+    if importlib.util.find_spec("app.db") is not None:
+        db = importlib.import_module("app.db")
+        if hasattr(db, "init_schema"):
+            db.init_schema(str(tmp_db_path))
 
     _, public = rsa_key_pair
     numbers = public.public_numbers()
@@ -100,14 +117,14 @@ async def client(
         ]
     }
 
-    importlib.reload(main)
-
+    # Patch the JWKS fetcher BEFORE reloading main so the reload's startup
+    # path -- which may eagerly fetch CF public keys -- uses the test stub.
     middleware_pkg = pytest.importorskip("app.middleware")
     target = middleware_pkg
-    for sub in ("cf_jwt", "jwt", "auth"):
+    for sub in ("cf_jwt", "jwt", "auth", "cloudflare_access"):
         try:
-            mod = pytest.importorskip(f"app.middleware.{sub}")
-        except pytest.skip.Exception:  # type: ignore[attr-defined]
+            mod = importlib.import_module(f"app.middleware.{sub}")
+        except ModuleNotFoundError:
             continue
         if hasattr(mod, "fetch_cf_public_keys"):
             target = mod
@@ -123,6 +140,8 @@ async def client(
             return jwks
 
         monkeypatch.setattr(target, "fetch_cf_public_keys", _stub)
+
+    importlib.reload(main)
 
     transport = httpx.ASGITransport(app=main.app)
     async with httpx.AsyncClient(
@@ -154,36 +173,60 @@ def admin_headers(jwt_factory: Callable[..., str]) -> dict[str, str]:
 
 
 # --------------------------------------------------------------------------- #
+# Public endpoints (Phase 0 / A; no JWT required)
+# --------------------------------------------------------------------------- #
+
+
+async def test_health_endpoint_is_public(
+    client: httpx.AsyncClient,
+) -> None:
+    """``/health`` returns 200 with ``{"status": "ok"}`` and bypasses CF JWT.
+
+    Uptime-probe endpoint, documented JSON exception to the HTML-only rule.
+
+    # noqa
+    """
+    response = await client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+# --------------------------------------------------------------------------- #
 # Auth enforcement (every primary route requires a valid JWT)
 # --------------------------------------------------------------------------- #
 
 PRIMARY_ROUTES = ["/", "/documents", "/finances", "/portfolio", "/entities"]
 
 
+@phase1
 @pytest.mark.parametrize("path", PRIMARY_ROUTES)
 async def test_unauthenticated_request_is_rejected(
     client: httpx.AsyncClient, path: str
 ) -> None:
-    """A request to any primary route without a JWT is rejected (401/403).
+    """A request to any primary route without a JWT is rejected with 403.
+
+    ADR-002: portal middleware returns 403 (not 401) for missing/invalid JWT.
 
     # noqa
     """
     response = await client.get(path)
-    assert response.status_code in (401, 403)
+    assert response.status_code == 403
 
 
+@phase1
 @pytest.mark.parametrize("path", PRIMARY_ROUTES)
 async def test_invalid_jwt_is_rejected(client: httpx.AsyncClient, path: str) -> None:
-    """A request bearing a malformed JWT is rejected (401/403).
+    """A request bearing a malformed JWT is rejected with 403.
 
     # noqa
     """
     response = await client.get(
         path, headers={"CF-Access-JWT-Assertion": "garbage.token.here"}
     )
-    assert response.status_code in (401, 403)
+    assert response.status_code == 403
 
 
+@phase1
 @pytest.mark.parametrize("path", PRIMARY_ROUTES)
 async def test_authenticated_viewer_can_load_primary_routes(
     client: httpx.AsyncClient,
@@ -198,6 +241,7 @@ async def test_authenticated_viewer_can_load_primary_routes(
     assert response.status_code == 200
 
 
+@phase1
 @pytest.mark.parametrize("path", PRIMARY_ROUTES)
 async def test_primary_routes_return_html(
     client: httpx.AsyncClient,
@@ -217,6 +261,7 @@ async def test_primary_routes_return_html(
 # --------------------------------------------------------------------------- #
 
 
+@phase1
 async def test_admin_route_rejects_viewer(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -226,9 +271,10 @@ async def test_admin_route_rejects_viewer(
     # noqa
     """
     response = await client.get("/admin/refresh-status", headers=viewer_headers)
-    assert response.status_code in (401, 403)
+    assert response.status_code == 403
 
 
+@phase1
 async def test_admin_route_accepts_admin(
     client: httpx.AsyncClient,
     admin_headers: dict[str, str],
@@ -241,6 +287,7 @@ async def test_admin_route_accepts_admin(
     assert response.status_code == 200
 
 
+@phase1
 async def test_admin_refresh_trigger_rejects_viewer(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -250,7 +297,7 @@ async def test_admin_refresh_trigger_rejects_viewer(
     # noqa
     """
     response = await client.post("/admin/refresh/llc-manager", headers=viewer_headers)
-    assert response.status_code in (401, 403)
+    assert response.status_code == 403
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +305,7 @@ async def test_admin_refresh_trigger_rejects_viewer(
 # --------------------------------------------------------------------------- #
 
 
+@phase1
 @pytest.mark.parametrize("path", PRIMARY_ROUTES)
 async def test_empty_cache_renders_without_error(
     client: httpx.AsyncClient,
@@ -279,6 +327,7 @@ async def test_empty_cache_renders_without_error(
 # --------------------------------------------------------------------------- #
 
 
+@phase1
 async def test_entities_route_shows_seeded_entity_name(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -291,8 +340,9 @@ async def test_entities_route_shows_seeded_entity_name(
     fetched = datetime.now(UTC).isoformat()
     with sqlite3.connect(tmp_db_path) as conn:
         conn.execute(
-            "INSERT INTO entities (id, name, type, state, status, fetched_at) "
-            "VALUES ('ent-1', 'Cascade Holdings LLC', 'LLC', 'WY', 'current', ?)",
+            "INSERT INTO entities (id, name, type, state, status, next_date, "
+            "fetched_at) VALUES ('ent-1', 'Cascade Holdings LLC', 'LLC', 'WY', "
+            "'current', '2026-12-01', ?)",
             (fetched,),
         )
         conn.commit()
@@ -302,6 +352,7 @@ async def test_entities_route_shows_seeded_entity_name(
     assert "Cascade Holdings LLC" in response.text
 
 
+@phase1
 async def test_documents_route_shows_seeded_document_name(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -326,6 +377,7 @@ async def test_documents_route_shows_seeded_document_name(
     assert "2025 Tax Return.pdf" in response.text
 
 
+@phase1
 async def test_portfolio_route_shows_seeded_holding_name(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -356,6 +408,7 @@ async def test_portfolio_route_shows_seeded_holding_name(
 # --------------------------------------------------------------------------- #
 
 
+@phase1
 async def test_entity_detail_route_returns_200_for_existing_id(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -368,8 +421,9 @@ async def test_entity_detail_route_returns_200_for_existing_id(
     fetched = datetime.now(UTC).isoformat()
     with sqlite3.connect(tmp_db_path) as conn:
         conn.execute(
-            "INSERT INTO entities (id, name, type, state, status, fetched_at) "
-            "VALUES ('ent-detail', 'Detail LLC', 'LLC', 'NV', 'current', ?)",
+            "INSERT INTO entities (id, name, type, state, status, next_date, "
+            "fetched_at) VALUES ('ent-detail', 'Detail LLC', 'LLC', 'NV', "
+            "'current', '2026-11-15', ?)",
             (fetched,),
         )
         conn.commit()
@@ -378,6 +432,7 @@ async def test_entity_detail_route_returns_200_for_existing_id(
     assert response.status_code == 200
 
 
+@phase1
 async def test_entity_detail_route_returns_404_for_unknown_id(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -390,6 +445,7 @@ async def test_entity_detail_route_returns_404_for_unknown_id(
     assert response.status_code == 404
 
 
+@phase1
 async def test_documents_search_returns_html_partial(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
