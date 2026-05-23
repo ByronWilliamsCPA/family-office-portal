@@ -240,9 +240,8 @@ jobs:
         with:
           sarif_file: reports/dependency-check-report.sarif
 
-  security-gate:
-    name: Security Gate Validation
-    runs-on: ubuntu-latest
+  security-analysis:
+    name: Security Analysis
     needs:
       - detect-changes
       - dependency-security
@@ -250,20 +249,9 @@ jobs:
       - osv-scanner
       - owasp-dependency-check
     if: always()
-    steps:
-      - name: Validate Security Results
-        run: |
-          is_acceptable() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
-          if is_acceptable "${{ needs.dependency-security.result }}" && \
-             is_acceptable "${{ needs.security-scanning.result }}" && \
-             is_acceptable "${{ needs.osv-scanner.result }}" && \
-             is_acceptable "${{ needs.owasp-dependency-check.result }}"; then
-            echo "Security gate passed"
-          else
-            echo "Security gate FAILED"
-            echo "dep-security: ${{ needs.dependency-security.result }}"
-            echo "scanning: ${{ needs.security-scanning.result }}"
-            echo "osv: ${{ needs.osv-scanner.result }}"
-            echo "owasp: ${{ needs.owasp-dependency-check.result }}"
-            exit 1
-          fi
+    uses: ./.github/workflows/_security-gate.yml
+    with:
+      dependency-security-result: ${{ needs.dependency-security.result }}
+      security-scanning-result: ${{ needs.security-scanning.result }}
+      osv-scanner-result: ${{ needs.osv-scanner.result }}
+      owasp-dependency-check-result: ${{ needs.owasp-dependency-check.result }}
