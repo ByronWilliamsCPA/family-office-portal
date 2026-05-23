@@ -46,3 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security: tightened `.github/workflows/ci.yml` workflow-level permissions from `pull-requests: write, checks: write` to `contents: read` only; no step in any of the four CI jobs uses the removed scopes
 - Security: added `step-security/harden-runner` (egress-policy: audit) to `.github/workflows/dependency-review.yml`, bringing it into line with every other major workflow in the repo
 - Security: upgraded transitive `urllib3` 2.6.3 -> 2.7.0 (via `uv lock --upgrade-package urllib3`), closing CVE-2026-44431 and CVE-2026-44432; `urllib3` is a dev-only dependency pulled in by `pip-audit` via `cachecontrol -> requests`
+- Security: upgraded transitive `idna` 3.13 -> 3.16 (via `uv lock --upgrade-package idna`), closing CVE-2026-45409; `idna` is pulled in by `requests` (dev) and `httpx` (runtime)
+- Security: upgraded transitive `starlette` 1.0.0 -> 1.0.1 (via `uv lock --upgrade-package starlette`), closing PYSEC-2026-161; `starlette` is a runtime dependency pulled in by `fastapi`
+- Security: added `step-security/harden-runner` to the `ci-gate` job in `.github/workflows/ci.yml` for consistent egress-audit coverage across every job in the workflow

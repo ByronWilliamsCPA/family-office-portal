@@ -154,6 +154,26 @@ Phase-1 commitments that future code must honor.
   Confirmed by re-running `uv run pip-audit --ignore-vuln PYSEC-2022-42969`:
   "No known vulnerabilities found, 1 ignored".
 
+### F-08 Transitive idna 3.13 and starlette 1.0.0 had open CVEs | **High**
+
+- **File**: `uv.lock` (transitive: `idna` via `requests` + `httpx`;
+  `starlette` via `fastapi`)
+- **Category**: A06 Vulnerable and Outdated Components
+- **Issue**: After F-07 landed, the next CI run surfaced two further
+  vulnerabilities newly added to the database:
+  - `idna 3.13` -- `CVE-2026-45409`, fixed in `3.15`. `idna` is pulled in
+    by both `requests` (dev, via `pip-audit`) and `httpx` (runtime; will
+    drive APScheduler refresh calls in Phase 1).
+  - `starlette 1.0.0` -- `PYSEC-2026-161`, fixed in `1.0.1`. `starlette`
+    is the ASGI framework underneath `fastapi`, a runtime dependency.
+  Neither has a Phase 0 attack path (no HTTP client and no app routes
+  yet), but both block the Multi-Tool Security Scan gate.
+- **Fix applied**: `uv lock --upgrade-package idna --upgrade-package starlette`
+  -> `idna 3.16`, `starlette 1.0.1`. Confirmed by re-running
+  `uv run pip-audit --ignore-vuln PYSEC-2022-42969`: "No known
+  vulnerabilities found, 1 ignored". Tests still pass (3 passed,
+  100% coverage on the placeholder package).
+
 ## OWASP Top 10 (2021) Coverage Summary
 
 | OWASP Item | Phase 0 Status | Phase 1 Gate |
