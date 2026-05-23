@@ -12,7 +12,7 @@
   "paths": {
     "/health": {
       "get": {
-        "description": "Return a static liveness indicator.\n\nReturns:\n    A dictionary with a single ``status`` key set to ``\"ok\"``.",
+        "description": "Return a static liveness indicator.\n\n``/health`` is the documented JSON exception to the project's\nHTML-only response rule; it exists for uptime probes, not user content.\n\nReturns:\n    A dictionary with a single ``status`` key set to ``\"ok\"``.",
         "operationId": "health_health_get",
         "responses": {
           "200": {

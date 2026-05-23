@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
 #
-# Lightweight Phase A security workflow: runs Bandit (static analysis) and
+# Lightweight Phase 0 security workflow: runs Bandit (static analysis) and
 # pip-audit (dependency CVE scan) on every pull request and every push to main.
 # The broader, change-aware security pipeline lives in security-analysis.yml.
 name: Security
@@ -23,15 +23,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  bandit:
-    name: Bandit (static analysis)
+  scan:
+    name: Bandit + pip-audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Harden the runner (Audit outbound calls)
+      - name: Harden the runner (block egress)
         uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            release-assets.githubusercontent.com:443
+            astral.sh:443
+            pyup.io:443
+            osv.dev:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -52,33 +62,6 @@ jobs:
 
       - name: Run Bandit
         run: uv run bandit -c pyproject.toml -r app
-
-  pip-audit:
-    name: pip-audit (dependency CVEs)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Harden the runner (Audit outbound calls)
-        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: '3.12'
-
-      - name: Install UV
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Install dependencies
-        run: uv sync --frozen --all-extras
 
       - name: Run pip-audit
         # PYSEC-2022-42969: ReDoS in py.path.svnwc; py 1.x is unmaintained and

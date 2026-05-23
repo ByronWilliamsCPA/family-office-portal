@@ -3,7 +3,7 @@
 """Export the FastAPI OpenAPI schema to ``docs/api/openapi.json``.
 
 Invoked manually after a route change and (later) from a CI workflow so the
-committed schema never drifts from the running application. Phase A only
+committed schema never drifts from the running application. Phase 0 only
 emits the ``/health`` operation; the schema grows as Phase 1 routes land.
 
 Usage:
@@ -17,16 +17,16 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from app import app  # noqa: E402  (sys.path bootstrap must run before import)
-
 OUTPUT_PATH = PROJECT_ROOT / "docs" / "api" / "openapi.json"
 
 
 def main() -> None:
     """Write the current FastAPI OpenAPI schema to ``docs/api/openapi.json``."""
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+
+    from app.main import app  # noqa: PLC0415  (sys.path bootstrap must precede import)
+
     schema = app.openapi()
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(

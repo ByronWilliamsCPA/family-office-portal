@@ -13,7 +13,7 @@ from http import HTTPStatus
 
 from httpx import ASGITransport, AsyncClient
 
-from app import app
+from app.main import app
 
 
 async def test_health_returns_ok() -> None:

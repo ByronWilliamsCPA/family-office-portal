@@ -164,6 +164,7 @@ branch = true
 source = ["app"]
 
 [tool.coverage.report]
+fail_under = 80
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
