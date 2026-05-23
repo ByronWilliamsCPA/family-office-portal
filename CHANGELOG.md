@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Phase 0 FastAPI application skeleton in `app/main.py`: title, description, version, contact, `CloudflareAccessMiddleware` registration, and a `GET /health` liveness probe returning `{"status": "ok"}`
+- Cloudflare Access middleware pass-through stub in `app/middleware/cloudflare_access.py` per ADR-002; full JWT validation deferred to Phase 1
+- Phase 0 health smoke test (`tests/test_health.py`) exercising the endpoint via httpx `ASGITransport`
+- Lightweight security workflow (`.github/workflows/security.yml`) running Bandit + pip-audit on every pull request and push to main, installed via uv, with hardened egress allowlist
+- OpenAPI schema export script (`scripts/export_openapi.py`) and committed placeholder (`docs/api/openapi.json`)
+- Coverage gate: `[tool.coverage.report] fail_under = 80` in `pyproject.toml`
 - Initial project scaffold: FastAPI application with Cloudflare Zero Trust auth
 - Pre-commit hooks: ruff, basedpyright, bandit, detect-secrets, interrogate, darglint, commitizen, yamllint, markdownlint, no-em-dash (SHA-pinned)
 - Foundation files: README, LICENSE, SECURITY, CODEOWNERS, CLAUDE.md, AGENTS.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, GOVERNANCE.md
@@ -31,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- urllib3 bumped 2.6.3 → 2.7.0 in `uv.lock` to resolve CVE-2026-44431 and CVE-2026-44432
 - CODEOWNERS moved from repo root to .github/CODEOWNERS
 - ADRs migrated from docs/planning/adr/ to docs/architecture/adr/
 - LICENSE: added SPDX-License-Identifier header

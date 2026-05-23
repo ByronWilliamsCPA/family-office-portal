@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 Byron Williams
+# SPDX-License-Identifier: MIT
+#
+# Lightweight Phase 0 security workflow: runs Bandit (static analysis) and
+# pip-audit (dependency CVE scan) on every pull request and every push to main.
+# The broader, change-aware security pipeline lives in security-analysis.yml.
+name: Security
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Bandit + pip-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden the runner (Audit outbound calls)
+        # `egress-policy: audit` matches the convention used by every other
+        # workflow in this repo (ci.yml, security-analysis.yml, sonarcloud.yml,
+        # etc.). Switching to `block` requires first capturing the runtime
+        # endpoints that uv/pip-audit/setup-python actually reach from a clean
+        # audit log; that work is tracked separately and is not in Phase 0
+        # scope.
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dev dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Run Bandit
+        run: uv run bandit -c pyproject.toml -r app
+
+      - name: Run pip-audit
+        # PYSEC-2022-42969: ReDoS in py.path.svnwc; py 1.x is unmaintained and
+        # has no fix. We pull `py` only as a transitive of `interrogate`, do
+        # not touch SVN, and document the deferral in
+        # docs/known-vulnerabilities.md.
+        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969

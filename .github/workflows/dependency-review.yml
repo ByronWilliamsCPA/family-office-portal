@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   dependency-review:
-    name: Dependency Review
+    name: Dependency & Standards Validation
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit outbound calls)
