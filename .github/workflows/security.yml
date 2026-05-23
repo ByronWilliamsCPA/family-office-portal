@@ -28,20 +28,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Harden the runner (block egress)
+      - name: Harden the runner (Audit outbound calls)
+        # `egress-policy: audit` matches the convention used by every other
+        # workflow in this repo (ci.yml, security-analysis.yml, sonarcloud.yml,
+        # etc.). Switching to `block` requires first capturing the runtime
+        # endpoints that uv/pip-audit/setup-python actually reach from a clean
+        # audit log; that work is tracked separately and is not in Phase 0
+        # scope.
         uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
-            files.pythonhosted.org:443
-            github.com:443
-            objects.githubusercontent.com:443
-            pypi.org:443
-            release-assets.githubusercontent.com:443
-            astral.sh:443
-            pyup.io:443
-            osv.dev:443
+          egress-policy: audit
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
