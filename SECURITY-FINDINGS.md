@@ -173,20 +173,23 @@ Phase-1 commitments that future code must honor.
 
 | Workflow | Pinned to SHA | `harden-runner` | Least-priv permissions |
 | --- | --- | --- | --- |
-| `ci.yml` | Yes | Yes (every job) | **Tightened in this PR** (was over-broad) |
+| `ci.yml` | Yes | Yes (every job, incl. `ci-gate` added in this PR) | **Tightened in this PR** (was over-broad) |
 | `coverage.yml` | Yes | Yes | Read-only |
 | `dependency-review.yml` | Yes | **Added in this PR** | `contents: read, pull-requests: write` (required for PR comment) |
 | `docs.yml` | Yes | Yes | `contents: read` |
-| `pr-validation.yml` | Yes (reusable workflow) | (inherited) | Job-level explicit |
-| `python-compatibility.yml` | Yes (reusable workflow) | (inherited) | `contents: read` |
-| `reuse.yml` | Yes (reusable workflow) | (inherited) | `contents: read` |
-| `scorecard.yml` | Yes (reusable workflow) | (inherited) | Job-level explicit |
+| `pr-validation.yml` | Yes (reusable workflow pinned to SHA) | Delegated to `ByronWilliamsCPA/.github` (not audited here) | Job-level explicit |
+| `python-compatibility.yml` | Yes (reusable workflow pinned to SHA) | Delegated to `ByronWilliamsCPA/.github` (not audited here) | `contents: read` |
+| `reuse.yml` | Yes (reusable workflow pinned to SHA) | Delegated to `ByronWilliamsCPA/.github` (not audited here) | `contents: read` |
+| `scorecard.yml` | Yes (reusable workflow pinned to SHA) | Delegated to `ByronWilliamsCPA/.github` (not audited here) | Job-level explicit |
 | `security-analysis.yml` | Yes | Yes (every job) | `read-all` at workflow, job-level overrides |
 | `sonarcloud.yml` | Yes | Yes | `contents: read, pull-requests: write` (needed by Sonar PR decoration) |
 
 No unpinned actions were found. No mutable-tag references (`@v1`, `@main`)
-remain. The OpenSSF Scorecard workflow already monitors and re-checks this
-posture weekly.
+remain. The four reusable workflow callers (`pr-validation`,
+`python-compatibility`, `reuse`, `scorecard`) delegate execution to
+workflows in `ByronWilliamsCPA/.github`; their internal hardening posture
+is outside the scope of this repository audit. The OpenSSF Scorecard
+workflow already monitors and re-checks the in-repo posture weekly.
 
 ## Changes Applied in This PR
 
