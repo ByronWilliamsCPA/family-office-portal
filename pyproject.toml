@@ -88,6 +88,10 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.per-file-ignores]
+# Standalone CLI helpers in scripts/ are intentionally not a package.
+"scripts/*.py" = ["INP001"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
@@ -110,9 +114,13 @@ strictSetInference = true
 
 # Targets are passed via CLI args in pre-commit and CI invocations
 # (`bandit -r app`); listing them here is redundant when bandit runs per-file.
+# Tests are excluded via `exclude_dirs` in this section, so the B101 (assert-in-production) check stays on
+# for `app/` -- assertions are stripped under `python -O` and must not be used
+# as security checks. Re-add B101 to `skips` only if a documented exception
+# applies.
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", ".worktrees"]
-skips = ["B101"]  # assert is acceptable in tests; production code blocks via ruff S101
+skips = []
 
 # ---------------------------------------------------------------------------
 # interrogate
@@ -156,6 +164,7 @@ branch = true
 source = ["app"]
 
 [tool.coverage.report]
+fail_under = 80
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",

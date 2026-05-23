@@ -14,8 +14,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -204,6 +202,11 @@ jobs:
     needs: [setup-optimized, test, quality-checks]
     if: always()
     steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
       - name: CI Gate
         run: |
           if [[ "${{ needs.setup-optimized.result }}" == "success" && \
