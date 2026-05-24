@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: TC003, PLC0415, PLR2004
+# ruff: noqa: TC003, PLC0415
 """Integration tests for portal route handlers.
 
 Spec contract (tech-spec §4 endpoint table + ``CLAUDE.md`` + ADR-002):

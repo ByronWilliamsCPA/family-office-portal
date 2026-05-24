@@ -31,7 +31,7 @@ def export() -> Path:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
 
-    from app.main import app  # noqa: PLC0415
+    from app.main import app
 
     schema: dict[str, Any] = app.openapi()
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

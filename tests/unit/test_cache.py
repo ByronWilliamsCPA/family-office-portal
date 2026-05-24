@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: PLR2004, PLR0913, TC003
+# ruff: noqa: PLR0913, TC003
 """Unit tests for ``app.cache``: async readers and staleness checker.
 
 Spec contract (``CLAUDE.md`` "Data layer rules" + tech-spec §3, §6):
