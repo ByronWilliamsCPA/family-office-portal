@@ -294,7 +294,7 @@ def test_validate_jwt_accepts_aud_as_json_array(
     validate = _resolve("validate_cf_jwt")
     token = jwt_factory(
         email="viewer@example.com",
-        aud=["test-app-id", "another-app-id"],  # type: ignore[arg-type]
+        aud=["test-app-id", "another-app-id"],
     )
     claims = validate(token)
     assert claims["email"] == "viewer@example.com"
