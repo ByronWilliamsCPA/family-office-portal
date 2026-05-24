@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: TC003, PLC0415
+# ruff: noqa: TC003, PLC0415  # app imports deferred to fixture body so collection works before Phase 1 modules exist
 """Shared pytest fixtures for the family office portal test suite.
 
 Fixtures here intentionally avoid importing ``app`` submodules at import time so
@@ -88,18 +88,23 @@ def jwt_factory(
         aud: str | list[str] = "test-app-id",
         exp: int | None = None,
         private_key: RSAPrivateKey | None = None,
+        claims: dict[str, Any] | None = None,
     ) -> str:
         """Mint a signed JWT.
+
+        Pass ``claims={"iss": "..."}`` to override the issuer or inject any
+        extra claim needed for negative middleware tests.
 
         # noqa
         """
         now = int(time.time())
-        claims: dict[str, Any] = {
+        base: dict[str, Any] = {
             "email": email,
             "aud": aud,
             "iss": "https://test-team.cloudflareaccess.com",
             "iat": now,
             "exp": exp if exp is not None else now + 3600,
+            **(claims or {}),
         }
         key = private_key if private_key is not None else default_private_key
         pem = key.private_bytes(
@@ -108,7 +113,7 @@ def jwt_factory(
             encryption_algorithm=serialization.NoEncryption(),
         )
         return pyjwt.encode(
-            claims, pem, algorithm="RS256", headers={"kid": "test-key-id"}
+            base, pem, algorithm="RS256", headers={"kid": "test-key-id"}
         )
 
     return _make

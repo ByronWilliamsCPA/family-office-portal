@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: TC003, ANN401
+# ruff: noqa: TC003, ANN401  # ANN401: **overrides: Any is intentional; TC003: importorskip refs can't go in TYPE_CHECKING block
 """Unit tests for ``app.cache``: async readers and staleness checker.
 
 Spec contract (``CLAUDE.md`` "Data layer rules" + tech-spec §3, §6):
@@ -72,7 +72,7 @@ _DOCUMENT_DEFAULTS: dict[str, Any] = {
 
 def _seed_entity(path: Path, **overrides: Any) -> None:
     row: dict[str, Any] = {**_ENTITY_DEFAULTS, **overrides}
-    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
+    fetched = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO entities (id, name, type, state, status, next_date, "
@@ -92,7 +92,7 @@ def _seed_entity(path: Path, **overrides: Any) -> None:
 
 def _seed_holding(path: Path, **overrides: Any) -> None:
     row: dict[str, Any] = {**_HOLDING_DEFAULTS, **overrides}
-    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
+    fetched = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO holdings (id, security_name, sector, current_value, "
@@ -111,7 +111,7 @@ def _seed_holding(path: Path, **overrides: Any) -> None:
 
 def _seed_position(path: Path, **overrides: Any) -> None:
     row: dict[str, Any] = {**_POSITION_DEFAULTS, **overrides}
-    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
+    fetched = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO positions (id, asset, quantity, usd_value, fetched_at) "
@@ -129,7 +129,7 @@ def _seed_position(path: Path, **overrides: Any) -> None:
 
 def _seed_document(path: Path, **overrides: Any) -> None:
     row: dict[str, Any] = {**_DOCUMENT_DEFAULTS, **overrides}
-    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
+    fetched = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO documents (id, name, category, added_at, proxy_url, "
