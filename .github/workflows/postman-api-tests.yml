@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: 2026 Byron Williams
+# SPDX-License-Identifier: MIT
+#
+# Newman (Postman CLI) contract tests against the Phase 0 stub API.
+#
+# Required GitHub Actions secrets for the FastAPI app to boot:
+#
+#   BACKEND_LLC_MANAGER_URL    Base URL of the llc-manager backend.
+#   BACKEND_PP_SECURITY_URL    Base URL of the pp-security-master backend.
+#   BACKEND_XERO_CRYPTO_URL    Base URL of the xero_crypto backend.
+#   BACKEND_FAMILY_OFFICE_URL  Base URL of the family_office backend.
+#   CF_TEAM_DOMAIN             Cloudflare Zero Trust team domain.
+#   CF_ACCESS_APP_ID           Cloudflare Access Application ID (JWT aud claim).
+#   VIEWER_EMAILS              Comma-separated viewer-role email addresses.
+#   ADMIN_EMAILS               Comma-separated admin-role email addresses.
+#   SQLITE_PATH                Filesystem path to the SQLite cache database.
+#
+# In this workflow the variables are seeded with harmless placeholder values
+# so that no real credentials are hardcoded. Override any of the above in the
+# repository's Actions secrets to point Newman at a non-stub environment.
+---
+name: Postman API Tests
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postman-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  newman:
+    name: Newman contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BACKEND_LLC_MANAGER_URL: ${{ secrets.BACKEND_LLC_MANAGER_URL || 'http://localhost:9001' }}
+      BACKEND_PP_SECURITY_URL: ${{ secrets.BACKEND_PP_SECURITY_URL || 'http://localhost:9002' }}
+      BACKEND_XERO_CRYPTO_URL: ${{ secrets.BACKEND_XERO_CRYPTO_URL || 'http://localhost:9003' }}
+      BACKEND_FAMILY_OFFICE_URL: ${{ secrets.BACKEND_FAMILY_OFFICE_URL || 'http://localhost:9004' }}
+      CF_TEAM_DOMAIN: ${{ secrets.CF_TEAM_DOMAIN || 'example.cloudflareaccess.com' }}
+      CF_ACCESS_APP_ID: ${{ secrets.CF_ACCESS_APP_ID || 'placeholder-app-id' }}
+      VIEWER_EMAILS: ${{ secrets.VIEWER_EMAILS || 'viewer@example.com' }}
+      ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS || 'admin@example.com' }}
+      SQLITE_PATH: ${{ secrets.SQLITE_PATH || '/tmp/portal.db' }}
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Set up Node.js (for Newman)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Install Newman
+        run: npm install --global newman@6.2.1
+
+      - name: Start FastAPI app in background
+        run: |
+          nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 \
+            > uvicorn.log 2>&1 &
+          echo $! > uvicorn.pid
+
+      - name: Wait for /health to respond (30s timeout)
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              echo "App is healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "App did not become healthy within 30s"
+          echo "--- uvicorn.log ---"
+          cat uvicorn.log || true
+          exit 1
+
+      - name: Run Newman
+        run: |
+          newman run docs/api/postman-collection.json \
+            --env-var baseUrl=http://127.0.0.1:8000 \
+            --reporters cli,junit \
+            --reporter-junit-export newman-report.xml \
+            --env-var apiKey=ci-placeholder  # pragma: allowlist secret
+
+      - name: Stop FastAPI app
+        if: always()
+        run: |
+          if [ -f uvicorn.pid ]; then
+            kill "$(cat uvicorn.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload Newman report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: newman-report
+          path: newman-report.xml
+          if-no-files-found: ignore

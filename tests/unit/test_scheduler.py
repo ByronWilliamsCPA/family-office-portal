@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: TC003, PLR2004, ANN401, ERA001
+# ruff: noqa: TC003, ANN401, ERA001
 """Unit tests for ``app.scheduler`` refresh jobs.
 
 Spec contract (``CLAUDE.md`` "Tech stack conventions" + tech-spec §4):

@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Copilot instructions file (.github/copilot-instructions.md)
 - sonar-project.properties for SonarCloud configuration
 - .codecov.yml for Codecov configuration
+- Route stubs for all five portal sections (home, documents, finances, portfolio, entities) plus admin refresh triggers and liveness probe; each endpoint returns the correct typed response or HTML placeholder
+- Pydantic response models for all typed endpoints: `HealthResponse`, `DocumentSearchResponse`, `RefreshStatusResponse`, `RefreshTriggerRequest`, `RefreshTriggerResponse` in `app/models.py`
+- OpenAPI enrichment: per-route `summary`, `status_code`, `responses`, and `tags` on every route decorator; app-level metadata (title, description, version, contact, license, tags) in the `FastAPI()` constructor
+- Postman collection generator script (`scripts/generate_postman.py`) that builds a Newman-compatible collection from the live OpenAPI schema
+- Committed Postman collection (`docs/api/postman-collection.json`) generated from the Phase 0 route stubs
+- Newman contract-testing CI workflow (`.github/workflows/postman-api-tests.yml`): starts the FastAPI app in background, waits for `/health`, runs Newman, uploads JUnit report as an artifact
+- Unit test suite (`tests/unit/test_routes.py`) covering all 15 Phase 0 route endpoints: status codes, content types, and JSON shapes; shared `client` fixture in `tests/conftest.py`
 
 ### Changed
 
@@ -56,3 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security: upgraded transitive `idna` 3.13 -> 3.16 (via `uv lock --upgrade-package idna`), closing CVE-2026-45409; `idna` is pulled in by `requests` (dev) and `httpx` (runtime)
 - Security: upgraded transitive `starlette` 1.0.0 -> 1.0.1 (via `uv lock --upgrade-package starlette`), closing PYSEC-2026-161; `starlette` is a runtime dependency pulled in by `fastapi`
 - Security: added `step-security/harden-runner` to the `ci-gate` job in `.github/workflows/ci.yml` for consistent egress-audit coverage across every job in the workflow
+- Security: added `step-security/harden-runner` to `.github/workflows/postman-api-tests.yml`; every CI job in the repo now has egress-audit coverage
+- Security: pinned `newman` to `6.2.1` (was `@6` range) in the Postman API tests workflow to prevent unintentional minor-version drift during CI
+- Removed PII (`email` claim `byronawilliams@gmail.com`) from the OpenAPI `contact` block in `app/main.py` and the committed `docs/api/openapi.json`

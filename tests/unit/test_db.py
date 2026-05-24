@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: PLR2004, TC003
+# ruff: noqa: TC003
 """Unit tests for ``app.db``: SQLite connection factory and schema initialization.
 
 Spec contract (from ``docs/planning/tech-spec.md`` §3 and ``CLAUDE.md``):

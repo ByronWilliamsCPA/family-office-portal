@@ -3,9 +3,9 @@
 # ruff: noqa: PLC0415
 """Health endpoint smoke test.
 
-Verifies the Phase 0 liveness probe returns HTTP 200 with the canonical
-``{"status": "ok"}`` payload. Acts as the first integration test that exercises
-the FastAPI app, Cloudflare Access middleware stub, and ASGI plumbing end to end.
+Verifies the Phase 0 liveness probe returns HTTP 200 with status and service
+name. Acts as the first integration test that exercises the FastAPI app,
+Cloudflare Access middleware stub, and ASGI plumbing end to end.
 
 ``app.main`` is fail-fast on missing env vars, so it is imported inside the
 test body after ``cf_env`` populates the environment -- not at module level.
@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 
 async def test_health_returns_ok(cf_env: dict[str, str]) -> None:
-    """GET /health must return 200 and ``{"status": "ok"}``.
+    """GET /health must return 200 with status and service name.
 
     Args:
         cf_env: Fixture that populates required env vars before app import.
@@ -34,4 +34,4 @@ async def test_health_returns_ok(cf_env: dict[str, str]) -> None:
         response = await client.get("/health")
 
     assert response.status_code == HTTPStatus.OK
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "service": "family-office-portal"}

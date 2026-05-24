@@ -89,8 +89,24 @@ ignore = [
 known-first-party = ["app"]
 
 [tool.ruff.lint.per-file-ignores]
-# Standalone CLI helpers in scripts/ are intentionally not a package.
-"scripts/*.py" = ["INP001"]
+# Build/maintenance scripts: standalone CLI helpers not in the app package;
+# allow CLI prints, Any-typed JSON traversal, late imports (sys.path
+# adjustment must precede ``app`` import), and the higher branch/return
+# counts inherent to recursive schema walking.
+"scripts/*" = [
+    "INP001",    # not a package member
+    "T201",      # print() is the script's user-facing output
+    "PLC0415",   # late imports needed for sys.path manipulation
+    "PLR0911",   # JSON walker naturally has many return branches
+    "PLR0912",   # JSON walker naturally has many branches
+    "PLR2004",   # depth caps and small magic numbers are clearer inline
+    "ANN401",    # JSON values are by definition Any
+    "FBT001",    # script-internal helpers, not a public API
+]
+"tests/*" = [
+    "PLR2004",   # HTTP status codes are clearer as literals in assertions
+    "S101",      # assert is the standard pytest assertion mechanism
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -107,6 +123,17 @@ typeCheckingMode = "strict"
 strictListInference = true
 strictDictionaryInference = true
 strictSetInference = true
+# Restrict strict type checking to the runtime ``app`` package.
+#   - ``scripts`` walks arbitrary JSON, where unknown-typed dict traversal
+#     is unavoidable under strict mode.
+#   - ``tests`` use pytest fixtures and httpx async patterns that pull in
+#     dynamically-typed objects; strict mode adds noise without surfacing
+#     real defects. Revisit if test helpers grow non-trivial logic.
+# ``include`` already scopes the run, but listing ``exclude`` explicitly
+# documents intent and guards against future config that broadens
+# ``include`` without revisiting these scopes.
+include = ["app"]
+exclude = ["scripts", "tests", ".venv", ".worktrees"]
 
 # ---------------------------------------------------------------------------
 # Bandit
@@ -149,6 +176,7 @@ exclude = ["tests", ".venv", ".worktrees"]
 [tool.darglint]
 docstring_style = "google"
 strictness = "short"
+ignore_regex = "^test_"
 
 # ---------------------------------------------------------------------------
 # pytest
