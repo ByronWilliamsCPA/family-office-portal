@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, status
 
 from app.models import (
@@ -18,7 +20,6 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 @router.get(
     "/refresh-status",
     summary="Per-service refresh log",
-    response_model=RefreshStatusResponse,
     status_code=status.HTTP_200_OK,
 )
 async def refresh_status() -> RefreshStatusResponse:
@@ -36,12 +37,11 @@ async def refresh_status() -> RefreshStatusResponse:
 @router.post(
     "/refresh/{service}",
     summary="Trigger a manual refresh",
-    response_model=RefreshTriggerResponse,
     status_code=status.HTTP_202_ACCEPTED,
     responses={422: {"description": "Validation error"}},
 )
 async def trigger_refresh(
-    service: str,
+    service: Literal["entities", "holdings", "positions", "documents"],
     body: RefreshTriggerRequest,
 ) -> RefreshTriggerResponse:
     """Enqueue an out-of-band refresh for the named backend service.

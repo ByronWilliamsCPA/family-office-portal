@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Query, status
 from fastapi.responses import HTMLResponse, Response
 
@@ -34,11 +36,10 @@ async def documents_index() -> HTMLResponse:
 @router.get(
     "/search",
     summary="Search documents by name",
-    response_model=DocumentSearchResponse,
     status_code=status.HTTP_200_OK,
 )
 async def documents_search(
-    q: str = Query(..., min_length=1, description="Free-text search query."),
+    q: Annotated[str, Query(min_length=1, description="Free-text search query.")],
 ) -> DocumentSearchResponse:
     """Return documents whose name matches ``q``.
 
