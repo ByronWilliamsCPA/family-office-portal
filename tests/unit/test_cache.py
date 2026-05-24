@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: PLR0913, TC003
+# ruff: noqa: TC003, ANN401
 """Unit tests for ``app.cache``: async readers and staleness checker.
 
 Spec contract (``CLAUDE.md`` "Data layer rules" + tech-spec §3, §6):
@@ -22,6 +22,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from freezegun import freeze_time
@@ -35,105 +36,112 @@ db = pytest.importorskip("app.db")
 # --------------------------------------------------------------------------- #
 
 
-def _seed_entity(
-    path: Path,
-    *,
-    entity_id: str = "ent-1",
-    name: str = "Estate Holdings LLC",
-    entity_type: str = "LLC",
-    state: str = "WY",
-    status: str = "current",
-    next_date: str = "2026-12-01",
-    fetched_at: str | None = None,
-) -> None:
-    """Insert one row into the entities table.
+_ENTITY_DEFAULTS: dict[str, Any] = {
+    "entity_id": "ent-1",
+    "name": "Estate Holdings LLC",
+    "entity_type": "LLC",
+    "state": "WY",
+    "status": "current",
+    "next_date": "2026-12-01",
+    "fetched_at": None,
+}
+_HOLDING_DEFAULTS: dict[str, Any] = {
+    "holding_id": "hold-1",
+    "security_name": "Apple Inc.",
+    "sector": "Technology",
+    "current_value": 100_000.0,
+    "allocation_pct": 12.5,
+    "fetched_at": None,
+}
+_POSITION_DEFAULTS: dict[str, Any] = {
+    "position_id": "pos-1",
+    "asset": "BTC",
+    "quantity": 1.5,
+    "usd_value": 90_000.0,
+    "fetched_at": None,
+}
+_DOCUMENT_DEFAULTS: dict[str, Any] = {
+    "doc_id": "doc-1",
+    "name": "2025 Tax Return.pdf",
+    "category": "Tax Returns",
+    "added_at": "2026-04-15T00:00:00",
+    "proxy_url": "/documents/doc-1/download",
+    "fetched_at": None,
+}
 
-    # noqa
-    """
-    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
+
+def _seed_entity(path: Path, **overrides: Any) -> None:
+    row: dict[str, Any] = {**_ENTITY_DEFAULTS, **overrides}
+    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO entities (id, name, type, state, status, next_date, "
             "fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (entity_id, name, entity_type, state, status, next_date, fetched),
-        )
-        conn.commit()
-
-
-def _seed_holding(
-    path: Path,
-    *,
-    holding_id: str = "hold-1",
-    security_name: str = "Apple Inc.",
-    sector: str = "Technology",
-    current_value: float = 100_000.0,
-    allocation_pct: float = 12.5,
-    fetched_at: str | None = None,
-) -> None:
-    """Insert one row into the holdings table.
-
-    # noqa
-    """
-    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
-    with sqlite3.connect(path) as conn:
-        conn.execute(
-            "INSERT INTO holdings (id, security_name, sector, current_value, "
-            "allocation_pct, fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
             (
-                holding_id,
-                security_name,
-                sector,
-                current_value,
-                allocation_pct,
+                row["entity_id"],
+                row["name"],
+                row["entity_type"],
+                row["state"],
+                row["status"],
+                row["next_date"],
                 fetched,
             ),
         )
         conn.commit()
 
 
-def _seed_position(
-    path: Path,
-    *,
-    position_id: str = "pos-1",
-    asset: str = "BTC",
-    quantity: float = 1.5,
-    usd_value: float = 90_000.0,
-    fetched_at: str | None = None,
-) -> None:
-    """Insert one row into the positions table.
-
-    # noqa
-    """
-    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
+def _seed_holding(path: Path, **overrides: Any) -> None:
+    row: dict[str, Any] = {**_HOLDING_DEFAULTS, **overrides}
+    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
-            "INSERT INTO positions (id, asset, quantity, usd_value, fetched_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (position_id, asset, quantity, usd_value, fetched),
+            "INSERT INTO holdings (id, security_name, sector, current_value, "
+            "allocation_pct, fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                row["holding_id"],
+                row["security_name"],
+                row["sector"],
+                row["current_value"],
+                row["allocation_pct"],
+                fetched,
+            ),
         )
         conn.commit()
 
 
-def _seed_document(
-    path: Path,
-    *,
-    doc_id: str = "doc-1",
-    name: str = "2025 Tax Return.pdf",
-    category: str = "Tax Returns",
-    added_at: str = "2026-04-15T00:00:00",
-    proxy_url: str = "/documents/doc-1/download",
-    fetched_at: str | None = None,
-) -> None:
-    """Insert one row into the documents table.
+def _seed_position(path: Path, **overrides: Any) -> None:
+    row: dict[str, Any] = {**_POSITION_DEFAULTS, **overrides}
+    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO positions (id, asset, quantity, usd_value, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                row["position_id"],
+                row["asset"],
+                row["quantity"],
+                row["usd_value"],
+                fetched,
+            ),
+        )
+        conn.commit()
 
-    # noqa
-    """
-    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
+
+def _seed_document(path: Path, **overrides: Any) -> None:
+    row: dict[str, Any] = {**_DOCUMENT_DEFAULTS, **overrides}
+    fetched: str = row["fetched_at"] or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO documents (id, name, category, added_at, proxy_url, "
             "fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (doc_id, name, category, added_at, proxy_url, fetched),
+            (
+                row["doc_id"],
+                row["name"],
+                row["category"],
+                row["added_at"],
+                row["proxy_url"],
+                fetched,
+            ),
         )
         conn.commit()
 
@@ -143,10 +151,7 @@ def initialized_db(
     tmp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
-    """Create a fresh schema and point the cache module at it via env var.
-
-    # noqa
-    """
+    """Create a fresh schema and point the cache module at it via env var."""
     monkeypatch.setenv("SQLITE_PATH", str(tmp_db_path))
     db.init_schema(str(tmp_db_path))
     return tmp_db_path
@@ -160,19 +165,13 @@ def initialized_db(
 async def test_get_entities_returns_empty_list_when_no_rows(
     initialized_db: Path,
 ) -> None:
-    """An empty entities table yields no rows.
-
-    # noqa
-    """
+    """An empty entities table yields no rows."""
     rows = await cache.get_entities()
     assert list(rows) == []
 
 
 async def test_get_entities_returns_seeded_row(initialized_db: Path) -> None:
-    """A single seeded entity round-trips through the reader.
-
-    # noqa
-    """
+    """A single seeded entity round-trips through the reader."""
     _seed_entity(initialized_db, name="Family Trust", entity_type="Trust")
     rows = list(await cache.get_entities())
     assert len(rows) == 1
@@ -181,10 +180,7 @@ async def test_get_entities_returns_seeded_row(initialized_db: Path) -> None:
 
 
 async def test_get_entities_returns_all_seeded_rows(initialized_db: Path) -> None:
-    """Multiple seeded entities all appear in the reader output.
-
-    # noqa
-    """
+    """Multiple seeded entities all appear in the reader output."""
     _seed_entity(initialized_db, entity_id="ent-1", name="LLC One")
     _seed_entity(initialized_db, entity_id="ent-2", name="LLC Two")
     rows = list(await cache.get_entities())
@@ -199,19 +195,13 @@ async def test_get_entities_returns_all_seeded_rows(initialized_db: Path) -> Non
 async def test_get_holdings_returns_empty_list_when_no_rows(
     initialized_db: Path,
 ) -> None:
-    """An empty holdings table yields no rows.
-
-    # noqa
-    """
+    """An empty holdings table yields no rows."""
     rows = await cache.get_holdings()
     assert list(rows) == []
 
 
 async def test_get_holdings_returns_seeded_row(initialized_db: Path) -> None:
-    """A single seeded holding round-trips through the reader.
-
-    # noqa
-    """
+    """A single seeded holding round-trips through the reader."""
     _seed_holding(initialized_db, security_name="Vanguard Total Stock Market")
     rows = list(await cache.get_holdings())
     assert len(rows) == 1
@@ -226,19 +216,13 @@ async def test_get_holdings_returns_seeded_row(initialized_db: Path) -> None:
 async def test_get_positions_returns_empty_list_when_no_rows(
     initialized_db: Path,
 ) -> None:
-    """An empty positions table yields no rows.
-
-    # noqa
-    """
+    """An empty positions table yields no rows."""
     rows = await cache.get_positions()
     assert list(rows) == []
 
 
 async def test_get_positions_returns_seeded_row(initialized_db: Path) -> None:
-    """A single seeded crypto position round-trips through the reader.
-
-    # noqa
-    """
+    """A single seeded crypto position round-trips through the reader."""
     _seed_position(initialized_db, asset="ETH", quantity=10.0, usd_value=30_000.0)
     rows = list(await cache.get_positions())
     assert len(rows) == 1
@@ -260,8 +244,6 @@ async def test_get_performance_round_trips_seeded_rows(
     Phase 1 may expose this either as ``cache.get_performance()`` or fold it
     into ``get_holdings`` -- the test skips if the dedicated reader isn't
     present. #ASSUME
-
-    # noqa
     """
     if not hasattr(cache, "get_performance"):
         pytest.skip(
@@ -291,19 +273,13 @@ async def test_get_performance_round_trips_seeded_rows(
 async def test_get_documents_returns_empty_list_when_no_rows(
     initialized_db: Path,
 ) -> None:
-    """An empty documents table yields no rows.
-
-    # noqa
-    """
+    """An empty documents table yields no rows."""
     rows = await cache.get_documents()
     assert list(rows) == []
 
 
 async def test_get_documents_returns_seeded_row(initialized_db: Path) -> None:
-    """A single seeded document round-trips through the reader.
-
-    # noqa
-    """
+    """A single seeded document round-trips through the reader."""
     _seed_document(initialized_db, name="Trust Agreement.pdf", category="Trusts")
     rows = list(await cache.get_documents())
     assert len(rows) == 1
@@ -315,18 +291,12 @@ async def test_get_documents_returns_seeded_row(initialized_db: Path) -> None:
 
 
 async def test_is_stale_true_for_empty_dataset(initialized_db: Path) -> None:
-    """An empty dataset must be reported as stale (never refreshed).
-
-    # noqa
-    """
+    """An empty dataset must be reported as stale (never refreshed)."""
     assert await cache.is_stale("entities", threshold_hours=8) is True
 
 
 async def test_is_stale_false_for_fresh_data(initialized_db: Path) -> None:
-    """Data fetched moments ago is not stale.
-
-    # noqa
-    """
+    """Data fetched moments ago is not stale."""
     fresh = datetime.now(timezone.utc).isoformat()
     _seed_entity(initialized_db, fetched_at=fresh)
     assert await cache.is_stale("entities", threshold_hours=8) is False
@@ -335,10 +305,7 @@ async def test_is_stale_false_for_fresh_data(initialized_db: Path) -> None:
 async def test_is_stale_true_for_data_older_than_threshold(
     initialized_db: Path,
 ) -> None:
-    """Data fetched longer ago than the threshold is reported stale.
-
-    # noqa
-    """
+    """Data fetched longer ago than the threshold is reported stale."""
     old = (datetime.now(timezone.utc) - timedelta(hours=9)).isoformat()
     _seed_entity(initialized_db, fetched_at=old)
     assert await cache.is_stale("entities", threshold_hours=8) is True
@@ -351,8 +318,6 @@ async def test_is_stale_just_under_threshold_is_fresh(
 
     Time is frozen so the comparison is exact -- catches off-by-one
     implementations that use ``>=`` vs ``>``.
-
-    # noqa
     """
     frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
     just_under = (frozen_now - timedelta(hours=8) + timedelta(seconds=1)).isoformat()
@@ -368,8 +333,6 @@ async def test_is_stale_just_over_threshold_is_stale(
 
     Time is frozen so the comparison is exact -- catches off-by-one
     implementations.
-
-    # noqa
     """
     frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
     just_over = (frozen_now - timedelta(hours=8) - timedelta(seconds=1)).isoformat()
@@ -379,10 +342,7 @@ async def test_is_stale_just_over_threshold_is_stale(
 
 
 async def test_is_stale_uses_most_recent_fetched_at(initialized_db: Path) -> None:
-    """Staleness is computed from the most recent fetched_at, not the oldest.
-
-    # noqa
-    """
+    """Staleness is computed from the most recent fetched_at, not the oldest."""
     old = (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
     fresh = datetime.now(timezone.utc).isoformat()
     _seed_entity(initialized_db, entity_id="ent-old", fetched_at=old)
@@ -391,30 +351,21 @@ async def test_is_stale_uses_most_recent_fetched_at(initialized_db: Path) -> Non
 
 
 async def test_is_stale_holdings_threshold(initialized_db: Path) -> None:
-    """Holdings threshold per spec is 4 hours.
-
-    # noqa
-    """
+    """Holdings threshold per spec is 4 hours."""
     five_hours = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
     _seed_holding(initialized_db, fetched_at=five_hours)
     assert await cache.is_stale("holdings", threshold_hours=4) is True
 
 
 async def test_is_stale_positions_threshold(initialized_db: Path) -> None:
-    """Positions threshold per spec is 4 hours.
-
-    # noqa
-    """
+    """Positions threshold per spec is 4 hours."""
     fresh = datetime.now(timezone.utc).isoformat()
     _seed_position(initialized_db, fetched_at=fresh)
     assert await cache.is_stale("positions", threshold_hours=4) is False
 
 
 async def test_is_stale_documents_threshold(initialized_db: Path) -> None:
-    """Documents threshold per spec is 24 hours.
-
-    # noqa
-    """
+    """Documents threshold per spec is 24 hours."""
     twelve_hours = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
     _seed_document(initialized_db, fetched_at=twelve_hours)
     assert await cache.is_stale("documents", threshold_hours=24) is False
