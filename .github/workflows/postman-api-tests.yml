@@ -51,6 +51,11 @@ jobs:
       SQLITE_PATH: ${{ secrets.SQLITE_PATH || '/tmp/portal.db' }}
 
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -74,7 +79,7 @@ jobs:
           node-version: '20'
 
       - name: Install Newman
-        run: npm install --global newman@6
+        run: npm install --global newman@6.2.1
 
       - name: Start FastAPI app in background
         run: |
@@ -100,9 +105,9 @@ jobs:
         run: |
           newman run docs/api/postman-collection.json \
             --env-var baseUrl=http://127.0.0.1:8000 \
-            --env-var apiKey=ci-placeholder \
             --reporters cli,junit \
-            --reporter-junit-export newman-report.xml
+            --reporter-junit-export newman-report.xml \
+            --env-var apiKey=ci-placeholder  # pragma: allowlist secret
 
       - name: Stop FastAPI app
         if: always()
