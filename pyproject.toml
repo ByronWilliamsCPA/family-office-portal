@@ -199,3 +199,13 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
 ]
+
+# ---------------------------------------------------------------------------
+# pip-audit
+# ---------------------------------------------------------------------------
+# Each entry paired with a dated entry in docs/known-vulnerabilities.md.
+
+[tool.pip-audit]
+ignore-vuln = [
+    "PYSEC-2022-42969",   # py==1.11.0 ReDoS; transitive via interrogate; no fix available
+]
