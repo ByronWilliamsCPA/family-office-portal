@@ -20,7 +20,7 @@ the project already does so in existing tests" -- per the task brief, and
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -50,7 +50,7 @@ def _seed_entity(
 
     # noqa
     """
-    fetched = fetched_at or datetime.now(UTC).isoformat()
+    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO entities (id, name, type, state, status, next_date, "
@@ -74,7 +74,7 @@ def _seed_holding(
 
     # noqa
     """
-    fetched = fetched_at or datetime.now(UTC).isoformat()
+    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO holdings (id, security_name, sector, current_value, "
@@ -104,7 +104,7 @@ def _seed_position(
 
     # noqa
     """
-    fetched = fetched_at or datetime.now(UTC).isoformat()
+    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO positions (id, asset, quantity, usd_value, fetched_at) "
@@ -128,7 +128,7 @@ def _seed_document(
 
     # noqa
     """
-    fetched = fetched_at or datetime.now(UTC).isoformat()
+    fetched = fetched_at or datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO documents (id, name, category, added_at, proxy_url, "
@@ -269,7 +269,7 @@ async def test_get_performance_round_trips_seeded_rows(
             "returned alongside holdings -- verify in Phase 1."
         )
 
-    fetched = datetime.now(UTC).isoformat()
+    fetched = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(initialized_db) as conn:
         conn.execute(
             "INSERT INTO performance (date, total_value, benchmark, fetched_at) "
@@ -327,7 +327,7 @@ async def test_is_stale_false_for_fresh_data(initialized_db: Path) -> None:
 
     # noqa
     """
-    fresh = datetime.now(UTC).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
     _seed_entity(initialized_db, fetched_at=fresh)
     assert await cache.is_stale("entities", threshold_hours=8) is False
 
@@ -339,7 +339,7 @@ async def test_is_stale_true_for_data_older_than_threshold(
 
     # noqa
     """
-    old = (datetime.now(UTC) - timedelta(hours=9)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(hours=9)).isoformat()
     _seed_entity(initialized_db, fetched_at=old)
     assert await cache.is_stale("entities", threshold_hours=8) is True
 
@@ -354,7 +354,7 @@ async def test_is_stale_just_under_threshold_is_fresh(
 
     # noqa
     """
-    frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
     just_under = (frozen_now - timedelta(hours=8) + timedelta(seconds=1)).isoformat()
     _seed_entity(initialized_db, fetched_at=just_under)
     with freeze_time(frozen_now):
@@ -371,7 +371,7 @@ async def test_is_stale_just_over_threshold_is_stale(
 
     # noqa
     """
-    frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    frozen_now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
     just_over = (frozen_now - timedelta(hours=8) - timedelta(seconds=1)).isoformat()
     _seed_entity(initialized_db, fetched_at=just_over)
     with freeze_time(frozen_now):
@@ -383,8 +383,8 @@ async def test_is_stale_uses_most_recent_fetched_at(initialized_db: Path) -> Non
 
     # noqa
     """
-    old = (datetime.now(UTC) - timedelta(hours=10)).isoformat()
-    fresh = datetime.now(UTC).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
     _seed_entity(initialized_db, entity_id="ent-old", fetched_at=old)
     _seed_entity(initialized_db, entity_id="ent-new", fetched_at=fresh)
     assert await cache.is_stale("entities", threshold_hours=8) is False
@@ -395,7 +395,7 @@ async def test_is_stale_holdings_threshold(initialized_db: Path) -> None:
 
     # noqa
     """
-    five_hours = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    five_hours = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
     _seed_holding(initialized_db, fetched_at=five_hours)
     assert await cache.is_stale("holdings", threshold_hours=4) is True
 
@@ -405,7 +405,7 @@ async def test_is_stale_positions_threshold(initialized_db: Path) -> None:
 
     # noqa
     """
-    fresh = datetime.now(UTC).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
     _seed_position(initialized_db, fetched_at=fresh)
     assert await cache.is_stale("positions", threshold_hours=4) is False
 
@@ -415,6 +415,6 @@ async def test_is_stale_documents_threshold(initialized_db: Path) -> None:
 
     # noqa
     """
-    twelve_hours = (datetime.now(UTC) - timedelta(hours=12)).isoformat()
+    twelve_hours = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
     _seed_document(initialized_db, fetched_at=twelve_hours)
     assert await cache.is_stale("documents", threshold_hours=24) is False

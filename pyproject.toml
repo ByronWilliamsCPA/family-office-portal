@@ -106,6 +106,7 @@ known-first-party = ["app"]
 "tests/*" = [
     "PLR2004",   # HTTP status codes are clearer as literals in assertions
     "S101",      # assert is the standard pytest assertion mechanism
+    "UP017",     # tests run on Python 3.10; datetime.UTC requires 3.11+
 ]
 
 [tool.ruff.format]

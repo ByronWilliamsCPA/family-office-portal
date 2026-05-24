@@ -25,7 +25,7 @@ import importlib
 import importlib.util
 import sqlite3
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -337,7 +337,7 @@ async def test_entities_route_shows_seeded_entity_name(
 
     # noqa
     """
-    fetched = datetime.now(UTC).isoformat()
+    fetched = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(tmp_db_path) as conn:
         conn.execute(
             "INSERT INTO entities (id, name, type, state, status, next_date, "
@@ -362,7 +362,7 @@ async def test_documents_route_shows_seeded_document_name(
 
     # noqa
     """
-    fetched = datetime.now(UTC).isoformat()
+    fetched = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(tmp_db_path) as conn:
         conn.execute(
             "INSERT INTO documents (id, name, category, added_at, proxy_url, "
@@ -387,7 +387,7 @@ async def test_portfolio_route_shows_seeded_holding_name(
 
     # noqa
     """
-    fetched = datetime.now(UTC).isoformat()
+    fetched = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(tmp_db_path) as conn:
         conn.execute(
             "INSERT INTO holdings (id, security_name, sector, current_value, "
@@ -418,7 +418,7 @@ async def test_entity_detail_route_returns_200_for_existing_id(
 
     # noqa
     """
-    fetched = datetime.now(UTC).isoformat()
+    fetched = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(tmp_db_path) as conn:
         conn.execute(
             "INSERT INTO entities (id, name, type, state, status, next_date, "
