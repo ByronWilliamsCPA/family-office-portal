@@ -11,16 +11,10 @@ on top of this baseline.
 
 from __future__ import annotations
 
-import pytest
-from httpx import ASGITransport, AsyncClient
+from typing import TYPE_CHECKING
 
-from app.main import app
-
-
-@pytest.fixture
-def client() -> AsyncClient:
-    """Return an HTTPX client wired to the FastAPI app via ASGI transport."""
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+if TYPE_CHECKING:
+    from httpx import AsyncClient
 
 
 async def test_health_returns_ok(client: AsyncClient) -> None:

@@ -11,11 +11,13 @@ Each test file that depends on a not-yet-written module uses
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+import importlib
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import (
@@ -143,3 +145,25 @@ def cf_env(
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     yield env
+
+
+@pytest.fixture
+async def client(cf_env: dict[str, str]) -> AsyncIterator[AsyncClient]:
+    """Yield an HTTPX async client wired to the FastAPI app via ASGI transport.
+
+    Depends on ``cf_env`` so the required env vars are populated before
+    ``app.main`` is imported (the module exits immediately if any are absent).
+    Uses ``importlib.reload`` so tests that run after ``cf_env`` has already
+    cached the module in ``sys.modules`` see the env-patched version.
+
+    Args:
+        cf_env: Fixture that sets the nine required env vars via monkeypatch.
+
+    Yields:
+        AsyncClient: HTTPX async client ready to make requests against the app.
+    """
+    del cf_env
+    import app.main as _main
+
+    importlib.reload(_main)
+    yield AsyncClient(transport=ASGITransport(app=_main.app), base_url="http://test")

@@ -176,6 +176,7 @@ exclude = ["tests", ".venv", ".worktrees"]
 [tool.darglint]
 docstring_style = "google"
 strictness = "short"
+ignore_regex = "^test_"
 
 # ---------------------------------------------------------------------------
 # pytest
