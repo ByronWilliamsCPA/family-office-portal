@@ -180,7 +180,7 @@ def admin_headers(jwt_factory: Callable[..., str]) -> dict[str, str]:
 async def test_health_endpoint_is_public(
     client: httpx.AsyncClient,
 ) -> None:
-    """``/health`` returns 200 with ``{"status": "ok"}`` and bypasses CF JWT.
+    """``/health`` returns 200 with status and service fields, and bypasses CF JWT.
 
     Uptime-probe endpoint, documented JSON exception to the HTML-only rule.
 
@@ -188,7 +188,7 @@ async def test_health_endpoint_is_public(
     """
     response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "service": "family-office-portal"}
 
 
 # --------------------------------------------------------------------------- #
