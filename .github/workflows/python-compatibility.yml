@@ -13,15 +13,16 @@ permissions:
 jobs:
   compatibility:
     name: Compatibility Matrix
-    # Permissions are inherited from this workflow-level block by the reusable workflow call below.
+    # The workflow-level permissions block above applies to this caller workflow only.
+    # Reusable workflows run under the permissions defined in their own workflow file, not those of the caller.
     uses: ByronWilliamsCPA/.github/.github/workflows/python-compatibility.yml@e753ebbf3c2fac40177495137391f2a45adab93a  # main 2026-05-07
     with:
-      python-versions: '["3.12"]'
+      python-versions: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
       operating-systems: '["ubuntu-latest"]'
       include-windows: false
       include-macos: false
       source-directory: 'app'
-      test-command: 'uv run pytest -v'
+      test-command: 'uv run --frozen pytest -v'
       coverage-report: true
       fail-fast: false
     permissions:

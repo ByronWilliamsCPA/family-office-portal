@@ -12,9 +12,6 @@ on:
       - main
       - develop
 
-permissions:
-  contents: read
-
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -27,6 +24,8 @@ jobs:
     name: Setup with UV Caching
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     outputs:
       uv-hash: ${{ steps.cache-key.outputs.uv-hash }}
     steps:
@@ -64,11 +63,11 @@ jobs:
             py-deps-${{ runner.os }}-
 
       - name: Install dependencies
-        run: uv sync --frozen --all-extras
+        run: uv sync --frozen --all-extras --no-build
 
       - name: Dependency validation
         run: |
-          uv run python -c "
+          uv run --frozen --no-build python -c "
           import sys
           required_deps = ['fastapi', 'structlog']
           for dep in required_deps:
@@ -87,9 +86,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: setup-optimized
+    permissions:
+      contents: read
     strategy:
       matrix:
-        python-version: ["3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
       fail-fast: false
 
     steps:
@@ -122,11 +123,11 @@ jobs:
             py-deps-${{ runner.os }}-
 
       - name: Install dependencies
-        run: uv sync --frozen --all-extras
+        run: uv sync --frozen --all-extras --no-build
 
       - name: Run test suite
         run: |
-          uv run pytest -v \
+          uv run --frozen pytest -v \
             --cov=app \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
@@ -155,6 +156,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     needs: setup-optimized
+    permissions:
+      contents: read
     steps:
       - name: Harden the runner (Audit outbound calls)
         uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
@@ -185,21 +188,22 @@ jobs:
             py-deps-${{ runner.os }}-
 
       - name: Install dependencies
-        run: uv sync --frozen --all-extras
+        run: uv sync --frozen --all-extras --no-build
 
       - name: Type checking with BasedPyright
-        run: uv run basedpyright app
+        run: uv run --frozen --no-build basedpyright app
 
       - name: Code formatting validation
-        run: uv run ruff format --check
+        run: uv run --frozen --no-build ruff format --check
 
       - name: Linting with enhanced rules
-        run: uv run ruff check . --config=pyproject.toml
+        run: uv run --frozen --no-build ruff check . --config=pyproject.toml
 
   ci-gate:
     name: CI Gate
     runs-on: ubuntu-latest
     needs: [setup-optimized, test, quality-checks]
+    permissions: {}
     if: always()
     steps:
       - name: Harden the runner (Audit outbound calls)
