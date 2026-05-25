@@ -107,3 +107,9 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-commit]
+
+  - repo: https://github.com/renovatebot/pre-commit-hooks
+    rev: 2a27c9fda39c7c05bc7488a10920c7700979c263  # v43.150.0  # pragma: allowlist secret
+    hooks:
+      - id: renovate-config-validator
+        additional_dependencies: ["renovate@42.92.14"]
