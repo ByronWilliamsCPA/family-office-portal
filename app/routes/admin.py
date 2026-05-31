@@ -51,8 +51,10 @@ async def trigger_refresh(
     service (``entities``, ``holdings``, ``positions``, ``documents``).
 
     Args:
-        service: Backend service identifier to refresh.
-        body: Trigger options; set ``force`` to bypass the staleness check.
+        service (Literal["entities", "holdings", "positions", "documents"]):
+            Backend service identifier to refresh.
+        body (RefreshTriggerRequest): Trigger options; set ``force`` to
+            bypass the staleness check.
 
     Returns:
         RefreshTriggerResponse: Confirmation of the scheduling decision.

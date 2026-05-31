@@ -37,10 +37,10 @@ class CloudflareAccessMiddleware(BaseHTTPMiddleware):
         """Pass the request through untouched.
 
         Args:
-            request: The incoming Starlette request.
-            call_next: The downstream handler.
+            request (Request): The incoming Starlette request.
+            call_next (RequestResponseEndpoint): The downstream handler.
 
         Returns:
-            The downstream handler's response.
+            Response: The downstream handler's response.
         """
         return await call_next(request)
