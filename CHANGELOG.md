@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenAPI schema export script (`scripts/export_openapi.py`) and committed placeholder (`docs/api/openapi.json`)
 - Coverage gate: `[tool.coverage.report] fail_under = 80` in `pyproject.toml`
 - Initial project scaffold: FastAPI application with Cloudflare Zero Trust auth
-- Pre-commit hooks: ruff, basedpyright, bandit, detect-secrets, interrogate, darglint, commitizen, yamllint, markdownlint, no-em-dash (SHA-pinned)
+- Pre-commit hooks: ruff, basedpyright, bandit, detect-secrets, interrogate, pydoclint, commitizen, yamllint, markdownlint, no-em-dash (SHA-pinned)
 - Foundation files: README, LICENSE, SECURITY, CODEOWNERS, CLAUDE.md, AGENTS.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, GOVERNANCE.md
 - pyproject.toml with uv dependency management, PyStrict-aligned Ruff config, basedpyright strict mode, and pytest-asyncio auto mode
 - CHANGELOG.md, docs/known-vulnerabilities.md, docs/planning/project-vision.md, docs/planning/roadmap.md, docs/planning/tech-spec.md

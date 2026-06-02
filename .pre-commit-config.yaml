@@ -63,7 +63,7 @@ repos:
         args: ["--config=pyproject.toml"]
         types: [python]
         stages: [pre-commit]
-        exclude: ^(tests|scripts|benchmarks|tools)/
+        exclude: ^(tests|scripts|benchmarks|tools)/|noxfile\.py|\.claude/
 
   - repo: https://github.com/commitizen-tools/commitizen
     rev: "efb1a7dc7a81934ff473100ae3a5a716f3022534"  # v4.15.1  # pragma: allowlist secret
