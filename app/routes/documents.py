@@ -48,7 +48,8 @@ async def documents_search(
     is OpenAPI-described from the start.
 
     Args:
-        q: Free-text query string; must be at least one character.
+        q (Annotated[str, Query(min_length=1, description="Free-text search query.")]):
+            Free-text query string; must be at least one character.
 
     Returns:
         DocumentSearchResponse: Matching documents in ranked order.
@@ -76,7 +77,7 @@ async def document_preview(document_id: str) -> Response:
     empty placeholder; Phase 1 will stream upstream content.
 
     Args:
-        document_id: Opaque document identifier sourced from the cache.
+        document_id (str): Opaque document identifier sourced from the cache.
 
     Returns:
         Response: Placeholder PDF response.
@@ -105,7 +106,7 @@ async def document_download(document_id: str) -> Response:
     ``Content-Disposition: attachment`` header.
 
     Args:
-        document_id: Opaque document identifier sourced from the cache.
+        document_id (str): Opaque document identifier sourced from the cache.
 
     Returns:
         Response: Placeholder binary response.

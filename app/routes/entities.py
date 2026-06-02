@@ -42,7 +42,7 @@ async def entity_detail(entity_id: str) -> HTMLResponse:
     Phase 1 will render a plain-English summary backed by the cache.
 
     Args:
-        entity_id: Opaque entity identifier sourced from the cache.
+        entity_id (str): Opaque entity identifier sourced from the cache.
 
     Returns:
         HTMLResponse: Placeholder entity detail page.

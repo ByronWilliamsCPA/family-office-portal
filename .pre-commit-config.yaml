@@ -56,11 +56,14 @@ repos:
           - --exclude=.venv
           - --exclude=.worktrees
 
-  - repo: https://github.com/terrencepreilly/darglint
-    rev: "abc26b768cd7135d848223ba53f68323593c33d5"  # v1.8.1  # pragma: allowlist secret
+  - repo: https://github.com/jsh9/pydoclint
+    rev: "88d83c94156c5e51a09938e77019f2c58e92ab58"  # 0.8.4  # pragma: allowlist secret
     hooks:
-      - id: darglint
-        args: [-s, google]
+      - id: pydoclint
+        args: ["--config=pyproject.toml"]
+        types: [python]
+        stages: [pre-commit]
+        exclude: ^(tests|scripts)/|noxfile\.py|\.claude/
 
   - repo: https://github.com/commitizen-tools/commitizen
     rev: "efb1a7dc7a81934ff473100ae3a5a716f3022534"  # v4.15.1  # pragma: allowlist secret

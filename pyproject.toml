@@ -27,7 +27,7 @@ dev = [
     "basedpyright>=1.18",
     "ruff>=0.4",
     "pip-audit>=2.7",
-    "darglint>=1.8",
+    "pydoclint>=0.8.4",
     "interrogate>=1.7",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
@@ -171,13 +171,18 @@ ignore-property-decorators = true
 exclude = ["tests", ".venv", ".worktrees"]
 
 # ---------------------------------------------------------------------------
-# darglint
+# pydoclint
 # ---------------------------------------------------------------------------
 
-[tool.darglint]
-docstring_style = "google"
-strictness = "short"
-ignore_regex = "^test_"
+[tool.pydoclint]
+style = "google"
+exclude = '\.git|tests/|scripts/|noxfile\.py|\.claude/'
+arg-type-hints-in-docstring = true
+arg-type-hints-in-signature = true
+skip-checking-raises = false
+require-return-section-when-returning-nothing = false
+require-return-section-when-returning-values = true
+require-yield-section-when-yielding-values = false
 
 # ---------------------------------------------------------------------------
 # pytest
