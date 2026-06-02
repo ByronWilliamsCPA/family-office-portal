@@ -176,12 +176,12 @@ exclude = ["tests", ".venv", ".worktrees"]
 
 [tool.pydoclint]
 style = "google"
-exclude = '\.git|tests/|scripts/|benchmarks/|tools/|noxfile\.py|\.claude/'
+exclude = '\.git|tests/|scripts/|noxfile\.py|\.claude/'
 arg-type-hints-in-docstring = true
 arg-type-hints-in-signature = true
 skip-checking-raises = false
 require-return-section-when-returning-nothing = false
-require-return-section-when-returning-values = false
+require-return-section-when-returning-values = true
 require-yield-section-when-yielding-values = false
 
 # ---------------------------------------------------------------------------
