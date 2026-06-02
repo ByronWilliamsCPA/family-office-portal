@@ -43,6 +43,10 @@
       "followTag": "v1"
     }
   ],
+  "lockFileMaintenance": {
+    "commitMessageAction": "refresh",
+    "commitMessageTopic": "Python dependency lock file"
+  },
   "prConcurrentLimit": 5,
   "schedule": [
     "before 6am on Monday"
