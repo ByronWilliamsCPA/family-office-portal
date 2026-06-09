@@ -86,3 +86,7 @@ docs/superpowers/plans/
 # Type-check caches
 .mypy_cache/
 .dmypy.json
+
+# Qlty code quality tool (keep config, ignore generated output)
+.qlty/*
+!.qlty/qlty.toml
