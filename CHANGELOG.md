@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CI: Claude Tier 0 baseline PR review caller (`.github/workflows/claude-baseline-review.yml`), a thin caller of the org reusable in `ByronWilliamsCPA/.github`. Part of the org-wide tiered-pr-review rollout.
 - Phase 0 FastAPI application skeleton in `app/main.py`: title, description, version, contact, `CloudflareAccessMiddleware` registration, and a `GET /health` liveness probe returning `{"status": "ok"}`
 - Cloudflare Access middleware pass-through stub in `app/middleware/cloudflare_access.py` per ADR-002; full JWT validation deferred to Phase 1
 - Phase 0 health smoke test (`tests/test_health.py`) exercising the endpoint via httpx `ASGITransport`
