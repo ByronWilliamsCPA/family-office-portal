@@ -11,6 +11,7 @@ on:
   pull_request:
     branches: [main, master, develop]
 
+  merge_group:
 permissions:
   contents: read
   pull-requests: write
