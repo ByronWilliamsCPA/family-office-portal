@@ -24,7 +24,15 @@ jobs:
     uses: ByronWilliamsCPA/.github/.github/workflows/python-scorecard.yml@961eb17d8e9b7fe0d8bfc5dbe9d23c824484fb11  # main 2026-05-07
     with:
       publish-results: false
-      upload-sarif: true
+      # upload-sarif disabled: GitHub now bills Advanced Security (Code
+      # Security), so github/codeql-action/upload-sarif no longer functions
+      # on this repo. The reusable workflow already uploads the same SARIF
+      # file unconditionally as the "scorecard-results" artifact, so no
+      # replacement step is needed here. security-events: write is kept
+      # below because the callee job still declares that permission
+      # structurally; GitHub validates the caller/callee permission
+      # ceiling at parse time regardless of this input's runtime value.
+      upload-sarif: false
     permissions:
       security-events: write
       id-token: write
