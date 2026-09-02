@@ -46,33 +46,12 @@ jobs:
               - 'pyproject.toml'
               - 'uv.lock'
 
-  dependency-security:
-    name: Dependency Security Review
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: detect-changes
-    if: |
-      github.event_name == 'pull_request' &&
-      needs.detect-changes.outputs.security_files == 'true'
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - name: Harden the runner (Audit outbound calls)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
-        with:
-          egress-policy: audit
-
-      - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - name: Dependency Review
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
-        with:
-          fail-on-severity: moderate
-          license-check: true
-          comment-summary-in-pr: always
-          deny-licenses: GPL-2.0, GPL-3.0
+  # actions/dependency-review-action was removed fleet-wide: GitHub now
+  # bills Advanced Security (Code Security) for this action, so it no
+  # longer runs on repos without that add-on. The "Dependency Security
+  # Review" job that used to live here (gated on detect-changes) is gone;
+  # dependency vulnerability coverage on this repo now comes from
+  # pip-audit and OSV Scanner below.
 
   security-scanning:
     name: Multi-Tool Security Scan
@@ -230,7 +209,6 @@ jobs:
       github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
-      security-events: write
     steps:
       - name: Harden the runner (Audit outbound calls)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
@@ -251,6 +229,11 @@ jobs:
             --enableExperimental
             --failOnCVSS 7
 
+      # github/codeql-action/upload-sarif removed: GitHub now bills
+      # Advanced Security (Code Security), so SARIF ingestion into the
+      # Security tab no longer functions on this repo. The report below
+      # already covers the same reports/ directory (format: ALL includes
+      # dependency-check-report.sarif), so findings are not lost.
       - name: Upload OWASP Report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -258,12 +241,6 @@ jobs:
           name: owasp-dependency-check-report
           path: reports/
           if-no-files-found: warn
-
-      - name: Upload SARIF to GitHub Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
-        with:
-          sarif_file: reports/dependency-check-report.sarif
 
   # Normal job (has steps:), not a workflow_call caller. A caller job
   # (uses: ./.github/workflows/_security-gate.yml) can only ever emit a
@@ -279,7 +256,6 @@ jobs:
     timeout-minutes: 5
     needs:
       - detect-changes
-      - dependency-security
       - security-scanning
       - osv-scanner
       - owasp-dependency-check
@@ -293,7 +269,6 @@ jobs:
       - name: Validate Security Results
         env:
           DETECT_RESULT: ${{ needs.detect-changes.result }}
-          DEP_RESULT: ${{ needs.dependency-security.result }}
           SCAN_RESULT: ${{ needs.security-scanning.result }}
           OSV_RESULT: ${{ needs.osv-scanner.result }}
           OWASP_RESULT: ${{ needs.owasp-dependency-check.result }}
@@ -305,7 +280,6 @@ jobs:
           # succeeded and reported no security-relevant files.
           is_acceptable() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
           if [[ "$DETECT_RESULT" == "success" ]] && \
-             is_acceptable "$DEP_RESULT" && \
              is_acceptable "$SCAN_RESULT" && \
              is_acceptable "$OSV_RESULT" && \
              is_acceptable "$OWASP_RESULT"; then
@@ -313,7 +287,6 @@ jobs:
           else
             echo "Security gate FAILED"
             echo "detect-changes: $DETECT_RESULT"
-            echo "dep-security: $DEP_RESULT"
             echo "scanning: $SCAN_RESULT"
             echo "osv: $OSV_RESULT"
             echo "owasp: $OWASP_RESULT"
