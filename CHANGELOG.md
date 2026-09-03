@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CI: added `security-gate-success` (`name: Security Gate Validation`) to `.github/workflows/security-analysis.yml`, a normal job that inspects `needs.security-analysis.result`. The existing `security-analysis` job calls the reusable `_security-gate.yml` via `uses:`, and GitHub unconditionally emits that job's context as `Security Analysis / Security Gate Validation`, which never matches the org ruleset's required bare `Security Gate Validation` string; every PR sat permanently `BLOCKED` on that unmet required check. `_security-gate.yml` and the `security-analysis` job are unchanged.
 - CI: SonarCloud quality gate now evaluates correctly after passing the project version (read dynamically from `pyproject.toml`) to the scan action; without a project version the quality gate returned `NONE` and the gate action failed
 - CI: placeholder test `assert True` removed so the function body is just its existing docstring, resolving SonarCloud rule S5914 (constant boolean expression in assertion); pytest still collects and passes the function
 - CI: OpenSSF Scorecard workflow now sets `publish-results: false` to prevent OIDC token mismatch when running as a callee reusable workflow (the token resolves to the .github repo, not the calling repo)

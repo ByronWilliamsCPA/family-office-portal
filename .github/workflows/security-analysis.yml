@@ -255,3 +255,42 @@ jobs:
       security-scanning-result: ${{ needs.security-scanning.result }}
       osv-scanner-result: ${{ needs.osv-scanner.result }}
       owasp-dependency-check-result: ${{ needs.owasp-dependency-check.result }}
+
+  security-gate-success:
+    # `security-analysis` above calls a reusable workflow via `uses:`.
+    # GitHub ALWAYS emits a uses: job's status-check context as
+    # "<caller job name> / <inner job name>", unconditionally; this is
+    # not something that can be suppressed by renaming either the caller
+    # job or the inner job (`security-gate-validation` in
+    # _security-gate.yml, itself named "Security Gate Validation"). The
+    # emitted context is therefore always
+    # "Security Analysis / Security Gate Validation", which never
+    # matches the bare "Security Gate Validation" the org main ruleset
+    # requires.
+    # This job runs its own `steps:` (no `uses:`), so it emits its
+    # `name:` verbatim with no prefix, satisfying the ruleset directly.
+    # #CRITICAL: the ruleset match is a literal string comparison against
+    # this `name:` field. #VERIFY with
+    # `gh api repos/ByronWilliamsCPA/family-office-portal/rules/branches/main`
+    # if this job is ever renamed.
+    name: Security Gate Validation
+    runs-on: ubuntu-latest
+    needs: [security-analysis]
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Check security gate result
+        env:
+          GATE_RESULT: ${{ needs.security-analysis.result }}
+        run: |
+          if [ "$GATE_RESULT" != "success" ]; then
+            echo "::error::Security Gate Validation failed: security-analysis result is $GATE_RESULT"
+            exit 1
+          fi
+          echo "Security Gate Validation passed"
