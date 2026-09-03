@@ -7,10 +7,6 @@ name: Security Gate (reusable)
 on:
   workflow_call:
     inputs:
-      dependency-security-result:
-        description: Result of the dependency-security job
-        type: string
-        required: true
       security-scanning-result:
         description: Result of the security-scanning job
         type: string
@@ -36,20 +32,17 @@ jobs:
 
       - name: Validate Security Results
         env:
-          DEP_RESULT: ${{ inputs.dependency-security-result }}
           SCAN_RESULT: ${{ inputs.security-scanning-result }}
           OSV_RESULT: ${{ inputs.osv-scanner-result }}
           OWASP_RESULT: ${{ inputs.owasp-dependency-check-result }}
         run: |
           is_acceptable() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
-          if is_acceptable "$DEP_RESULT" && \
-             is_acceptable "$SCAN_RESULT" && \
+          if is_acceptable "$SCAN_RESULT" && \
              is_acceptable "$OSV_RESULT" && \
              is_acceptable "$OWASP_RESULT"; then
             echo "Security gate passed"
           else
             echo "Security gate FAILED"
-            echo "dep-security: $DEP_RESULT"
             echo "scanning: $SCAN_RESULT"
             echo "osv: $OSV_RESULT"
             echo "owasp: $OWASP_RESULT"

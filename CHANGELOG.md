@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LICENSE: added SPDX-License-Identifier header
 - SECURITY.md: switched from email reporting to GitHub Private Vulnerability Reporting (PVR) only
 
+### Removed
+
+- CI: deleted `.github/workflows/dependency-review.yml` and the inline `actions/dependency-review-action` step (and its now-empty `dependency-security` job) in `security-analysis.yml`. GitHub now bills Advanced Security (Code Security), so the dependency-review action no longer functions on this repo.
+- CI: removed the `github/codeql-action/upload-sarif` step from the `owasp-dependency-check` job in `security-analysis.yml` for the same reason; that job's existing `Upload OWASP Report` artifact step already covers the same `reports/` directory (OWASP Dependency-Check's `format: ALL` output includes the SARIF file), so no replacement step was needed. Pruned the job's now-unused `security-events: write` permission.
+- CI: disabled `upload-sarif` in `scorecard.yml` (org-level `python-scorecard.yml` reusable workflow input) for the same reason; the reusable workflow already uploads the same SARIF file unconditionally as the `scorecard-results` artifact.
+- What remains active: Bandit and pip-audit (in both `security.yml` on every PR/push and `security-analysis.yml`'s change-aware `security-scanning` job), the OSV Scanner job, and the OWASP Dependency-Check tool itself (still runs; only its SARIF-to-Security-tab upload was removed, its artifact report remains).
+- `security-analysis.yml`'s aggregating `Security Gate Validation` job (required org status check) was updated to stop referencing the removed `dependency-security` job's result; `pr-validation.yml`'s separate `Dependency & Standards Validation` gate (also a required org status check) is untouched and continues to run on every PR independent of the deleted `dependency-review.yml` file.
+
 ### Fixed
 
 - CI: SonarCloud quality gate now evaluates correctly after passing the project version (read dynamically from `pyproject.toml`) to the scan action; without a project version the quality gate returned `NONE` and the gate action failed
