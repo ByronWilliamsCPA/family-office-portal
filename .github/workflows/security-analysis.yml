@@ -240,18 +240,46 @@ jobs:
         with:
           sarif_file: reports/dependency-check-report.sarif
 
-  security-analysis:
-    name: Security Analysis
+  # Normal job (has steps:), not a workflow_call caller. A caller job
+  # (uses: ./.github/workflows/_security-gate.yml) can only ever emit a
+  # "<caller job name> / <inner job name>" context; it can never emit the
+  # bare "Security Gate Validation" context that the org ruleset
+  # ByronWilliamsCPA-default-branch-baseline requires. This job replaces the
+  # former reusable-workflow-call indirection through _security-gate.yml
+  # (now deleted) so the bare context actually reports on every PR.
+  security-gate-validation:
+    name: Security Gate Validation
+    runs-on: ubuntu-latest
     needs:
-      - detect-changes
       - dependency-security
       - security-scanning
       - osv-scanner
       - owasp-dependency-check
     if: always()
-    uses: ./.github/workflows/_security-gate.yml
-    with:
-      dependency-security-result: ${{ needs.dependency-security.result }}
-      security-scanning-result: ${{ needs.security-scanning.result }}
-      osv-scanner-result: ${{ needs.osv-scanner.result }}
-      owasp-dependency-check-result: ${{ needs.owasp-dependency-check.result }}
+    steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Validate Security Results
+        env:
+          DEP_RESULT: ${{ needs.dependency-security.result }}
+          SCAN_RESULT: ${{ needs.security-scanning.result }}
+          OSV_RESULT: ${{ needs.osv-scanner.result }}
+          OWASP_RESULT: ${{ needs.owasp-dependency-check.result }}
+        run: |
+          is_acceptable() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
+          if is_acceptable "$DEP_RESULT" && \
+             is_acceptable "$SCAN_RESULT" && \
+             is_acceptable "$OSV_RESULT" && \
+             is_acceptable "$OWASP_RESULT"; then
+            echo "Security gate passed"
+          else
+            echo "Security gate FAILED"
+            echo "dep-security: $DEP_RESULT"
+            echo "scanning: $SCAN_RESULT"
+            echo "osv: $OSV_RESULT"
+            echo "owasp: $OWASP_RESULT"
+            exit 1
+          fi
