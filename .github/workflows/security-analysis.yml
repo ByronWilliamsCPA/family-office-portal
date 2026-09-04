@@ -1,6 +1,7 @@
 name: Security Analysis
 
 on:
+  merge_group:
   pull_request:
     branches:
       - main
@@ -255,3 +256,32 @@ jobs:
       security-scanning-result: ${{ needs.security-scanning.result }}
       osv-scanner-result: ${{ needs.osv-scanner.result }}
       owasp-dependency-check-result: ${{ needs.owasp-dependency-check.result }}
+
+  # Bare "Security Gate Validation" context required by the org ruleset.
+  # The reusable security workflow surfaces as
+  # "Security Analysis / Security Gate Validation" (caller / reusable job),
+  # which cannot match the bare ruleset context. This in-line aggregator
+  # re-emits the bare context on pull_request and inside the merge queue.
+  security-gate:
+    name: Security Gate Validation
+    runs-on: ubuntu-latest
+    needs: [security-analysis]
+    if: always()
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: block
+          allowed-endpoints: ''
+      - name: Aggregate security result
+        run: |
+          result="${{ needs.security-analysis.result }}"
+          if [ "$result" = "success" ] || [ "$result" = "skipped" ]; then
+            echo "Security Gate Validation: passed (result: $result)"
+          else
+            echo "::error::Security Gate Validation failed: $result"
+            exit 1
+          fi

@@ -7,6 +7,23 @@
 #   - Blocks PRs with high severity vulnerabilities
 name: Dependency Review
 
+# #CRITICAL do not add a merge_group: trigger here.
+# actions/dependency-review-action reads github.event.pull_request.base
+# and .head internally and hard-fails under merge_group ("Both a base
+# ref and head ref must be provided...") because that event carries no
+# pull_request payload (see actions/dependency-review-action issues
+# 456, 841, 843). This job's name, "Dependency & Standards Validation",
+# is identical to the gate job in pr-validation.yml; a hard failure
+# here under merge_group would create a second, failing check run
+# under that same required-context name alongside the passing one
+# from pr-validation.yml, jeopardizing rather than fixing the merge
+# queue. pr-validation.yml's gate job already emits this same context
+# successfully under merge_group (added in this PR), so the required
+# status check is satisfied without this workflow running in the
+# merge queue at all.
+# #VERIFY if this workflow is ever changed to run under merge_group,
+# pass explicit base-ref/head-ref inputs first, using the community
+# workaround: github.base_ref || github.event.merge_group.base_ref
 on:
   pull_request:
     branches: [main, master, develop]
