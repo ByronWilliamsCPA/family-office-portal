@@ -1,0 +1,22 @@
+# Snyk policy file
+# Scopes Snyk Open Source scanning to project-owned code only.
+# Excludes on-disk trees that are not project dependencies:
+# virtual environments, worktree checkouts, build artifacts, and
+# vendored JS bundled inside Python packages.
+# See: docs/snyk-implementation-findings.md (Finding 1, Recommendation A)
+version: v1.25.0
+exclude:
+  global:
+    - .venv/**
+    - "**/.venv/**"
+    - .worktrees/**
+    - "**/.worktrees/**"
+    - node_modules/**
+    - "**/node_modules/**"
+    - site/**
+    - htmlcov/**
+    - out/**
+    - "**/site-packages/**"
+    # Vendored, pre-built JS assets (htmx, Chart.js) checked in under
+    # static/; not project dependencies, per CLAUDE.md static/ layout notes.
+    - static/**
