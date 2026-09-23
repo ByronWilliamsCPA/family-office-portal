@@ -65,3 +65,24 @@ Dependencies are scanned with `uv run pip-audit` before each release.
 Known unfixed CVEs are documented in `docs/known-vulnerabilities.md` and
 reviewed quarterly. No vulnerability older than 60 days may be left without
 reassessment.
+
+## Secret Management and Rotation
+
+This repository holds no application secrets in source control. Runtime
+secrets (CI tokens such as `CODECOV_TOKEN`, `SONAR_TOKEN`, and the Cloudflare
+Access application credentials referenced by `CF_TEAM_DOMAIN` /
+`CF_ACCESS_APP_ID`) are stored exclusively in GitHub Actions repository
+secrets or the Cloudflare Zero Trust dashboard, never committed to the
+repository.
+
+Rotation cadence:
+
+- CI/CD tokens (Codecov, SonarCloud, any future backend API keys): reviewed
+  and rotated quarterly, aligned with the same quarterly cadence used for
+  unfixed-CVE reassessment above.
+- Cloudflare Access service credentials: rotated per Cloudflare's own
+  recommended schedule, or immediately upon suspected compromise or
+  contributor offboarding.
+- Any secret is rotated immediately, outside the regular cadence, if exposure
+  is suspected (e.g., accidental commit, leaked CI log, compromised
+  contributor account).
