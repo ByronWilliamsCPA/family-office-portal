@@ -16,6 +16,10 @@ permissions:
   pull-requests: write
   checks: write
 
+concurrency:
+  group: pr-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pr-validation:
     name: PR CI Checks
@@ -34,9 +38,13 @@ jobs:
     name: Dependency & Standards Validation
     needs: [pr-validation]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions: {}
     if: always()
     steps:
+      # deferral: 2026-11-22 -- egress-policy remains audit pending
+      # confirmation of the full allowed-endpoints list for this job; flip to
+      # block once the audit log has been reviewed (CI-031).
       - name: Harden the runner (Audit outbound calls)
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
         with:
