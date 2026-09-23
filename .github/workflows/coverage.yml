@@ -16,6 +16,7 @@ jobs:
   upload-coverage:
     name: Upload Coverage to Codecov
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
@@ -27,22 +28,26 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Download coverage artifacts (Python 3.12)
+      # CI-001 migrated ci.yml's `test` job to the org reusable python-ci.yml
+      # workflow, which uploads a single unversioned "coverage-reports"
+      # artifact (coverage.xml at its root) instead of the old per-Python-version
+      # "test-results-3.12" artifact. Updated to match.
+      - name: Download coverage artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: test-results-3.12
+          name: coverage-reports
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
-          path: coverage-3.12
+          path: coverage-reports
         continue-on-error: true
 
-      - name: Upload coverage to Codecov (Python 3.12)
-        if: hashFiles('coverage-3.12/coverage.xml') != ''
+      - name: Upload coverage to Codecov
+        if: hashFiles('coverage-reports/coverage.xml') != ''
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354  # v6.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: ${{ github.repository }}
-          file: coverage-3.12/coverage.xml
+          file: coverage-reports/coverage.xml
           fail_ci_if_error: false
           flags: python-3.12
           name: family-office-portal Coverage (Python 3.12)
@@ -54,10 +59,8 @@ jobs:
           GH_REPOSITORY: ${{ github.repository }}
         run: |
           echo "## Codecov Upload Summary" >> $GITHUB_STEP_SUMMARY
-          for version in 3.12; do
-            if [ -f "coverage-${version}/coverage.xml" ]; then
-              echo "- Python ${version}: Coverage uploaded" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "- Python ${version}: No coverage report found" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+          if [ -f "coverage-reports/coverage.xml" ]; then
+            echo "- Coverage uploaded" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- No coverage report found" >> $GITHUB_STEP_SUMMARY
+          fi

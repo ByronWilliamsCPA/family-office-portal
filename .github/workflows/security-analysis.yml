@@ -20,9 +20,15 @@ jobs:
   detect-changes:
     name: Detect Security-Relevant Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       security_files: ${{ steps.filter.outputs.security }}
     steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -40,6 +46,7 @@ jobs:
   dependency-security:
     name: Dependency Security Review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: detect-changes
     if: |
       github.event_name == 'pull_request' &&
@@ -126,6 +133,7 @@ jobs:
   osv-scanner:
     name: OSV Vulnerability Scanner
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: detect-changes
     if: |
       needs.detect-changes.outputs.security_files == 'true' ||
@@ -140,9 +148,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      # CI-007: continue-on-error removed. This step invokes the OSV scanner
+      # (a security scanner covered by CI-007's scope), so suppressing its
+      # exit code here made a real scanner failure silently advisory before
+      # the "Check OSV Results" step ever ran its own HIGH/CRITICAL gate.
       - name: Run OSV Scanner
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
-        continue-on-error: true
         with:
           scan-args: |-
             --lockfile=uv.lock
@@ -198,6 +209,7 @@ jobs:
   owasp-dependency-check:
     name: OWASP Dependency Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: detect-changes
     if: |
       needs.detect-changes.outputs.security_files == 'true' ||

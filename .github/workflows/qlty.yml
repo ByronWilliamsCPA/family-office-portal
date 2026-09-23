@@ -1,0 +1,50 @@
+# Qlty code quality gate for Family Office Portal.
+#
+# The qlty.sh GitHub App's own StatusContext always reports SUCCESS regardless
+# of blocking-issue count and cannot enforce anything. This workflow's
+# qlty-gate job is a real GitHub Actions CheckRun that fails the build on
+# medium+ severity issues in the PR diff (CI-078).
+#
+# Coverage upload to qlty.sh is intentionally NOT wired here: it requires a
+# QLTY_COVERAGE_TOKEN secret that is not yet configured for this Phase 0
+# repo. Add a `qlty` job calling python-qlty-coverage.yml once that secret
+# exists (see llc-manager/.github/workflows/qlty.yml for the pattern).
+name: Qlty
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly full-codebase health scan: Monday 07:00 UTC
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: qlty-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # PR gate: diff mode, blocks merges that introduce medium+ severity issues.
+  # Check name: "qlty-gate / Qlty Gate" -- required by org docs-tier ruleset.
+  qlty-gate:
+    if: github.event_name == 'pull_request'
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-qlty-gate.yml@b7c661ec3bfeb04370ce3a9c748bd8c4e93bfe89  # v10.1.9
+    permissions:
+      contents: read
+    with:
+      fail-level: medium
+      upstream: origin/${{ github.base_ref }}
+
+  # Weekly health scan: full codebase, informational only.
+  # Remove no-fail once existing qlty debt is resolved.
+  qlty-health:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-qlty-gate.yml@b7c661ec3bfeb04370ce3a9c748bd8c4e93bfe89  # v10.1.9
+    permissions:
+      contents: read
+    with:
+      fail-level: high
+      check-all: true
+      no-fail: true

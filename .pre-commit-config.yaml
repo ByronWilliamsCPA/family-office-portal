@@ -46,8 +46,9 @@ repos:
     rev: "4894019dc8876092bc9b6d56878798c550fad998"  # 1.7.0  # pragma: allowlist secret
     hooks:
       - id: interrogate
+        alias: interrogate-scripts
         args:
-          - --fail-under=80
+          - --fail-under=85
           - --ignore-init-method
           - --ignore-magic
           - --ignore-private
@@ -55,6 +56,7 @@ repos:
           - --exclude=tests
           - --exclude=.venv
           - --exclude=.worktrees
+          - scripts/
 
   - repo: https://github.com/jsh9/pydoclint
     rev: "88d83c94156c5e51a09938e77019f2c58e92ab58"  # 0.8.4  # pragma: allowlist secret
@@ -90,6 +92,7 @@ repos:
         language: pygrep
         entry: "—"
         types: [text]
+        # Permanent exclusion: tooling config file; cleanup by 2027-12-31
         exclude: '^\.pre-commit-config\.yaml$'
 
   # ============================================================================
@@ -97,17 +100,11 @@ repos:
   # ============================================================================
   # Advanced secret detection beyond detect-private-key.
   # Detects API keys, tokens, credentials, and other secrets.
-  - repo: local
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: "64d939a56362f519781c53ea09b27f8d1dc0140a"  # v3.97.6  # pragma: allowlist secret
     hooks:
       - id: trufflehog
-        name: TruffleHog Secret Scanner
-        description: Detect secrets in your data before committing
-        # Scan staged files only. The git-history mode (--since-commit HEAD) also
-        # traverses fetched remote branches in the local object store, producing
-        # false positives from unmerged branches. Staged-file scanning is the
-        # correct scope for a pre-commit hook; git history scanning belongs in CI.
-        entry: bash -c 'command -v trufflehog >/dev/null 2>&1 && (git diff --cached -z --diff-filter=d --name-only 2>/dev/null | xargs -0 -r trufflehog filesystem --fail --no-update --results=verified,unknown) || echo "TruffleHog not installed - skipping secret scan"'
-        language: system
+        entry: bash -c 'git diff --cached -z --name-only --diff-filter=d 2>/dev/null | tr "\0" "\n" | grep -v "^CHANGELOG\.md$" | grep -v "^\.submodules/" | grep -v "^$" | tr "\n" "\0" | xargs -0 -r trufflehog filesystem --fail --no-update'
         pass_filenames: false
         stages: [pre-commit]
 
