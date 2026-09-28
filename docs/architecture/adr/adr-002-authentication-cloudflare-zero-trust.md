@@ -133,6 +133,68 @@ a primary user is: "Check your email and tap the link."
 - Unit: JWT validation middleware with a fixture Cloudflare public key and test tokens
 - Integration: Request with valid JWT → correct role; request without JWT → 403
 
+## Security Considerations
+
+### Trust model
+
+Authentication is fully edge-terminated: Cloudflare Zero Trust Access issues and
+verifies the magic-link session, then attaches a signed `CF-Access-JWT-Assertion`
+header to every request forwarded to the portal's origin. The portal never sees a
+password and never issues its own session cookie. This means the portal's entire
+authentication trust boundary collapses to one question: does this JWT genuinely
+come from Cloudflare Access for this application, and can it be trusted at
+face value. Two properties must both hold for that trust to be sound:
+
+1. **Signature validation**: the JWT must verify against Cloudflare's public keys
+   fetched from `https://<CF_TEAM_DOMAIN>/cdn-cgi/access/certs` (cached with a TTL,
+   not fetched per request). A JWT that fails signature verification must be
+   rejected with 403, not logged and passed through.
+2. **Audience (`aud`) claim validation** `#CRITICAL`: the JWT's `aud` claim must be
+   checked against `CF_ACCESS_APP_ID`. Cloudflare Zero Trust tenants commonly host
+   multiple Access-protected applications; every one of them can mint a
+   validly-signed JWT for its own users. Skipping the `aud` check means any user
+   with legitimate access to a *different* application in the same tenant can reuse
+   their token against this portal. This is not a theoretical gap: it is the
+   specific failure mode this ADR's Implementation section (`### Components
+   Affected`, item 2) calls out, and it is the reason defense-in-depth middleware
+   exists in the portal at all rather than trusting Cloudflare's edge block
+   unconditionally.
+
+Because the network edge is the sole enforcement point for identity, a
+misconfigured Cloudflare Access policy (wrong email list, disabled application,
+overly broad `aud` allowance) degrades directly into unauthorized access with no
+application-level backstop other than the `aud` check above. This is an accepted
+trade-off of Option 1 (see `## Options Considered`): it buys password-free access
+for low-proficiency users at the cost of concentrating trust in Cloudflare's
+policy configuration and the middleware's `aud` enforcement.
+
+### Current implementation status
+
+`app/middleware/cloudflare_access.py` is a **Phase 0 pass-through stub**: it
+accepts every request unchanged and performs no signature or `aud` validation.
+The stub is intentionally scoped to Phase 0 (scaffolding only; see `CLAUDE.md`
+"Current phase"). It is tagged `#CRITICAL` / `#VERIFY` in the module docstring:
+Phase 1 must replace `dispatch` with the fail-closed JWT validation pipeline
+described above, and a fixture token carrying a foreign `aud` must be asserted to
+return 403 in `tests/unit/test_middleware.py` before the stub is considered
+removed. Until that lands, this repository has **no working authentication**
+end-to-end in local/CI environments that bypass the Cloudflare edge (e.g. direct
+requests to the origin, or test clients); production traffic is protected only
+because Cloudflare Access itself sits in front of the deployed origin.
+
+### Residual risks
+
+- **Public key cache staleness**: if Cloudflare rotates its signing keys and the
+  middleware's cached key set is not refreshed before the TTL allows, valid
+  requests could be rejected (fail-safe) or, if the cache logic is inverted, stale
+  keys could be trusted past their rotation (fail-unsafe). The TTL and refresh
+  behavior must be tested explicitly in Phase 1, not assumed correct.
+- **Direct-to-origin requests**: any network path that reaches the FastAPI origin
+  without transiting Cloudflare Access (e.g., a misconfigured DNS/tunnel entry)
+  bypasses the edge entirely. The `aud`-validated middleware is the only
+  application-level control against this, which is why item 2 in `##
+  Implementation` is marked `#CRITICAL` rather than left to Cloudflare alone.
+
 ## Validation
 
 ### Success Criteria
