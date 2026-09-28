@@ -3,7 +3,6 @@
 # Excludes on-disk trees that are not project dependencies:
 # virtual environments, worktree checkouts, build artifacts, and
 # vendored JS bundled inside Python packages.
-# See: docs/snyk-implementation-findings.md (Finding 1, Recommendation A)
 version: v1.25.0
 exclude:
   global:
@@ -17,6 +16,12 @@ exclude:
     - htmlcov/**
     - out/**
     - "**/site-packages/**"
-    # Vendored, pre-built JS assets (htmx, Chart.js) checked in under
-    # static/; not project dependencies, per CLAUDE.md static/ layout notes.
+    # static/ currently holds only a .gitkeep placeholder (Phase 0). Phase 1
+    # vendors pre-built, third-party JS assets (htmx, Chart.js) here per
+    # CLAUDE.md's static/ layout notes; this exclusion assumes those future
+    # assets are not project dependencies. #ASSUME static/ will hold only
+    # vendored third-party bundles. #VERIFY when static/ gains real files:
+    # confirm each is vendored third-party code, not first-party JS, before
+    # leaving this exclusion in place, since it would otherwise hide
+    # first-party code from scanning.
     - static/**

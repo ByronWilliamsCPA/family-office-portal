@@ -93,8 +93,8 @@ Component-to-file mapping from `docs/planning/tech-spec.md`:
 
 | Component | Location | Status | Notes |
 | --- | --- | --- | --- |
-| CF JWT Middleware | `app/middleware/` | Exists | Validates header, signature, `aud` claim, maps role |
-| Route Handlers | `app/routes/` | Exists | Return `TemplateResponse`; read SQLite via the cache reader |
+| CF JWT Middleware | `app/middleware/` | Stub (Phase 0); validation Phase 1 | Phase 0 is a pass-through stub that accepts every request; Phase 1 adds header, signature, `aud` claim, and role-mapping validation |
+| Route Handlers | `app/routes/` | Exists (Phase 0 placeholders) | Return placeholder `HTMLResponse`/JSON today; Phase 1 wires them to return `TemplateResponse` and read SQLite via the cache reader, once `app/cache.py` and `templates/` exist |
 | Cache Reader | `app/cache.py` | Planned, Phase 1 | Async `aiosqlite` reads; called by routes |
 | Refresh Scheduler | `app/scheduler.py` | Planned, Phase 1 | Sync writes; calls backend services via `httpx` |
 | Staleness Checker | `app/cache.py` | Planned, Phase 1 | `is_stale(dataset, threshold_hours)` |
@@ -106,7 +106,8 @@ users view it on tablets. Reliability and plain-English presentation are the top
 priorities. The portal is a read-only consumer of four backend services; it never
 writes to or contacts upstream commercial systems directly.
 
-**Current phase**: Phase 0 (Foundation) -- all tasks "Planned"; no application code exists yet.
+**Current phase**: Phase 0 (Foundation) scaffold code exists under `app/` and `tests/`;
+Phase 0 has not yet passed a phase gate.
 Phase 0 goal: scaffold, auth middleware, CI pipeline, and five empty section shells.
 
 Key documents to read before making architectural or data-model decisions:
@@ -257,7 +258,7 @@ and `#EDGE` markers paired with `#VERIFY` instructions. Mandatory categories:
 - **Financial**: net worth aggregation logic; any rounding or currency assumption
   is an `#ASSUME` requiring `#VERIFY`
 
-Full tagging syntax: `~/dev/.claude/docs/response-aware-development.md`
+Full tagging syntax: `~/.claude/docs/response-aware-development.md`
 
 ## Cross-references
 

@@ -42,51 +42,71 @@ not currently operate a paid bug bounty program.
 ## Security Surface
 
 This section names the repo-specific attack vectors for the Family Office
-Estate Portal and the mitigation currently in place for each. It is kept
-alongside the generic reporting process above (OpenSSF Best Practices
+Estate Portal and the mitigation currently in place or planned for each. It
+distinguishes what exists today, in Phase 0, from what Phase 1 adds, and is
+kept alongside the generic reporting process above (OpenSSF Best Practices
 Badge / OSSF-010: a security policy must describe the project's actual
 attack surface, not only how to file a report).
 
-- **Cloudflare Access JWT `aud` bypass.** The CF JWT middleware (ADR-002)
-  validates the JWT signature and the `aud` claim against
-  `CF_ACCESS_APP_ID`. Skipping the `aud` check would let a token issued to a
-  different app in the same Cloudflare tenant authenticate here; this is
-  tracked as a `#CRITICAL` in `app/middleware/cloudflare_access.py` and
-  covered by negative tests in `tests/unit/test_middleware.py`.
-- **SQL injection via the SQLite read-through cache.** Route handlers and
-  refresh jobs use raw SQL (no ORM) against the cache database. Every query
-  is parameterized; string-built SQL is not permitted anywhere in
-  `app/cache.py` or `app/db.py`.
+- **Cloudflare Access JWT `aud` bypass.** Authentication happens at the
+  Cloudflare Zero Trust network edge: Access issues the
+  `CF-Access-JWT-Assertion` header and forwards only authenticated traffic to
+  the application (ADR-002). At Phase 0, `app/middleware/cloudflare_access.py`
+  is a pass-through stub: it does not itself verify the JWT signature or the
+  `aud` claim, and `tests/unit/test_middleware.py` skips until the Phase 1
+  validation API exists. Until Phase 1 ships, the application has no
+  application-level check that a token issued to a different app in the same
+  Cloudflare tenant is rejected; it relies solely on the edge configuration.
+  `#CRITICAL`: implement signature and `aud` validation in
+  `app/middleware/cloudflare_access.py` before any route depends on the
+  `Viewer`/`Admin` role split. `#VERIFY`: a fixture token with a foreign `aud`
+  must return 403 once Phase 1 validation lands, per the negative tests
+  planned in `tests/unit/test_middleware.py`.
+- **SQL injection via the SQLite read-through cache.** `app/cache.py` and
+  `app/db.py` do not exist yet at Phase 0; no route handler queries SQLite.
+  When Phase 1 introduces them, every query must be parameterized (no ORM,
+  no string-built SQL), per `CLAUDE.md` "Data layer rules".
 - **Path/identifier injection via opaque cache keys.** `document_id` and
-  `entity_id` path parameters are treated strictly as opaque cache lookup
-  keys; they are never interpolated into filesystem paths, shell commands,
-  or SQL strings. `tests/fuzz/test_route_input_fuzz.py` fuzzes these path
-  parameters (Hypothesis) with adversarial input, including path-traversal
-  sequences, to assert the app never raises an unhandled exception on
-  malformed input.
+  `entity_id` path parameters are intended to be treated strictly as opaque
+  cache lookup keys, never interpolated into filesystem paths, shell
+  commands, or SQL strings; the Phase 0 placeholder handlers already discard
+  these values without using them. `tests/fuzz/test_route_input_fuzz.py`
+  fuzzes these path parameters (Hypothesis) with adversarial input,
+  including path-traversal sequences, to assert the app never raises an
+  unhandled exception on malformed input at this pre-cache-lookup stage.
 - **SSRF via backend service URLs.** The four upstream backend URLs
   (`BACKEND_LLC_MANAGER_URL`, `BACKEND_PP_SECURITY_URL`,
   `BACKEND_XERO_CRYPTO_URL`, `BACKEND_FAMILY_OFFICE_URL`) are fixed at
   process startup from environment variables; no request path accepts a
   user-supplied URL that is then fetched server-side.
 - **Sensitive data exposure to low-proficiency primary users.** Financial
-  values, raw identifiers (EIN, state IDs, UUIDs), and document contents are
-  restricted from list/detail views and from logs above INFO-level auth
-  events (see `CLAUDE.md` "Logging" and "Frontend conventions").
+  values, raw identifiers (EIN, state IDs, UUIDs), and document contents must
+  be restricted from list/detail views and from logs above INFO-level auth
+  events once real data exists (see `CLAUDE.md` "Logging" and "Frontend
+  conventions"). Phase 0 routes return placeholder content with no real
+  financial data, so this control has nothing to protect yet; it becomes
+  load-bearing starting Phase 1.
 - **Dependency vulnerabilities.** Any Python dependency can introduce a
   known CVE; see "Dependency Scanning" below for the mitigation.
 
 ## Security Architecture
 
-Authentication is handled entirely by Cloudflare Zero Trust at the network
-edge. The application validates Cloudflare Access JWTs on every non-static
-request and maps the `email` claim to `Viewer` or `Admin` role. No
-password-based auth, OAuth flows, or session cookies are implemented.
+Authentication happens entirely at the Cloudflare Zero Trust network edge:
+Access enforces identity and issues the `CF-Access-JWT-Assertion` header
+before any request reaches the application (ADR-002). At Phase 0, the
+in-app `CloudflareAccessMiddleware` is a pass-through stub: it does not
+verify the JWT signature, the `aud` claim, or map the `email` claim to a
+role; every request that reaches the app is accepted. Phase 1 replaces the
+stub with the full validation pipeline described in "Authentication rules"
+in `CLAUDE.md`. No password-based auth, OAuth flows, or session cookies are
+implemented, and none are planned.
 
-The application is read-only: it never writes to or directly contacts upstream
-commercial systems. All backend data flows through an internal SQLite cache
-populated by scheduled refresh jobs. The cache database is never exposed to
-the network.
+The application is designed to be read-only: it will never write to or
+directly contact upstream commercial systems. Phase 1 routes all backend
+data through an internal SQLite cache populated by scheduled refresh jobs;
+at Phase 0, `app/cache.py` and `app/db.py` do not exist, and route handlers
+return static placeholder content instead of cached data. The cache
+database, once it exists, is never exposed to the network.
 
 ## Known Limitations
 
