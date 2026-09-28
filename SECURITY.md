@@ -104,9 +104,10 @@ forwards a signed `X-authentik-jwt` header (ADR-005). The in-app
 `exp`, `iss` and `aud`, and a non-empty identity claim. It maps the `groups` claim
 to `Viewer` or `Admin`, requires `Admin` for `/admin/*`, and returns 403 on
 any failure (fail closed). The Authentik and Traefik configuration belongs to
-homelab-infra; ADR-005 records the contract the portal relies on. No
-password-based auth, OAuth flows, or session cookies are implemented in the
-portal, and none are planned.
+homelab-infra; ADR-005 records the contract the portal relies on. Viewers
+cannot see documents marked confidential. No password-based auth, OAuth
+flows, or session cookies are implemented in the portal, and none are
+planned.
 
 The application is designed to be read-only: it will never write to or
 directly contact upstream commercial systems. Phase 1 routes all backend

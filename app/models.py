@@ -86,22 +86,3 @@ class RefreshTriggerResponse(BaseModel):
         description="True when the staleness check was bypassed.",
         examples=[False],
     )
-
-
-class DocumentSearchHit(BaseModel):
-    """Single search result returned by ``GET /documents/search``."""
-
-    id: str = Field(description="Document identifier.", examples=["doc_4f10"])
-    name: str = Field(
-        description="Display name of the document.",
-        examples=["2025 K-1 Schedule"],
-    )
-    category: str = Field(description="Document category.", examples=["Taxes"])
-
-
-class DocumentSearchResponse(BaseModel):
-    """Response payload for ``GET /documents/search``."""
-
-    hits: list[DocumentSearchHit] = Field(
-        description="Matching documents in ranked order.",
-    )

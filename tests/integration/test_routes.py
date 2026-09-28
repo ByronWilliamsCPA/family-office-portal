@@ -45,7 +45,9 @@ def _phase1_routes_present() -> bool:
     try:
         main = importlib.import_module("app.main")
     except SystemExit:
-        return False
+        # Startup fail-fast fired because collection runs without the env
+        # vars; that behavior itself only exists once Phase 1 is in place.
+        return True
     paths = {getattr(r, "path", "") for r in main.app.routes}
     return "/documents" in paths
 
@@ -83,7 +85,6 @@ async def client(
             db.init_schema(str(tmp_db_path))
 
     importlib.reload(main)
-
     transport = httpx.ASGITransport(app=main.app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
@@ -374,3 +375,104 @@ async def test_documents_search_returns_html_partial(
     response = await client.get("/documents/search?q=tax", headers=viewer_headers)
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
+
+
+# --------------------------------------------------------------------------- #
+# Header spoofing and confidential documents (ADR-005, D-14)
+# --------------------------------------------------------------------------- #
+
+
+@phase1
+async def test_plain_authentik_headers_are_not_trusted(
+    client: httpx.AsyncClient,
+) -> None:
+    """Unsigned identity headers alone never grant access.
+
+    # noqa
+    """
+    response = await client.get(
+        "/",
+        headers={
+            "X-authentik-username": "admin",
+            "X-authentik-groups": "fo-admin",
+            "X-authentik-email": "admin@example.com",
+        },
+    )
+    assert response.status_code == 403
+
+
+def _seed_confidential_docs(path: Path) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO documents (id, name, category, is_confidential, proxy_url, "
+            "fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "doc-open",
+                    "Operating Agreement.pdf",
+                    "LLCs",
+                    0,
+                    "/documents/doc-open/preview",
+                    now,
+                ),
+                (
+                    "doc-secret",
+                    "Private Letter.pdf",
+                    "LLCs",
+                    1,
+                    "/documents/doc-secret/preview",
+                    now,
+                ),
+            ],
+        )
+        conn.commit()
+
+
+@phase1
+async def test_viewer_does_not_see_confidential_documents(
+    client: httpx.AsyncClient,
+    tmp_db_path: Path,
+    viewer_headers: dict[str, str],
+) -> None:
+    """Viewers see open documents only, in lists and search.
+
+    # noqa
+    """
+    _seed_confidential_docs(tmp_db_path)
+    page = await client.get("/documents", headers=viewer_headers)
+    search = await client.get("/documents/search?q=pdf", headers=viewer_headers)
+    preview = await client.get("/documents/doc-secret/preview", headers=viewer_headers)
+    assert "Operating Agreement.pdf" in page.text
+    assert "Private Letter.pdf" not in page.text
+    assert "Private Letter.pdf" not in search.text
+    assert preview.status_code == 404
+
+
+@phase1
+async def test_admin_sees_confidential_documents(
+    client: httpx.AsyncClient,
+    tmp_db_path: Path,
+    admin_headers: dict[str, str],
+) -> None:
+    """Admins see every document.
+
+    # noqa
+    """
+    _seed_confidential_docs(tmp_db_path)
+    page = await client.get("/documents", headers=admin_headers)
+    assert "Private Letter.pdf" in page.text
+
+
+@phase1
+async def test_unknown_page_shows_plain_english_not_found(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+) -> None:
+    """A missing page renders an HTML page, not raw JSON.
+
+    # noqa
+    """
+    response = await client.get("/entities/nope", headers=viewer_headers)
+    assert response.status_code == 404
+    assert "could not find that page" in response.text

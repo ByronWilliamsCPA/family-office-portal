@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "partials/freshness.html" import freshness %}
+{% block title %}Home - Family Office{% endblock %}
+{% block content %}
+<h1 class="text-3xl font-semibold mb-6">Welcome</h1>
+<div class="grid gap-6 md:grid-cols-2">
+  <section class="bg-white rounded-xl border border-stone-200 p-6 md:col-span-2" aria-labelledby="totals-heading">
+    <h2 id="totals-heading" class="text-xl font-semibold mb-2">What we own today</h2>
+    {% if total_value is not none %}
+    <p class="text-4xl font-semibold">{{ total_value | money }}</p>
+    {% else %}
+    <p class="text-slate-600">Daily totals will appear here once account balances are connected.</p>
+    {% endif %}
+    {{ freshness(balances_updated, balances_stale) }}
+  </section>
+  <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="upcoming-heading">
+    <h2 id="upcoming-heading" class="text-xl font-semibold mb-3">Coming up</h2>
+    {% if upcoming %}
+    <ul class="space-y-2">
+      {% for entity in upcoming %}
+      <li><a class="text-blue-800 underline" href="/entities/{{ entity['id'] }}">{{ entity['name'] }}</a>: {{ entity['next_date'] | friendly_date }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-slate-600">Nothing is due soon.</p>
+    {% endif %}
+  </section>
+  <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="recent-heading">
+    <h2 id="recent-heading" class="text-xl font-semibold mb-3">Recently added documents</h2>
+    {% if recent_documents %}
+    <ul class="space-y-2">
+      {% for doc in recent_documents %}
+      <li><a class="text-blue-800 underline" href="{{ doc['proxy_url'] }}">{{ doc['name'] }}</a></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-slate-600">No documents yet.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

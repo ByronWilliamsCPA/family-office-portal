@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "partials/freshness.html" import freshness %}
+{% block title %}Documents - Family Office{% endblock %}
+{% block content %}
+<h1 class="text-3xl font-semibold mb-2">Documents</h1>
+{{ freshness(updated, stale) }}
+<form action="/documents" method="get" class="my-6" role="search">
+  <label for="document-search" class="block mb-2">Find a document by name</label>
+  <input id="document-search" name="q" type="search" value="{{ query or '' }}"
+         class="w-full rounded-lg border border-stone-300 px-4 py-3"
+         hx-get="/documents/search" hx-trigger="input changed delay:300ms, search"
+         hx-target="#search-results" hx-push-url="false" autocomplete="off">
+</form>
+<div id="search-results" class="mb-8">{% include "partials/document_results.html" %}</div>
+{% if categories %}
+  {% for category, docs in categories %}
+  <section class="mb-8" aria-labelledby="cat-{{ loop.index }}">
+    <h2 id="cat-{{ loop.index }}" class="text-xl font-semibold mb-3">{{ category }}</h2>
+    <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200">
+      {% for doc in docs %}
+      <li class="px-5 py-4 flex justify-between gap-4">
+        <a class="text-blue-800 underline" href="{{ doc['proxy_url'] }}">{{ doc['name'] }}</a>
+        {% if doc['document_date'] %}<span class="text-slate-500">{{ doc['document_date'] | friendly_date }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+{% else %}
+<p class="text-slate-600">No documents have been added yet.</p>
+{% endif %}
+{% endblock %}

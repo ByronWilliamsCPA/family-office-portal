@@ -1,5 +1,8 @@
 # Project Plan: Family Office Estate Portal
 
+**Note (2026-09-28)**: Documents now come from llc-manager. Where this document
+says otherwise, `CLAUDE.md` takes precedence.
+
 > **Status**: Active | **Version**: 1.0.1 | **Updated**: 2026-09-29
 >
 > Authoritative synthesis of all foundational planning documents. Supersedes

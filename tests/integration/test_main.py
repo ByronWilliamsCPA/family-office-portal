@@ -114,3 +114,15 @@ def test_static_files_mount_is_registered(
     importlib.reload(main)
     routes = [getattr(r, "path", "") for r in main.app.routes]
     assert any(path.startswith("/static") for path in routes)
+
+
+def test_openapi_schema_builds(portal_env: dict[str, str]) -> None:
+    """The OpenAPI document renders; every route annotation resolves at runtime.
+
+    # noqa
+    """
+    del portal_env
+    main = importlib.import_module("app.main")
+    importlib.reload(main)
+    schema = main.app.openapi()
+    assert "/documents/search" in schema["paths"]

@@ -1,5 +1,8 @@
 # Development Roadmap: Family Office Estate Portal
 
+**Note (2026-09-28)**: Documents now come from llc-manager. Where this document
+says otherwise, `CLAUDE.md` takes precedence.
+
 > **Status**: Active | **Updated**: 2026-09-29
 
 ## TL;DR

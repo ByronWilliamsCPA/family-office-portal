@@ -57,6 +57,9 @@ jobs:
       AUTHENTIK_ISSUER: ${{ secrets.AUTHENTIK_ISSUER || 'https://auth.example.invalid/application/o/family-office-portal/' }}
       AUTHENTIK_AUDIENCE: ${{ secrets.AUTHENTIK_AUDIENCE || 'placeholder-client-id' }}
       SQLITE_PATH: ${{ secrets.SQLITE_PATH || '/tmp/portal.db' }}
+      # Optional (app/config.py): keep the refresh scheduler off so the app
+      # never calls the placeholder backend URLs during the contract run.
+      SCHEDULER_ENABLED: "false"
 
     steps:
       - name: Harden runner

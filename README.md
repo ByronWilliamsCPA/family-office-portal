@@ -1,8 +1,8 @@
 # family-office-portal
 
 Secure family estate portal -- consolidated view of entities, finances, documents,
-and portfolio, aggregated from `llc-manager`, `xero_crypto`, `pp-security-master`,
-and `family_office` backends.
+and portfolio, aggregated from the `llc-manager`, `xero_crypto`, and
+`pp-security-master` backends.
 
 ## Overview
 
@@ -91,6 +91,26 @@ stack placeholder, or padded with whitespace). See
 | `AUTHENTIK_ISSUER` | Expected `iss` claim of the Authentik provider |
 | `AUTHENTIK_AUDIENCE` | Expected `aud` claim (the provider's client ID) |
 | `SQLITE_PATH` | Absolute path to the SQLite cache database |
+
+Optional, each with a documented default:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granting Admin |
+| `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granting Viewer |
+| `BACKEND_LLC_MANAGER_API_KEY` | empty | Key sent to llc-manager as `X-API-Key`; unset sends no key header |
+| `BACKEND_PP_SECURITY_API_KEY` | empty | Key sent to pp-security-master as `X-API-Key`; unset sends no key header |
+| `BACKEND_XERO_CRYPTO_API_KEY` | empty | Key sent to xero_crypto as `X-API-Key`; unset sends no key header |
+| `DISPLAY_TIMEZONE` | `UTC` | IANA time zone for "last updated" labels |
+| `SCHEDULER_ENABLED` | `true` | Set `false` for template work without backends |
+| `BACKEND_TIMEOUT_SECONDS` | `10` | Outbound request timeout |
+
+## Container image
+
+`Dockerfile` builds a distroless image (DHI Python 3.12) that compiles Tailwind in
+the builder stage and runs as UID 65532. `.github/workflows/build-image.yml`
+smoke-tests, pushes, and signs `ghcr.io/byronwilliamscpa/family-office-portal`
+with `sha-<short>` tags for the homelab-infra stack to pin.
 
 Optional variables:
 

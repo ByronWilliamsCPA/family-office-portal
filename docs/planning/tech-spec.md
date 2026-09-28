@@ -1,5 +1,8 @@
 # Technical Implementation Spec: Family Office Estate Portal
 
+**Note (2026-09-28)**: Documents now come from llc-manager. Where this document
+says otherwise, `CLAUDE.md` takes precedence.
+
 > **Status**: Draft
 > **Version**: 1.2 | **Updated**: 2026-09-29
 
@@ -240,6 +243,12 @@ Optional variables, each with a documented default:
 | --- | --- | --- |
 | `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granted the Admin role |
 | `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granted the Viewer role; must differ from `FO_ADMIN_GROUP` |
+| `BACKEND_LLC_MANAGER_API_KEY` | empty | Key sent to `llc-manager` as `X-API-Key`; unset sends no key header |
+| `BACKEND_PP_SECURITY_API_KEY` | empty | Key sent to `pp-security-master` as `X-API-Key`; unset sends no key header |
+| `BACKEND_XERO_CRYPTO_API_KEY` | empty | Key sent to `xero_crypto` as `X-API-Key`; unset sends no key header |
+| `BACKEND_TIMEOUT_SECONDS` | `10` | Timeout for outbound refresh-job calls |
+| `DISPLAY_TIMEZONE` | `UTC` | IANA time zone for "last updated" labels |
+| `SCHEDULER_ENABLED` | `true` | Start the refresh scheduler at startup; `false` for template work without backends |
 
 ## 5. Security
 
