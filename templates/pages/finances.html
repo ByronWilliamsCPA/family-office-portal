@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
+{% from "partials/as_of.html" import as_of_note %}
 {% block title %}Finances - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-6">Finances</h1>
@@ -11,6 +12,7 @@
   <p class="text-slate-600">Account totals will appear here once balances are connected.</p>
   {% endif %}
   {{ freshness(balances_updated, balances_stale) }}
+  {{ as_of_note(oldest_as_of, as_of_stale, excluded_currency_count) }}
   <p class="text-base text-slate-500 mt-2">The home, vehicles, and loans are not included yet.</p>
 </section>
 <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="crypto-heading">

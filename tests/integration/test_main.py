@@ -84,9 +84,12 @@ def test_app_attribute_is_a_fastapi_instance(
 def test_missing_env_var_causes_startup_failure(
     portal_env: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     missing: str,
 ) -> None:
     """Per ``CLAUDE.md``: a missing required env var must cause ``sys.exit(1)``.
+
+    The variable's name, never its value, is printed to stderr.
 
     # noqa
     """
@@ -98,6 +101,7 @@ def test_missing_env_var_causes_startup_failure(
     with pytest.raises(SystemExit) as exc_info:
         importlib.reload(main)
     assert exc_info.value.code == 1
+    assert missing in capsys.readouterr().err
 
 
 @phase1

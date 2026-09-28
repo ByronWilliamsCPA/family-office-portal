@@ -16,6 +16,7 @@ and payload errors and records ``status='error'`` instead of raising.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
@@ -51,8 +52,27 @@ _DOCUMENT_CATEGORIES: dict[str, str] = {
     "tax_return": "Tax Returns",
     "tax_election": "Tax Returns",
     "insurance_policy": "Insurance",
+    "operating_agreement": "LLCs",
+    "articles_of_organization": "LLCs",
+    "annual_report": "LLCs",
+    "meeting_minutes": "LLCs",
 }
-_DEFAULT_DOCUMENT_CATEGORY = "LLCs"
+# Unknown types land in "Other", never in a specific folder such as "LLCs",
+# so a will or power of attorney is not filed as an LLC document.
+_DEFAULT_DOCUMENT_CATEGORY = "Other"
+
+# #CRITICAL: concurrency: APScheduler runs jobs on a thread pool and admins can
+# trigger jobs by hand, so writes are serialized through one process-wide lock
+# and each service can run only once at a time.
+# #VERIFY: tests/unit/test_scheduler.py covers the skip-when-running path.
+_WRITE_LOCK = threading.Lock()
+_SERVICE_LOCKS: dict[str, threading.Lock] = {}
+_SERVICE_LOCKS_GUARD = threading.Lock()
+
+
+def _service_lock(service: str) -> threading.Lock:
+    with _SERVICE_LOCKS_GUARD:
+        return _SERVICE_LOCKS.setdefault(service, threading.Lock())
 
 
 def _now() -> str:
@@ -98,7 +118,7 @@ def _record(
 def _get_json(
     client: httpx.Client, url: str, params: dict[str, Any] | None = None
 ) -> Any:  # noqa: ANN401  # JSON payload
-    response = client.get(url, params=params) if params else client.get(url)
+    response = client.get(url, params=params)
     response.raise_for_status()
     return response.json()
 
@@ -115,8 +135,12 @@ def _get_items(client: httpx.Client, url: str) -> list[dict[str, Any]]:
 
     Raises:
         TypeError: If the payload is neither a list nor a paged object.
+        ValueError: If the pages do not add up to ``total``. The refresh then
+            fails and the previous cached rows are kept, rather than
+            replacing them with a partial set.
     """
-    payload: object = _get_json(client, url)
+    params: dict[str, Any] = {"page": 1, "size": _PAGE_SIZE}
+    payload: object = _get_json(client, url, params)
     if isinstance(payload, list):
         return [dict(item) for item in cast("list[dict[str, Any]]", payload)]
     if not isinstance(payload, dict) or "items" not in payload:
@@ -126,14 +150,18 @@ def _get_items(client: httpx.Client, url: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = list(paged["items"])
     total = int(paged.get("total", len(items)))
     page = 1
-    while len(items) < total and page < _MAX_PAGES:
+    while len(items) < total:
         page += 1
+        if page > _MAX_PAGES:
+            msg = f"More than {_MAX_PAGES} pages; refusing a partial refresh"
+            raise ValueError(msg)
         more: dict[str, Any] = dict(
             _get_json(client, url, {"page": page, "size": _PAGE_SIZE})
         )
         batch: list[dict[str, Any]] = list(more.get("items", []))
         if not batch:
-            break
+            msg = f"Got {len(items)} of {total} items; refusing a partial refresh"
+            raise ValueError(msg)
         items.extend(batch)
     return items
 
@@ -157,6 +185,26 @@ def _run_refresh(
         write (Callable[[sqlite3.Connection, Any, str], int]): Writes rows
             inside an open transaction and returns the row count.
     """
+    lock = _service_lock(service)
+    if not lock.acquire(blocking=False):
+        logger.info("refresh_skipped_already_running", service=service)
+        return
+    try:
+        _refresh_once(
+            service, base_url=base_url, api_key=api_key, fetch=fetch, write=write
+        )
+    finally:
+        lock.release()
+
+
+def _refresh_once(
+    service: str,
+    *,
+    base_url: str,
+    api_key: str,
+    fetch: Callable[[httpx.Client, str], Any],
+    write: Callable[[sqlite3.Connection, Any, str], int],
+) -> None:
     settings = load_settings()
     headers = {"Accept": "application/json"}
     if api_key:
@@ -173,12 +221,13 @@ def _run_refresh(
         return
     fetched_at = _now()
     try:
-        conn = connect_sync(settings.sqlite_path)
-        try:
-            with conn:
-                count = write(conn, payload, fetched_at)
-        finally:
-            conn.close()
+        with _WRITE_LOCK:
+            conn = connect_sync(settings.sqlite_path)
+            try:
+                with conn:
+                    count = write(conn, payload, fetched_at)
+            finally:
+                conn.close()
     except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
         logger.warning(
             "refresh_write_failed", service=service, error=type(exc).__name__
@@ -369,10 +418,12 @@ def refresh_documents() -> None:
     )
 
 
+# Scheduled jobs. ``refresh_holdings`` and ``refresh_positions`` stay
+# callable from the admin trigger but are not scheduled: no backend serves
+# their endpoints yet, and MVP task B5 replaces positions with the C-1
+# balance jobs.
 JOBS: dict[str, Callable[[], None]] = {
     "refresh_entities": refresh_entities,
-    "refresh_holdings": refresh_holdings,
-    "refresh_positions": refresh_positions,
     "refresh_documents": refresh_documents,
 }
 

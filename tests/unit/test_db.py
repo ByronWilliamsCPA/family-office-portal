@@ -178,3 +178,17 @@ async def test_async_connection_round_trip_select(configured_db: Path) -> None:
         row = await cursor.fetchone()
     assert row is not None
     assert row[0] == 1
+
+
+def test_migrations_add_currency_and_set_version(tmp_db_path: Path) -> None:
+    """Migrations run once, add ``currency``, and record the schema version.
+
+    # noqa
+    """
+    db.init_schema(str(tmp_db_path))
+    db.init_schema(str(tmp_db_path))
+    with sqlite3.connect(tmp_db_path) as conn:
+        assert db.schema_version(conn) == db.MIGRATIONS[-1][0]
+        for table in ("account_balances", "balances_daily"):
+            columns = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            assert "currency" in columns

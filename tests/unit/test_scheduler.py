@@ -361,7 +361,7 @@ def test_refresh_entities_accepts_llc_manager_paged_shape(
         "items": [
             {
                 "id": "3f0c",
-                "legal_name": "Williams Holdings LLC",
+                "legal_name": "Sample Holdings LLC",
                 "entity_type": "llc",
                 "formation_state": "WY",
                 "is_active": True,
@@ -373,7 +373,7 @@ def test_refresh_entities_accepts_llc_manager_paged_shape(
         scheduler.refresh_entities()
     with sqlite3.connect(initialized_db) as conn:
         row = conn.execute("SELECT name, type, state, status FROM entities").fetchone()
-    assert row == ("Williams Holdings LLC", "llc", "WY", "active")
+    assert row == ("Sample Holdings LLC", "llc", "WY", "active")
 
 
 def test_refresh_sends_backend_api_key(
@@ -486,3 +486,103 @@ def test_build_scheduler_registers_every_job() -> None:
     jobs = {job.id: job for job in sched.get_jobs()}
     assert set(jobs) == set(scheduler.JOBS)
     assert all(job.max_instances == 1 for job in jobs.values())
+
+
+def test_refresh_follows_pages_until_total(initialized_db: Path) -> None:
+    """A paged backend is read page by page until ``total`` rows arrive.
+
+    # noqa
+    """
+    pages = [
+        {"items": [{"id": "e1", "name": "Alpha LLC"}], "total": 2},
+        {"items": [{"id": "e2", "name": "Beta LLC"}], "total": 2},
+    ]
+    client = _mock_client(_mock_response(None))
+    client.get.side_effect = [_mock_response(p) for p in pages]
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        ids = {r[0] for r in conn.execute("SELECT id FROM entities")}
+    assert ids == {"e1", "e2"}
+    assert client.get.call_args_list[1].kwargs["params"] == {
+        "page": 2,
+        "size": scheduler._PAGE_SIZE,  # noqa: SLF001
+    }
+
+
+def test_refresh_keeps_cache_when_pages_fall_short(initialized_db: Path) -> None:
+    """An empty page before ``total`` fails the refresh and keeps old rows.
+
+    # noqa
+    """
+    with sqlite3.connect(initialized_db) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, fetched_at) VALUES ('old', 'Old LLC', 'x')"
+        )
+        conn.commit()
+    client = _mock_client(_mock_response(None))
+    client.get.side_effect = [
+        _mock_response({"items": [{"id": "e1", "name": "Alpha LLC"}], "total": 3}),
+        _mock_response({"items": [], "total": 3}),
+    ]
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        ids = {r[0] for r in conn.execute("SELECT id FROM entities")}
+        status = conn.execute(
+            "SELECT status, message FROM refresh_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert ids == {"old"}
+    assert status[0] == "error"
+    assert "partial" in status[1]
+
+
+def test_refresh_refuses_too_many_pages(
+    initialized_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backend that never reaches ``total`` is stopped at the page cap.
+
+    # noqa
+    """
+    monkeypatch.setattr(scheduler, "_MAX_PAGES", 2)
+    client = _mock_client(
+        _mock_response({"items": [{"id": "e1", "name": "Alpha LLC"}], "total": 99})
+    )
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        status = conn.execute(
+            "SELECT status, message FROM refresh_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert status[0] == "error"
+    assert "pages" in status[1]
+
+
+def test_refresh_skips_when_same_service_is_running(initialized_db: Path) -> None:
+    """A second run of a service that is already running does nothing.
+
+    # noqa
+    """
+    lock = scheduler._service_lock("llc-manager")  # noqa: SLF001
+    assert lock.acquire(blocking=False)
+    try:
+        with patch("httpx.Client") as client_cls:
+            scheduler.refresh_entities()
+        client_cls.assert_not_called()
+    finally:
+        lock.release()
+    with sqlite3.connect(initialized_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM refresh_log").fetchone()[0] == 0
+
+
+def test_unknown_document_type_defaults_to_other(initialized_db: Path) -> None:
+    """A document type the portal does not know is filed under "Other".
+
+    # noqa
+    """
+    payload = {"items": [{"id": "d9", "title": "Will", "document_type": "will"}]}
+    with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
+        scheduler.refresh_documents()
+    with sqlite3.connect(initialized_db) as conn:
+        row = conn.execute("SELECT category FROM documents WHERE id='d9'").fetchone()
+    assert row[0] == "Other"

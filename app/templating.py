@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -72,19 +73,20 @@ def friendly_date(value: str | None) -> str:
     return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
 
 
-def money(value: float | None) -> str:
+def money(value: Decimal | float | None) -> str:
     """Format a dollar amount with no cents, for example "$1,250,000".
 
     Args:
-        value (float | None): Amount in dollars.
+        value (Decimal | float | None): Amount in dollars.
 
     Returns:
         str: Formatted amount, or "Not available" when missing.
     """
     if value is None:
         return "Not available"
-    sign = "-" if value < 0 else ""
-    return f"{sign}${abs(value):,.0f}"
+    amount = Decimal(str(value)).quantize(Decimal(1), rounding=ROUND_HALF_EVEN)
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):,}"
 
 
 templates.env.filters["friendly_time"] = friendly_time
