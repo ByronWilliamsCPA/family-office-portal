@@ -119,12 +119,21 @@ Key documents to read before making architectural or data-model decisions:
 - **HTMX**: Loaded as a static asset (`static/htmx.min.js`). Do not load HTMX from
   a CDN in production templates.
 - **Charts**: Chart.js v4 vendored in `static/`. Do not add other chart libraries.
-- **Scheduler**: APScheduler v3 configured in-process at FastAPI startup. All four
-  refresh jobs (`refresh_entities`, `refresh_holdings`, `refresh_positions`,
-  `refresh_documents`) run on independent cadences.
+- **Scheduler**: APScheduler v3 configured in-process at FastAPI startup. Four
+  refresh functions exist (`refresh_entities`, `refresh_holdings`,
+  `refresh_positions`, `refresh_documents`); only entities and documents are
+  scheduled until the holdings and positions backends ship their endpoints.
+  Admins can still trigger any of them. Each service runs at most once at a
+  time, and every SQLite write goes through `app.scheduler._WRITE_LOCK`.
+- **Paging**: refresh jobs read `{items, total}` pages until `total` rows arrive.
+  A short or runaway page set fails the refresh and keeps the old cache; never
+  replace cached rows with a partial set.
 - **Database**: SQLite via `aiosqlite` for async reads in route handlers; synchronous
   writes in APScheduler refresh jobs. Initialize with `PRAGMA journal_mode=WAL` and
   `PRAGMA busy_timeout=5000`. No ORM; use raw SQL with parameterized queries.
+  Schema changes go in `app.db.MIGRATIONS`, tracked by `PRAGMA user_version`.
+- **Money**: totals are USD only (contract C-1); other currencies are counted and
+  shown as left out. Format with `Decimal`, never float arithmetic.
 - **HTTP client**: `httpx` for outbound calls in APScheduler refresh jobs. Use
   `httpx.Client` (synchronous) inside scheduler jobs; `httpx.AsyncClient` in tests.
   Backends are reached on a private Docker network and each checks a per-service

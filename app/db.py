@@ -8,8 +8,8 @@ Async readers (route handlers) use ``get_connection``; synchronous writers
 
 #CRITICAL: data integrity: WAL allows concurrent async readers alongside one
 synchronous writer; two writers would contend on the database lock.
-#VERIFY: APScheduler runs with ``max_instances=1`` per job and a single
-process (uvicorn ``--workers 1``) so only one writer exists at a time.
+#VERIFY: every refresh write goes through ``app.scheduler._WRITE_LOCK`` and
+the app runs as a single process (uvicorn ``--workers 1``).
 """
 
 from __future__ import annotations
@@ -143,8 +143,35 @@ def connect_sync(path: str) -> sqlite3.Connection:
     return conn
 
 
+# Ordered schema migrations applied after the base schema. Each entry moves
+# ``PRAGMA user_version`` to its number. Append new entries; never edit or
+# reorder existing ones, because deployed databases have already run them.
+MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (
+        1,
+        """
+        ALTER TABLE account_balances ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+        ALTER TABLE balances_daily ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+        """,
+    ),
+)
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    """Return the database's applied migration number.
+
+    Args:
+        conn (sqlite3.Connection): Open connection.
+
+    Returns:
+        int: ``PRAGMA user_version`` (0 for a database with no migrations).
+    """
+    row = conn.execute("PRAGMA user_version").fetchone()
+    return int(row[0]) if row else 0
+
+
 def init_schema(path: str) -> None:
-    """Create the database file and all tables if they do not exist.
+    """Create the database, then apply any migrations it has not run yet.
 
     Safe to call on every startup.
 
@@ -155,6 +182,13 @@ def init_schema(path: str) -> None:
     conn = connect_sync(path)
     try:
         conn.executescript(_SCHEMA)
+        current = schema_version(conn)
+        for version, script in MIGRATIONS:
+            if version <= current:
+                continue
+            conn.executescript(
+                f"BEGIN;\n{script}\nPRAGMA user_version = {version};\nCOMMIT;"
+            )
         conn.commit()
     finally:
         conn.close()

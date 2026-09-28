@@ -33,9 +33,13 @@ if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.responses import Response
 
-for _var in REQUIRED_ENV_VARS:
-    if not os.environ.get(_var):
-        sys.exit(1)
+_missing = [var for var in REQUIRED_ENV_VARS if not os.environ.get(var)]
+if _missing:
+    # Names only, never values, so no secret reaches the container log.
+    sys.stderr.write(
+        "Missing required environment variables: " + ", ".join(_missing) + "\n"
+    )
+    sys.exit(1)
 
 
 @asynccontextmanager

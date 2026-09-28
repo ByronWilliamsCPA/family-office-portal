@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
+{% from "partials/as_of.html" import as_of_note %}
 {% block title %}Home - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-6">Welcome</h1>
@@ -12,6 +13,7 @@
     <p class="text-slate-600">Daily totals will appear here once account balances are connected.</p>
     {% endif %}
     {{ freshness(balances_updated, balances_stale) }}
+    {{ as_of_note(oldest_as_of, as_of_stale, excluded_currency_count) }}
   </section>
   <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="upcoming-heading">
     <h2 id="upcoming-heading" class="text-xl font-semibold mb-3">Coming up</h2>

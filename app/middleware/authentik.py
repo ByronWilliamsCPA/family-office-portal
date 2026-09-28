@@ -23,6 +23,7 @@ names and JWKS URL before first production use.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -109,6 +110,9 @@ class JwksCache:
     def __init__(self) -> None:
         self._keys: dict[str, Any] = {}
         self._fetched_at: float = 0.0
+        # Requests validate on the thread pool; the lock stops a burst of
+        # requests with a new kid from each fetching the JWKS.
+        self._lock = threading.Lock()
 
     def clear(self) -> None:
         """Drop cached keys so the next lookup refetches."""
@@ -140,12 +144,13 @@ class JwksCache:
         Raises:
             AuthError: If no key matches ``kid`` after a refresh.
         """
-        age = time.monotonic() - self._fetched_at
-        expired = not self._keys or age > ttl
-        unknown = kid not in self._keys and age > _MIN_REFRESH_INTERVAL_SECONDS
-        if expired or unknown:
-            self._refresh(url, timeout)
-        key = self._keys.get(kid)
+        with self._lock:
+            age = time.monotonic() - self._fetched_at
+            expired = not self._keys or age > ttl
+            unknown = kid not in self._keys and age > _MIN_REFRESH_INTERVAL_SECONDS
+            if expired or unknown:
+                self._refresh(url, timeout)
+            key = self._keys.get(kid)
         if key is None:
             msg = "Signing key not found"
             raise AuthError(msg)

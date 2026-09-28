@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -19,7 +20,8 @@ from cryptography.hazmat.primitives import serialization
 
 from app import cache, db
 from app.middleware import authentik
-from app.templating import friendly_date, friendly_time, money
+from app.routes._context import AS_OF_WARN_DAYS, balances_summary
+from app.templating import friendly_date, friendly_time, money, templates
 
 
 @pytest.fixture
@@ -271,3 +273,84 @@ async def test_lifespan_skips_scheduler_when_disabled(
         async with main.lifespan(main.app):
             assert await anyio.Path(tmp_db_path).exists()
         build.assert_not_called()
+
+
+def test_money_rounds_half_even_from_decimal() -> None:
+    """Decimal amounts round half to even, with no float drift.
+
+    # noqa
+    """
+    assert money(Decimal("2.50")) == "$2"
+    assert money(Decimal("3.50")) == "$4"
+    assert money(Decimal("1234567.49")) == "$1,234,567"
+
+
+def _insert_balance(
+    path: Path, account_id: str, cents: int, as_of: str, currency: str = "USD"
+) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO account_balances (account_id, account_name, category, "
+            "source, value_cents, as_of, fetched_at, currency) "
+            "VALUES (?, 'Acct', 'Cash', 'xero', ?, ?, ?, ?)",
+            (
+                account_id,
+                cents,
+                as_of,
+                datetime.now(timezone.utc).isoformat(),
+                currency,
+            ),
+        )
+        conn.commit()
+
+
+async def test_balances_summary_sums_usd_only(seeded_db: Path) -> None:
+    """Only USD rows are totalled; other currencies are counted and left out.
+
+    # noqa
+    """
+    today = datetime.now(timezone.utc).date()
+    _insert_balance(seeded_db, "a1", 150_050, today.isoformat())
+    _insert_balance(seeded_db, "a2", 25_000, (today - timedelta(days=3)).isoformat())
+    _insert_balance(seeded_db, "a3", 999_999, today.isoformat(), currency="EUR")
+    summary = await balances_summary()
+    assert summary["total_value"] == Decimal("1750.50")
+    assert summary["excluded_currency_count"] == 1
+    assert summary["oldest_as_of"] == (today - timedelta(days=3)).isoformat()
+    assert summary["as_of_stale"] is False
+
+
+async def test_balances_summary_flags_old_as_of(seeded_db: Path) -> None:
+    """A value older than the warning window is flagged even if fetched today.
+
+    # noqa
+    """
+    old = datetime.now(timezone.utc).date() - timedelta(days=AS_OF_WARN_DAYS + 1)
+    _insert_balance(seeded_db, "a1", 100, old.isoformat())
+    summary = await balances_summary()
+    assert summary["as_of_stale"] is True
+
+
+async def test_balances_summary_empty(seeded_db: Path) -> None:
+    """No USD balances gives no total rather than zero.
+
+    # noqa
+    """
+    summary = await balances_summary()
+    assert summary["total_value"] is None
+    assert summary["oldest_as_of"] is None
+    assert summary["excluded_currency_count"] == 0
+
+
+def test_as_of_note_renders_warning() -> None:
+    """The as-of macro warns in plain English and mentions left-out currencies.
+
+    # noqa
+    """
+    template = templates.env.from_string(
+        '{% from "partials/as_of.html" import as_of_note %}'
+        "{{ as_of_note('2026-01-31', true, 2) }}"
+    )
+    html = template.render()
+    assert "may need updating" in html
+    assert "2 accounts in other currencies not included" in html

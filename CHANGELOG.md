@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Schema migrations tracked by `PRAGMA user_version`; migration 1 adds a `currency` column to `account_balances` and `balances_daily`
 - MVP foundation (M0): pydantic settings with startup fail-fast (`app/config.py`), SQLite schema with WAL and busy timeout including `account_balances` and durable `balances_daily` history (`app/db.py`), async cache readers with allowlisted staleness checks (`app/cache.py`), and APScheduler refresh jobs that log every run to `refresh_log` and keep cached rows on failure (`app/scheduler.py`)
 - Authentik forward-auth middleware validating the signed `X-authentik-jwt` header (signature, `iss`, `aud`, `exp`), mapping `fo-viewer`/`fo-admin` groups to roles, and failing closed (ADR-004)
 - Server-rendered pages for Home, Documents, Finances, Portfolio, and Entities with plain-English freshness labels, HTMX name search, confidential-document filtering for Viewers, and an HTML not-found page
@@ -64,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Refresh jobs now follow `{items, total}` paging; a short or runaway page set fails the refresh and keeps the old cache instead of replacing it with partial data
+- Refresh jobs no longer overlap: one lock per service plus one process-wide SQLite write lock; the unfinished holdings and positions jobs are no longer scheduled (admins can still trigger them)
+- Account totals sum USD rows only and say how many accounts in other currencies are left out; money is formatted from `Decimal` with half-even rounding
+- Home and Finances show the oldest balance as-of date and warn when a value is older than 35 days, even if it was fetched recently
+- Unknown document types are filed under "Other" instead of "LLCs"
+- Startup prints the names of missing required environment variables to stderr before exiting
+- The JWKS cache is locked so concurrent requests with a new key ID fetch the key set once
 - CI: SonarCloud quality gate now evaluates correctly after passing the project version (read dynamically from `pyproject.toml`) to the scan action; without a project version the quality gate returned `NONE` and the gate action failed
 - CI: placeholder test `assert True` removed so the function body is just its existing docstring, resolving SonarCloud rule S5914 (constant boolean expression in assertion); pytest still collects and passes the function
 - CI: OpenSSF Scorecard workflow now sets `publish-results: false` to prevent OIDC token mismatch when running as a callee reusable workflow (the token resolves to the .github repo, not the calling repo)

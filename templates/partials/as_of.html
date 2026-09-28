@@ -1,0 +1,10 @@
+{% macro as_of_note(oldest, stale, excluded) -%}
+{% if oldest %}
+<p class="text-base {% if stale %}text-amber-800{% else %}text-slate-500{% endif %}">
+  {%- if stale %}Some values are from {{ oldest | friendly_date }} and may need updating.{% else %}Oldest value is from {{ oldest | friendly_date }}.{% endif -%}
+</p>
+{% endif %}
+{% if excluded %}
+<p class="text-base text-slate-500">{{ excluded }} account{{ 's' if excluded != 1 }} in other currencies not included.</p>
+{% endif %}
+{%- endmacro %}
