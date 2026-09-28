@@ -251,6 +251,7 @@ jobs:
   security-gate-validation:
     name: Security Gate Validation
     runs-on: ubuntu-latest
+    permissions: {}
     needs:
       - dependency-security
       - security-scanning
