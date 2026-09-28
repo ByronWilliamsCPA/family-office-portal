@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Status**: Active | **Version**: 1.2.0 | **Updated**: 2026-05-23
+> **Status**: Active | **Version**: 1.3.0 | **Updated**: 2026-09-28
 >
 > Project-specific rules for the family-office-portal FastAPI application.
 > Global standards are in `~/.claude/CLAUDE.md` and apply everywhere.
@@ -50,18 +50,21 @@ The Python package is `app/`. All source files live under it; do not create top-
 ```text
 app/
   main.py              # FastAPI app instantiation, lifespan, middleware registration
-  middleware/          # CF JWT validation middleware
+  config.py            # Pydantic settings; REQUIRED_ENV_VARS checked at startup
+  middleware/          # Authentik JWT validation middleware (ADR-004)
   routes/              # One module per section (home, documents, finances, portfolio, entities)
+  templating.py        # Jinja2 environment, plain-English filters, render helper
   cache.py             # Async SQLite readers called by route handlers
   scheduler.py         # APScheduler setup; refresh job definitions
   db.py                # SQLite connection factory, schema init (WAL + busy_timeout)
 templates/
+  base.html            # Shared layout and five-section navigation
   pages/               # Full-page Jinja2 templates (browser-navigable URLs)
-  partials/            # HTMX fragment templates (not navigable directly)
+  partials/            # HTMX fragment templates and macros (not navigable directly)
 static/
-  htmx.min.js          # Vendored; do not load from CDN
-  chart.umd.min.js     # Vendored Chart.js v4
-  css/                 # Tailwind output
+  htmx.min.js          # Vendored HTMX 2.0.4 (0BSD); do not load from CDN
+  chart.umd.min.js     # Vendored Chart.js v4 (added with the first chart)
+  css/input.css        # Tailwind source; output.css is built in the Docker image
 tests/
   conftest.py          # SQLite fixture DB, httpx AsyncClient
 ```
@@ -70,7 +73,7 @@ Component-to-file mapping from `docs/planning/tech-spec.md`:
 
 | Component | Location | Notes |
 | --- | --- | --- |
-| CF JWT Middleware | `app/middleware/` | Validates header, signature, `aud` claim, maps role |
+| Authentik JWT Middleware | `app/middleware/authentik.py` | Validates `X-authentik-jwt` signature, `iss`, `aud`, `exp`; maps groups to role |
 | Route Handlers | `app/routes/` | Return `TemplateResponse`; read SQLite via `cache.py` |
 | Cache Reader | `app/cache.py` | Async `aiosqlite` reads; called by routes |
 | Refresh Scheduler | `app/scheduler.py` | Sync writes; calls backend services via `httpx` |
@@ -83,16 +86,19 @@ users view it on tablets. Reliability and plain-English presentation are the top
 priorities. The portal is a read-only consumer of four backend services; it never
 writes to or contacts upstream commercial systems directly.
 
-**Current phase**: Phase 0 (Foundation) -- all tasks "Planned"; no application code exists yet.
-Phase 0 goal: scaffold, auth middleware, CI pipeline, and five empty section shells.
+**Current phase**: MVP foundation (M0) built: settings, SQLite schema, cache readers,
+refresh scheduler, Authentik auth, five section templates, Docker image. The MVP plan
+and critical path live in the private `williaby/family_office` repository
+(`planning/mvp-critical-path.md`).
 
 Key documents to read before making architectural or data-model decisions:
 
 - `docs/planning/tech-spec.md` -- canonical stack, schema, endpoints, env vars
 - `docs/architecture/adr/adr-001-frontend-rendering-architecture.md` -- server-rendered
   HTML is a settled decision; do not propose SPA patterns
-- `docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md` -- auth is at
-  the network edge; do not add application-level password handling
+- `docs/architecture/adr/adr-004-authentication-authentik-forward-auth.md` -- auth is
+  Authentik forward auth at the proxy (supersedes ADR-002); do not add
+  application-level password handling
 - `docs/architecture/adr/adr-003-backend-data-aggregation.md` -- all data flows through
   the SQLite read-through cache; route handlers never call backend services directly
 - `docs/planning/roadmap.md` -- current phase and acceptance criteria
@@ -121,26 +127,31 @@ Key documents to read before making architectural or data-model decisions:
   `PRAGMA busy_timeout=5000`. No ORM; use raw SQL with parameterized queries.
 - **HTTP client**: `httpx` for outbound calls in APScheduler refresh jobs. Use
   `httpx.Client` (synchronous) inside scheduler jobs; `httpx.AsyncClient` in tests.
-  Backend auth mechanism (API key vs private network) is unconfirmed; confirm with
-  each backend team before Phase 1. #ASSUME
+  Backends are reached on a private Docker network and each checks a per-service
+  API key sent as `X-API-Key` (MVP task A5). #ASSUME backends implement the key
+  check. #VERIFY with each backend before its refresh job is enabled.
 - **Logging**: `structlog` in structured JSON format. Never log financial values,
   document contents, or email addresses beyond INFO-level auth events.
 
 ## Authentication rules
 
-Cloudflare Zero Trust handles authentication at the network edge (ADR-002). The
-portal's only auth responsibility is JWT validation in middleware.
+Traefik's `authentik-chain@file` forward-auth middleware authenticates every request
+with Authentik before it reaches the portal (ADR-004, supersedes ADR-002). The portal's
+only auth responsibility is validating the identity it is handed.
 
-The CF JWT middleware must:
+The Authentik middleware must:
 
-1. Require the `CF-Access-JWT-Assertion` header on every non-static request.
-2. Validate the JWT signature against Cloudflare public keys fetched from
-   `https://<CF_TEAM_DOMAIN>/cdn-cgi/access/certs` at startup (cache with TTL).
-3. Validate the `aud` claim against `CF_ACCESS_APP_ID`. Skipping this check allows
-   tokens issued to other apps in the same Cloudflare tenant -- a security gap
-   documented in ADR-002. #CRITICAL
-4. Map the `email` claim to `Viewer` or `Admin` role via `VIEWER_EMAILS` and
-   `ADMIN_EMAILS` env vars.
+1. Require the `X-authentik-jwt` header on every request except `/health` and
+   `/static/`. Missing or invalid tokens get 403 (fail closed).
+2. Validate the JWT signature against the proxy provider's JWKS
+   (`AUTHENTIK_JWKS_URL`, cached with a TTL and refetched on an unknown `kid`).
+3. Validate `iss` against `AUTHENTIK_ISSUER` and `aud` against `AUTHENTIK_AUDIENCE`.
+   Skipping `aud` accepts tokens issued to other Authentik applications. #CRITICAL
+4. Never trust the plain `X-authentik-username` or `X-authentik-groups` headers; any
+   container on the shared `traefik_proxy` network could send them. #CRITICAL
+5. Map the `groups` claim to `Admin` (`fo-admin`) or `Viewer` (`fo-viewer`); anyone
+   else gets 403. `/admin/*` requires Admin.
+6. Hide documents marked confidential from Viewers (D-14).
 
 Never implement password-based auth, OAuth flows, or session cookies.
 
@@ -154,7 +165,8 @@ Never implement password-based auth, OAuth flows, or session cookies.
   - `entities` (llc-manager): 8 hours
   - `holdings` / `performance` (pp-security-master): 4 hours
   - `positions` (xero_crypto): 4 hours
-  - `documents` (family_office): 24 hours
+  - `balances` (account balance snapshots, MVP): 24 hours
+  - `documents` (llc-manager documents endpoint): 24 hours
 - A stale section must show the last cached value plus a "last updated [time]" label.
   Never show a blank section or an unhandled error to a primary user.
 - `pp-security-master` is alpha-status. Treat its 500 responses as expected; surface
@@ -162,13 +174,18 @@ Never implement password-based auth, OAuth flows, or session cookies.
 
 ## Environment variables
 
-All environment variables in `docs/planning/tech-spec.md` section 4 are required at
-startup. The application must call `sys.exit(1)` if any are absent. Do not add
-optional env vars without a documented default.
+The variables in `app/config.py` `REQUIRED_ENV_VARS` are required at startup. The
+application must call `sys.exit(1)` if any are absent. Do not add optional env vars
+without a documented default.
 
-Required: `BACKEND_LLC_MANAGER_URL`, `BACKEND_PP_SECURITY_URL`,
-`BACKEND_XERO_CRYPTO_URL`, `BACKEND_FAMILY_OFFICE_URL`, `CF_TEAM_DOMAIN`,
-`CF_ACCESS_APP_ID`, `VIEWER_EMAILS`, `ADMIN_EMAILS`, `SQLITE_PATH`.
+Required: `BACKEND_LLC_MANAGER_URL`, `BACKEND_LLC_MANAGER_API_KEY`,
+`BACKEND_PP_SECURITY_URL`, `BACKEND_PP_SECURITY_API_KEY`, `BACKEND_XERO_CRYPTO_URL`,
+`BACKEND_XERO_CRYPTO_API_KEY`, `AUTHENTIK_JWKS_URL`, `AUTHENTIK_ISSUER`,
+`AUTHENTIK_AUDIENCE`, `SQLITE_PATH`.
+
+Optional with defaults: `FO_VIEWER_GROUP` (`fo-viewer`), `FO_ADMIN_GROUP` (`fo-admin`),
+`BACKEND_TIMEOUT_SECONDS` (10), `JWKS_CACHE_SECONDS` (600), `DISPLAY_TIMEZONE` (`UTC`),
+`SCHEDULER_ENABLED` (`true`).
 
 ## Frontend conventions
 
@@ -216,7 +233,7 @@ Use `httpx.AsyncClient` (already a project dependency) as the FastAPI test clien
 | Read-only exploration | Haiku 4.5 | File scanning, quick lookups |
 
 Use Haiku for the built-in `Explore` subagent (file scanning, structure mapping).
-Use Opus when reasoning about CF JWT middleware security or SQLite WAL concurrency.
+Use Opus when reasoning about Authentik JWT middleware security or SQLite WAL concurrency.
 
 ## Response-Aware Development (RAD)
 
@@ -227,7 +244,8 @@ and `#EDGE` markers paired with `#VERIFY` instructions. Mandatory categories:
 - **External resources**: backend service availability; `pp-security-master` alpha
   status is a standing `#ASSUME`
 - **Data integrity**: SQLite WAL concurrency between async readers and sync writer
-- **Security**: CF JWT `aud` claim validation; any bypass is a `#CRITICAL`
+- **Security**: Authentik JWT `iss`/`aud` validation and ignoring unsigned identity
+  headers; any bypass is a `#CRITICAL`
 - **Financial**: net worth aggregation logic; any rounding or currency assumption
   is an `#ASSUME` requiring `#VERIFY`
 

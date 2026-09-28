@@ -245,6 +245,8 @@ def _test_script(
     success_status: int,
     expects_json: bool,
     declares_422: bool,
+    *,
+    protected: bool = False,
 ) -> str:
     """Build the Postman test script for an operation.
 
@@ -253,10 +255,20 @@ def _test_script(
         expects_json: True when the success response declares JSON content.
         declares_422: True when the operation declares a 422 response (i.e.
             it accepts a request body or validated parameters).
+        protected: True when the route requires an Authentik identity. Newman
+            runs without one, so a protected route must return 403 (ADR-004).
 
     Returns:
         str: JavaScript test script for the Postman request.
     """
+    if protected:
+        return "\n".join(
+            [
+                "pm.test('route requires an Authentik identity', function () {",
+                "    pm.expect(pm.response.code).to.equal(403);",
+                "});",
+            ],
+        )
     allowed = [success_status, 422] if declares_422 else [success_status]
     allowed_js = ", ".join(str(code) for code in allowed)
     lines: list[str] = [

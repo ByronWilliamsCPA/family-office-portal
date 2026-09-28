@@ -2,6 +2,6 @@
 # SPDX-License-Identifier: MIT
 """HTTP middleware package for the family office portal."""
 
-from app.middleware.cloudflare_access import CloudflareAccessMiddleware
+from app.middleware.authentik import AuthentikAuthMiddleware, Principal, Role
 
-__all__ = ["CloudflareAccessMiddleware"]
+__all__ = ["AuthentikAuthMiddleware", "Principal", "Role"]

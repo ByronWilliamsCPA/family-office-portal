@@ -7,7 +7,8 @@ Spec contract (``CLAUDE.md`` "Tech stack conventions" + tech-spec §4):
 
 * Four refresh jobs: ``refresh_entities`` (llc-manager), ``refresh_holdings``
   (pp-security-master), ``refresh_positions`` (xero_crypto),
-  ``refresh_documents`` (family_office).
+  ``refresh_documents`` (llc-manager documents, D-15 in the family office
+  planning log; previously family_office).
 * Use synchronous ``httpx.Client`` for outbound calls.
 * Write fetched rows to SQLite with a ``fetched_at`` timestamp.
 * Audit each run in the ``refresh_log`` table with status ``success`` or ``error``.
@@ -36,7 +37,7 @@ db = pytest.importorskip("app.db")
 def initialized_db(
     tmp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    cf_env: dict[str, str],
+    portal_env: dict[str, str],
 ) -> Path:
     """Initialize a SQLite schema and point env at it for the scheduler.
 
@@ -283,12 +284,12 @@ def test_refresh_positions_preserves_cache_on_failure(
 
 
 # --------------------------------------------------------------------------- #
-# refresh_documents (family_office)
+# refresh_documents (llc-manager documents)
 # --------------------------------------------------------------------------- #
 
 
 def test_refresh_documents_writes_rows_to_cache(initialized_db: Path) -> None:
-    """A successful family_office fetch lands rows in documents.
+    """A successful llc-manager documents fetch lands rows in documents.
 
     # noqa
     """
@@ -312,7 +313,7 @@ def test_refresh_documents_writes_rows_to_cache(initialized_db: Path) -> None:
 def test_refresh_documents_preserves_cache_on_failure(
     initialized_db: Path,
 ) -> None:
-    """A family_office 5xx must not wipe existing cached documents.
+    """An llc-manager documents 5xx must not wipe existing cached documents.
 
     # noqa
     """
@@ -337,7 +338,131 @@ def test_refresh_documents_preserves_cache_on_failure(
         ]
         log = conn.execute(
             "SELECT status FROM refresh_log "
-            "WHERE service = 'family_office' ORDER BY id DESC LIMIT 1"
+            "WHERE service = 'llc-manager-documents' ORDER BY id DESC LIMIT 1"
         ).fetchall()
     assert "Will.pdf" in names
     assert log and log[0][0] == "error"
+
+
+# --------------------------------------------------------------------------- #
+# Backend contract details
+# --------------------------------------------------------------------------- #
+
+
+def test_refresh_entities_accepts_llc_manager_paged_shape(
+    initialized_db: Path,
+) -> None:
+    """llc-manager returns ``{items, total}`` with ``legal_name`` fields.
+
+    # noqa
+    """
+    payload = {
+        "items": [
+            {
+                "id": "3f0c",
+                "legal_name": "Williams Holdings LLC",
+                "entity_type": "llc",
+                "formation_state": "WY",
+                "is_active": True,
+            }
+        ],
+        "total": 1,
+    }
+    with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        row = conn.execute("SELECT name, type, state, status FROM entities").fetchone()
+    assert row == ("Williams Holdings LLC", "llc", "WY", "active")
+
+
+def test_refresh_sends_backend_api_key(initialized_db: Path) -> None:
+    """Each job sends the per-service API key (A5).
+
+    # noqa
+    """
+    del initialized_db
+    with patch(
+        "httpx.Client", return_value=_mock_client(_mock_response([]))
+    ) as client_cls:
+        scheduler.refresh_entities()
+    headers = client_cls.call_args.kwargs["headers"]
+    assert headers["X-API-Key"] == "llc-key"
+
+
+def test_refresh_documents_maps_type_to_category_and_flags_confidential(
+    initialized_db: Path,
+) -> None:
+    """Documents without a category get one from ``document_type``.
+
+    # noqa
+    """
+    payload = {
+        "items": [
+            {
+                "id": "d1",
+                "title": "2025 Form 1065",
+                "document_type": "tax_return",
+                "entity_id": "e1",
+                "is_confidential": True,
+            },
+            {
+                "id": "d2",
+                "title": "Operating Agreement",
+                "document_type": "operating_agreement",
+            },
+        ],
+        "total": 2,
+    }
+    with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
+        scheduler.refresh_documents()
+    with sqlite3.connect(initialized_db) as conn:
+        rows = {
+            r[0]: r[1:]
+            for r in conn.execute(
+                "SELECT id, category, is_confidential, proxy_url FROM documents"
+            )
+        }
+    assert rows["d1"] == ("Tax Returns", 1, "/documents/d1/preview")
+    assert rows["d2"][0] == "LLCs"
+
+
+def test_refresh_logs_error_on_unexpected_payload(initialized_db: Path) -> None:
+    """A payload of the wrong shape is logged as an error, not raised.
+
+    # noqa
+    """
+    with patch("httpx.Client", return_value=_mock_client(_mock_response("nope"))):
+        scheduler.refresh_positions()
+    with sqlite3.connect(initialized_db) as conn:
+        status = conn.execute(
+            "SELECT status FROM refresh_log WHERE service = 'xero_crypto'"
+        ).fetchone()
+    assert status == ("error",)
+
+
+def test_refresh_logs_error_on_connection_failure(initialized_db: Path) -> None:
+    """A transport error is logged as an error.
+
+    # noqa
+    """
+    client = _mock_client(_mock_response([]))
+    client.get.side_effect = httpx.ConnectError("down")
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        status = conn.execute(
+            "SELECT status, message FROM refresh_log WHERE service = 'llc-manager'"
+        ).fetchone()
+    assert status[0] == "error"
+    assert "ConnectError" in status[1]
+
+
+def test_build_scheduler_registers_every_job() -> None:
+    """The scheduler has one job per dataset, none running concurrently.
+
+    # noqa
+    """
+    sched = scheduler.build_scheduler()
+    jobs = {job.id: job for job in sched.get_jobs()}
+    assert set(jobs) == set(scheduler.JOBS)
+    assert all(job.max_instances == 1 for job in jobs.values())

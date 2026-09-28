@@ -1,0 +1,4 @@
+/* Tailwind CSS v4 source. Build with:
+   tailwindcss -i static/css/input.css -o static/css/output.css --minify */
+@import "tailwindcss";
+@source "../../templates";

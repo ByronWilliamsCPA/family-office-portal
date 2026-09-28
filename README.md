@@ -1,15 +1,16 @@
 # family-office-portal
 
 Secure family estate portal -- consolidated view of entities, finances, documents,
-and portfolio, aggregated from `llc-manager`, `xero_crypto`, `pp-security-master`,
-and `family_office` backends.
+and portfolio, aggregated from the `llc-manager`, `xero_crypto`, and
+`pp-security-master` backends.
 
 ## Overview
 
 A private, read-only web application built with Python/FastAPI and server-rendered
 Jinja2 templates with HTMX partial updates. All data flows through a SQLite
-read-through cache populated by scheduled refresh jobs. Authentication is handled
-entirely by Cloudflare Zero Trust at the network edge.
+read-through cache populated by scheduled refresh jobs. Sign-in is handled by
+Authentik forward auth behind Pangolin and Traefik on the homelab (ADR-004); the
+portal validates the signed `X-authentik-jwt` header.
 
 Five sections: Home, Documents, Finances, Portfolio, Entities.
 
@@ -17,9 +18,10 @@ Five sections: Home, Documents, Finances, Portfolio, Entities.
 
 - Python 3.12 (only; 3.13 is not yet supported)
 - [UV](https://docs.astral.sh/uv/) package manager
-- Cloudflare Zero Trust application configured (see ADR-002)
-- Backend services accessible: `llc-manager`, `pp-security-master`, `xero_crypto`,
-  `family_office`
+- An Authentik forward-auth proxy provider for the portal, with groups `fo-viewer`
+  and `fo-admin` (see ADR-004)
+- Backend services reachable on the private network: `llc-manager`,
+  `pp-security-master`, `xero_crypto`
 
 ## Setup
 
@@ -70,27 +72,47 @@ uv run pip-audit
 
 ## Environment Variables
 
-All variables are required at startup. See `docs/planning/tech-spec.md` for full
-documentation.
+Required at startup (the app exits with status 1 if any is missing; see
+`app/config.py`):
 
 | Variable | Description |
 | --- | --- |
-| `BACKEND_LLC_MANAGER_URL` | Base URL for llc-manager service |
-| `BACKEND_PP_SECURITY_URL` | Base URL for pp-security-master service |
-| `BACKEND_XERO_CRYPTO_URL` | Base URL for xero_crypto service |
-| `BACKEND_FAMILY_OFFICE_URL` | Base URL for family_office service |
-| `CF_TEAM_DOMAIN` | Cloudflare team domain for JWT key fetching |
-| `CF_ACCESS_APP_ID` | Cloudflare Access application ID (audience claim) |
-| `VIEWER_EMAILS` | Comma-separated list of viewer email addresses |
-| `ADMIN_EMAILS` | Comma-separated list of admin email addresses |
-| `SQLITE_PATH` | Absolute path to the SQLite cache database |
+| `BACKEND_LLC_MANAGER_URL` | Base URL for llc-manager (entities and documents) |
+| `BACKEND_LLC_MANAGER_API_KEY` | API key sent to llc-manager |
+| `BACKEND_PP_SECURITY_URL` | Base URL for pp-security-master |
+| `BACKEND_PP_SECURITY_API_KEY` | API key sent to pp-security-master |
+| `BACKEND_XERO_CRYPTO_URL` | Base URL for xero_crypto |
+| `BACKEND_XERO_CRYPTO_API_KEY` | API key sent to xero_crypto |
+| `AUTHENTIK_JWKS_URL` | JWKS URL of the portal's Authentik proxy provider |
+| `AUTHENTIK_ISSUER` | Expected `iss` claim of `X-authentik-jwt` |
+| `AUTHENTIK_AUDIENCE` | Expected `aud` claim (the provider's client ID) |
+| `SQLITE_PATH` | Path to the SQLite database (back it up; it holds daily balance history) |
+
+Optional:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granting Viewer |
+| `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granting Admin |
+| `DISPLAY_TIMEZONE` | `UTC` | IANA time zone for "last updated" labels |
+| `SCHEDULER_ENABLED` | `true` | Set `false` for template work without backends |
+| `BACKEND_TIMEOUT_SECONDS` | `10` | Outbound request timeout |
+| `JWKS_CACHE_SECONDS` | `600` | How long Authentik signing keys are reused |
+
+## Container image
+
+`Dockerfile` builds a distroless image (DHI Python 3.12) that compiles Tailwind in
+the builder stage and runs as UID 65532. `.github/workflows/build-image.yml`
+smoke-tests, pushes, and signs `ghcr.io/byronwilliamscpa/family-office-portal`
+with `sha-<short>` tags for the homelab-infra stack to pin.
 
 ## Architecture
 
 Key design decisions are documented as ADRs in `docs/architecture/adr/`:
 
 - [ADR-001](docs/architecture/adr/adr-001-frontend-rendering-architecture.md) -- server-rendered HTML with HTMX
-- [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) -- Cloudflare Zero Trust authentication
+- [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) -- Cloudflare Zero Trust authentication (superseded)
+- [ADR-004](docs/architecture/adr/adr-004-authentication-authentik-forward-auth.md) -- Authentik forward auth
 - [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md) -- SQLite read-through cache
 
 ## Contributing

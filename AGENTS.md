@@ -6,8 +6,8 @@ should read this file before beginning any task in this repository.
 ## Project overview
 
 `family-office-portal` is a FastAPI web application that aggregates financial
-and entity data from internal backend services. It runs behind Cloudflare Zero
-Trust and serves a single authenticated family as a read-only portal.
+and entity data from internal backend services. It runs behind Authentik forward
+auth (ADR-004) and serves a single authenticated family as a read-only portal.
 
 ## Source layout
 

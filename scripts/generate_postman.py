@@ -6,9 +6,9 @@ The output is a Postman Collection v2.1 document. Every operation in the spec
 becomes one request that:
 
 * uses ``{{baseUrl}}`` for the host and ``{{apiKey}}`` for an
-  ``X-Api-Key`` header (the portal itself authenticates via Cloudflare Access
-  in production; the collection mirrors a generic backend auth pattern so
-  Newman can be wired into CI without leaking real Cloudflare tokens),
+  ``X-Api-Key`` header (the portal itself authenticates through Authentik
+  forward auth, ADR-004; Newman runs without an identity, so every route
+  except the public ``/health`` probe must answer 403),
 * carries a minimal example body when the operation declares a JSON request
   body,
 * asserts that the response status is in the expected range and that the
@@ -46,6 +46,7 @@ REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 OPENAPI_PATH: Path = REPO_ROOT / "docs" / "api" / "openapi.json"
 OUTPUT_PATH: Path = REPO_ROOT / "docs" / "api" / "postman-collection.json"
 
+PUBLIC_PATHS: tuple[str, ...] = ("/health",)
 METHODS: tuple[str, ...] = ("get", "post", "put", "patch", "delete", "options", "head")
 
 PRE_REQUEST_SCRIPT: str = (
@@ -117,6 +118,7 @@ def _build_item(
                         success_status,
                         _operation_returns_json(operation),
                         "422" in (operation.get("responses") or {}),
+                        protected=not path.startswith(PUBLIC_PATHS),
                     ).split("\n"),
                 },
             },

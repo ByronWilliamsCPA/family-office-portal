@@ -1,0 +1,5 @@
+{% macro freshness(updated, stale) -%}
+<p class="text-base {% if stale %}text-amber-800{% else %}text-slate-500{% endif %}">
+  {%- if updated %}Last updated {{ updated | friendly_time }}{% if stale %}. This may be out of date.{% endif %}{% else %}Not updated yet{% endif -%}
+</p>
+{%- endmacro %}

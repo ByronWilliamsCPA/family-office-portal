@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MVP foundation (M0): pydantic settings with startup fail-fast (`app/config.py`), SQLite schema with WAL and busy timeout including `account_balances` and durable `balances_daily` history (`app/db.py`), async cache readers with allowlisted staleness checks (`app/cache.py`), and APScheduler refresh jobs that log every run to `refresh_log` and keep cached rows on failure (`app/scheduler.py`)
+- Authentik forward-auth middleware validating the signed `X-authentik-jwt` header (signature, `iss`, `aud`, `exp`), mapping `fo-viewer`/`fo-admin` groups to roles, and failing closed (ADR-004)
+- Server-rendered pages for Home, Documents, Finances, Portfolio, and Entities with plain-English freshness labels, HTMX name search, confidential-document filtering for Viewers, and an HTML not-found page
+- Distroless Dockerfile with Tailwind CLI build stage and GHCR build, smoke-test, and signing workflow (`.github/workflows/build-image.yml`)
+- Vendored HTMX 2.0.4 (0BSD) with REUSE annotation
+
 - Phase 0 FastAPI application skeleton in `app/main.py`: title, description, version, contact, `CloudflareAccessMiddleware` registration, and a `GET /health` liveness probe returning `{"status": "ok"}`
 - Cloudflare Access middleware pass-through stub in `app/middleware/cloudflare_access.py` per ADR-002; full JWT validation deferred to Phase 1
 - Phase 0 health smoke test (`tests/test_health.py`) exercising the endpoint via httpx `ASGITransport`
@@ -44,11 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documents now come from llc-manager instead of the family_office repository
+- Postman collection asserts `/health` is public and every other route returns 403 without an Authentik identity
 - urllib3 bumped 2.6.3 → 2.7.0 in `uv.lock` to resolve CVE-2026-44431 and CVE-2026-44432
 - CODEOWNERS moved from repo root to .github/CODEOWNERS
 - ADRs migrated from docs/planning/adr/ to docs/architecture/adr/
 - LICENSE: added SPDX-License-Identifier header
 - SECURITY.md: switched from email reporting to GitHub Private Vulnerability Reporting (PVR) only
+
+### Removed
+
+- Cloudflare Access middleware stub and the `CF_TEAM_DOMAIN`, `CF_ACCESS_APP_ID`, `VIEWER_EMAILS`, `ADMIN_EMAILS`, and `BACKEND_FAMILY_OFFICE_URL` settings (ADR-002 superseded)
 
 ### Fixed
 

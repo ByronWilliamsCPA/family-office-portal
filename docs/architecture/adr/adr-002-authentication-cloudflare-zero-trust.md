@@ -1,6 +1,6 @@
 # ADR-002: Authentication via Cloudflare Zero Trust
 
-> **Status**: Accepted
+> **Status**: Superseded by [ADR-004](adr-004-authentication-authentik-forward-auth.md) (2026-09-28)
 > **Date**: 2026-05-06
 
 ## TL;DR

@@ -1,51 +1,80 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""Entities section routes (LLC and trust list and detail views)."""
+"""Entities section routes."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
+from starlette.responses import (
+    Response,  # noqa: TC002  # FastAPI reads return annotations at runtime
+)
 
-router = APIRouter(prefix="/entities", tags=["entities"])
+from app import cache
+from app.routes._context import freshness, include_confidential
+from app.templating import render
+
+router = APIRouter(tags=["entities"])
 
 
 @router.get(
-    "",
-    summary="List entities",
+    "/entities",
+    summary="Entity list",
     response_class=HTMLResponse,
     status_code=status.HTTP_200_OK,
 )
-async def entities_index() -> HTMLResponse:
-    """Render the entity list with compliance status.
+async def entities_index(request: Request) -> Response:
+    """Render every cached LLC and trust.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Reads the cached
-    ``entities`` dataset sourced from the ``llc-manager`` backend.
+    Authentication: Viewer or Admin (ADR-004).
+
+    Args:
+        request (Request): Current request.
 
     Returns:
-        HTMLResponse: Placeholder entity list page.
+        Response: Rendered entity list.
     """
-    return HTMLResponse("<h1>Entities</h1>")
+    return render(
+        request,
+        "pages/entities.html",
+        section="entities",
+        entities=await cache.get_entities(),
+        **(await freshness("entities")),
+    )
 
 
 @router.get(
-    "/{entity_id}",
+    "/entities/{entity_id}",
     summary="Entity detail",
     response_class=HTMLResponse,
     status_code=status.HTTP_200_OK,
+    responses={404: {"description": "Entity not found"}},
 )
-async def entity_detail(entity_id: str) -> HTMLResponse:
-    """Render a single entity detail view.
+async def entity_detail(request: Request, entity_id: str) -> Response:
+    """Render one entity with its documents.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Raw identifiers
-    are not surfaced to primary users (see CLAUDE.md frontend conventions);
-    Phase 1 will render a plain-English summary backed by the cache.
+    Authentication: Viewer or Admin (ADR-004).
 
     Args:
-        entity_id (str): Opaque entity identifier sourced from the cache.
+        request (Request): Current request.
+        entity_id (str): Entity identifier.
 
     Returns:
-        HTMLResponse: Placeholder entity detail page.
+        Response: Rendered entity page.
+
+    Raises:
+        HTTPException: 404 when the entity is not cached.
     """
-    _ = entity_id
-    return HTMLResponse("<h1>Entity</h1>")
+    entity = await cache.get_entity(entity_id)
+    if entity is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    documents = await cache.get_documents(
+        include_confidential=include_confidential(request), entity_id=entity_id
+    )
+    return render(
+        request,
+        "pages/entity_detail.html",
+        section="entities",
+        entity=entity,
+        documents=documents,
+    )

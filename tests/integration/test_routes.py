@@ -1,18 +1,18 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-# ruff: noqa: TC003, PLC0415
+# ruff: noqa: TC003
 """Integration tests for portal route handlers.
 
-Spec contract (tech-spec §4 endpoint table + ``CLAUDE.md`` + ADR-002):
+Spec contract (tech-spec §4 endpoint table + ``CLAUDE.md`` + ADR-004):
 
-* All non-public routes require a valid CF Access JWT; unauthenticated
-  requests get **403** (per ADR-002, defense in depth).
+* All non-public routes require a valid Authentik JWT; unauthenticated
+  requests get **403** (per ADR-004, defense in depth).
 * ``/admin/*`` routes require role=Admin; Viewer requests get 403.
 * Routes return ``TemplateResponse`` (HTML), not JSON, except HTMX partial
   routes which return HTML fragments.
 * All five sections render even when their backing dataset is empty (graceful
   degradation -- no blank screens for primary users).
-* ``/health`` is a public liveness endpoint that bypasses the CF middleware
+* ``/health`` is a public liveness endpoint that bypasses the Authentik middleware
   (uptime probes, not user content; documented JSON exception).
 
 Phase gating: the section-route tests skip until ``app.main`` has the Phase 1
@@ -24,22 +24,15 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sqlite3
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 
 if importlib.util.find_spec("app.main") is None:
     pytest.skip("app.main not implemented yet", allow_module_level=True)
-
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.rsa import (
-        RSAPrivateKey,
-        RSAPublicKey,
-    )
 
 
 def _phase1_routes_present() -> bool:
@@ -50,7 +43,9 @@ def _phase1_routes_present() -> bool:
     try:
         main = importlib.import_module("app.main")
     except SystemExit:
-        return False
+        # Startup fail-fast fired because collection runs without the env
+        # vars; that behavior itself only exists once Phase 1 is in place.
+        return True
     paths = {getattr(r, "path", "") for r in main.app.routes}
     return "/documents" in paths
 
@@ -68,108 +63,26 @@ phase1 = pytest.mark.skipif(
 
 @pytest.fixture
 async def client(
-    cf_env: dict[str, str],
+    portal_env: dict[str, str],
     tmp_db_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
+    patched_jwks: dict[str, int],
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """Yield an ``httpx.AsyncClient`` bound to a freshly-loaded ``app.main.app``.
+    """Yield an open client bound to a freshly loaded app with a fresh schema.
 
-    The CF JWKS fetcher is patched **before** ``app.main`` is reloaded so the
-    real Cloudflare endpoint is never contacted during the startup key-fetch.
+    Viewer and Admin header fixtures come from ``tests/conftest.py``.
 
     # noqa
     """
-    import base64
-
-    del cf_env
-    monkeypatch.setenv("SQLITE_PATH", str(tmp_db_path))
-
+    del portal_env, patched_jwks
+    db = importlib.import_module("app.db")
+    db.init_schema(str(tmp_db_path))
     main = importlib.import_module("app.main")
-
-    if importlib.util.find_spec("app.db") is not None:
-        db = importlib.import_module("app.db")
-        if hasattr(db, "init_schema"):
-            db.init_schema(str(tmp_db_path))
-
-    _, public = rsa_key_pair
-    numbers = public.public_numbers()
-
-    def _b64(value: int) -> str:
-        """Base64url-encode an unsigned big-endian integer.
-
-        # noqa
-        """
-        byte_length = (value.bit_length() + 7) // 8
-        raw = value.to_bytes(byte_length, "big")
-        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-    jwks = {
-        "keys": [
-            {
-                "kty": "RSA",
-                "kid": "test-key-id",
-                "use": "sig",
-                "alg": "RS256",
-                "n": _b64(numbers.n),
-                "e": _b64(numbers.e),
-            }
-        ]
-    }
-
-    # Patch the JWKS fetcher BEFORE reloading main so the reload's startup
-    # path -- which may eagerly fetch CF public keys -- uses the test stub.
-    middleware_pkg = pytest.importorskip("app.middleware")
-    target = middleware_pkg
-    for sub in ("cf_jwt", "jwt", "auth", "cloudflare_access"):
-        try:
-            mod = importlib.import_module(f"app.middleware.{sub}")
-        except ModuleNotFoundError:
-            continue
-        if hasattr(mod, "fetch_cf_public_keys"):
-            target = mod
-            break
-
-    if hasattr(target, "fetch_cf_public_keys"):
-
-        def _stub(*_a: object, **_kw: object) -> dict[str, list[dict[str, str]]]:
-            """Return the static test JWKS document.
-
-            # noqa
-            """
-            return jwks
-
-        monkeypatch.setattr(target, "fetch_cf_public_keys", _stub)
-
     importlib.reload(main)
-
     transport = httpx.ASGITransport(app=main.app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as ac:
         yield ac
-
-
-@pytest.fixture
-def viewer_headers(jwt_factory: Callable[..., str]) -> dict[str, str]:
-    """Return request headers carrying a Viewer-role CF Access JWT.
-
-    # noqa
-    """
-    return {
-        "CF-Access-JWT-Assertion": jwt_factory(email="viewer@example.com"),
-    }
-
-
-@pytest.fixture
-def admin_headers(jwt_factory: Callable[..., str]) -> dict[str, str]:
-    """Return request headers carrying an Admin-role CF Access JWT.
-
-    # noqa
-    """
-    return {
-        "CF-Access-JWT-Assertion": jwt_factory(email="admin@example.com"),
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -180,7 +93,7 @@ def admin_headers(jwt_factory: Callable[..., str]) -> dict[str, str]:
 async def test_health_endpoint_is_public(
     client: httpx.AsyncClient,
 ) -> None:
-    """``/health`` returns 200 with status and service fields, and bypasses CF JWT.
+    """``/health`` returns 200 and bypasses the Authentik JWT check.
 
     Uptime-probe endpoint, documented JSON exception to the HTML-only rule.
 
@@ -205,7 +118,7 @@ async def test_unauthenticated_request_is_rejected(
 ) -> None:
     """A request to any primary route without a JWT is rejected with 403.
 
-    ADR-002: portal middleware returns 403 (not 401) for missing/invalid JWT.
+    ADR-004: portal middleware returns 403 (not 401) for missing/invalid JWT.
 
     # noqa
     """
@@ -220,9 +133,7 @@ async def test_invalid_jwt_is_rejected(client: httpx.AsyncClient, path: str) -> 
 
     # noqa
     """
-    response = await client.get(
-        path, headers={"CF-Access-JWT-Assertion": "garbage.token.here"}
-    )
+    response = await client.get(path, headers={"X-authentik-jwt": "garbage.token.here"})
     assert response.status_code == 403
 
 
@@ -457,3 +368,104 @@ async def test_documents_search_returns_html_partial(
     response = await client.get("/documents/search?q=tax", headers=viewer_headers)
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
+
+
+# --------------------------------------------------------------------------- #
+# Header spoofing and confidential documents (ADR-004, D-14)
+# --------------------------------------------------------------------------- #
+
+
+@phase1
+async def test_plain_authentik_headers_are_not_trusted(
+    client: httpx.AsyncClient,
+) -> None:
+    """Unsigned identity headers alone never grant access.
+
+    # noqa
+    """
+    response = await client.get(
+        "/",
+        headers={
+            "X-authentik-username": "admin",
+            "X-authentik-groups": "fo-admin",
+            "X-authentik-email": "admin@example.com",
+        },
+    )
+    assert response.status_code == 403
+
+
+def _seed_confidential_docs(path: Path) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO documents (id, name, category, is_confidential, proxy_url, "
+            "fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "doc-open",
+                    "Operating Agreement.pdf",
+                    "LLCs",
+                    0,
+                    "/documents/doc-open/preview",
+                    now,
+                ),
+                (
+                    "doc-secret",
+                    "Private Letter.pdf",
+                    "LLCs",
+                    1,
+                    "/documents/doc-secret/preview",
+                    now,
+                ),
+            ],
+        )
+        conn.commit()
+
+
+@phase1
+async def test_viewer_does_not_see_confidential_documents(
+    client: httpx.AsyncClient,
+    tmp_db_path: Path,
+    viewer_headers: dict[str, str],
+) -> None:
+    """Viewers see open documents only, in lists and search.
+
+    # noqa
+    """
+    _seed_confidential_docs(tmp_db_path)
+    page = await client.get("/documents", headers=viewer_headers)
+    search = await client.get("/documents/search?q=pdf", headers=viewer_headers)
+    preview = await client.get("/documents/doc-secret/preview", headers=viewer_headers)
+    assert "Operating Agreement.pdf" in page.text
+    assert "Private Letter.pdf" not in page.text
+    assert "Private Letter.pdf" not in search.text
+    assert preview.status_code == 404
+
+
+@phase1
+async def test_admin_sees_confidential_documents(
+    client: httpx.AsyncClient,
+    tmp_db_path: Path,
+    admin_headers: dict[str, str],
+) -> None:
+    """Admins see every document.
+
+    # noqa
+    """
+    _seed_confidential_docs(tmp_db_path)
+    page = await client.get("/documents", headers=admin_headers)
+    assert "Private Letter.pdf" in page.text
+
+
+@phase1
+async def test_unknown_page_shows_plain_english_not_found(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+) -> None:
+    """A missing page renders an HTML page, not raw JSON.
+
+    # noqa
+    """
+    response = await client.get("/entities/nope", headers=viewer_headers)
+    assert response.status_code == 404
+    assert "could not find that page" in response.text

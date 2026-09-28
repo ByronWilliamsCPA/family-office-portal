@@ -6,7 +6,7 @@ This file provides context for GitHub Copilot when working in this repository.
 
 `family-office-portal` is a FastAPI web application that aggregates financial
 and entity data from internal backend services for a single authenticated family.
-It runs behind Cloudflare Zero Trust and is read-only from the user's perspective.
+It runs behind Authentik forward auth (ADR-004) and is read-only from the user's perspective.
 
 ## Key conventions
 
@@ -26,7 +26,7 @@ It runs behind Cloudflare Zero Trust and is read-only from the user's perspectiv
 
 - Route handlers return `TemplateResponse` (server-rendered HTML). Never return a raw dict or `JSONResponse` except for HTMX partials returning HTML fragments.
 - Route handlers read from SQLite via `cache.py` only. They never call backend HTTP services directly.
-- Auth is handled by Cloudflare Zero Trust at the network edge. Never add password-based auth, OAuth flows, session cookies, or a login view.
+- Auth is handled by Authentik forward auth at the proxy; the portal validates the signed `X-authentik-jwt` header. Never add password-based auth, OAuth flows, session cookies, or a login view.
 - Backend HTTP calls (httpx) belong only in APScheduler refresh jobs in `scheduler.py`.
 
 ## Do not do

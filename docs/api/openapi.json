@@ -1,60 +1,6 @@
 {
   "components": {
     "schemas": {
-      "DocumentSearchHit": {
-        "description": "Single search result returned by ``GET /documents/search``.",
-        "properties": {
-          "category": {
-            "description": "Document category.",
-            "examples": [
-              "Taxes"
-            ],
-            "title": "Category",
-            "type": "string"
-          },
-          "id": {
-            "description": "Document identifier.",
-            "examples": [
-              "doc_4f10"
-            ],
-            "title": "Id",
-            "type": "string"
-          },
-          "name": {
-            "description": "Display name of the document.",
-            "examples": [
-              "2025 K-1 Schedule"
-            ],
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "category"
-        ],
-        "title": "DocumentSearchHit",
-        "type": "object"
-      },
-      "DocumentSearchResponse": {
-        "description": "Response payload for ``GET /documents/search``.",
-        "properties": {
-          "hits": {
-            "description": "Matching documents in ranked order.",
-            "items": {
-              "$ref": "#/components/schemas/DocumentSearchHit"
-            },
-            "title": "Hits",
-            "type": "array"
-          }
-        },
-        "required": [
-          "hits"
-        ],
-        "title": "DocumentSearchResponse",
-        "type": "object"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -283,7 +229,7 @@
     "contact": {
       "name": "Byron Williams"
     },
-    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from four internal backend services behind a SQLite read-through cache. Runs behind Cloudflare Zero Trust. Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the full contract.",
+    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from internal backend services behind a SQLite read-through cache. Identity comes from Authentik forward auth (ADR-004). Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the contract.",
     "license": {
       "identifier": "MIT",
       "name": "MIT"
@@ -295,7 +241,7 @@
   "paths": {
     "/": {
       "get": {
-        "description": "Render the landing dashboard.\n\nAuthentication: Viewer or Admin via Cloudflare Access (see ADR-002). Phase 0\nreturns a static HTML placeholder; Phase 1 will swap in a Jinja2 template\nthat aggregates the five sections.\n\nReturns:\n    HTMLResponse: Placeholder dashboard page.",
+        "description": "Render the landing dashboard: totals, upcoming dates, recent documents.\n\nAuthentication: Viewer or Admin (ADR-004).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered dashboard page.",
         "operationId": "home__get",
         "responses": {
           "200": {
@@ -317,7 +263,7 @@
     },
     "/admin/refresh-status": {
       "get": {
-        "description": "Return the most recent refresh outcome per backend service.\n\nAuthentication: Admin only via Cloudflare Access. Reads the ``refresh_log``\ntable populated by the APScheduler jobs.\n\nReturns:\n    RefreshStatusResponse: One entry per tracked backend.",
+        "description": "Return the latest success and failure per backend service.\n\nAuthentication: Admin only (ADR-004). Services that have never run are\nomitted.\n\nReturns:\n    RefreshStatusResponse: One entry per service that has run.",
         "operationId": "refresh_status_admin_refresh_status_get",
         "responses": {
           "200": {
@@ -339,7 +285,7 @@
     },
     "/admin/refresh/{service}": {
       "post": {
-        "description": "Enqueue an out-of-band refresh for the named backend service.\n\nAuthentication: Admin only via Cloudflare Access. Phase 0 returns a stub\nresponse; Phase 1 will dispatch to the APScheduler job for the matching\nservice (``entities``, ``holdings``, ``positions``, ``documents``).\n\nArgs:\n    service: Backend service identifier to refresh.\n    body: Trigger options; set ``force`` to bypass the staleness check.\n\nReturns:\n    RefreshTriggerResponse: Confirmation of the scheduling decision.",
+        "description": "Run the named refresh job after the response is sent.\n\nAuthentication: Admin only (ADR-004).\n\nArgs:\n    service (Literal[\"entities\", \"holdings\", \"positions\", \"documents\"]):\n        Dataset to refresh.\n    body (RefreshTriggerRequest): Trigger options. Refreshes always run\n        now; ``force`` is echoed for compatibility.\n    background (BackgroundTasks): FastAPI background task queue.\n\nReturns:\n    RefreshTriggerResponse: Confirmation that the job was queued.",
         "operationId": "trigger_refresh_admin_refresh__service__post",
         "parameters": [
           {
@@ -347,6 +293,12 @@
             "name": "service",
             "required": true,
             "schema": {
+              "enum": [
+                "entities",
+                "holdings",
+                "positions",
+                "documents"
+              ],
               "title": "Service",
               "type": "string"
             }
@@ -385,50 +337,35 @@
     },
     "/documents": {
       "get": {
-        "description": "Render the document folder view.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Data is read from\nthe SQLite cache populated by the ``refresh_documents`` job; the route\nnever calls the upstream ``family_office`` service directly (ADR-003).\n\nReturns:\n    HTMLResponse: Placeholder folder listing page.",
+        "description": "Render documents grouped by category, with optional name search.\n\nWorks without JavaScript: the search form submits here with ``q``.\nAuthentication: Viewer or Admin (ADR-004). Viewers never see\nconfidential documents (D-14).\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n\nReturns:\n    Response: Rendered documents page.",
         "operationId": "documents_index_documents_get",
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List document folders",
-        "tags": [
-          "documents"
-        ]
-      }
-    },
-    "/documents/search": {
-      "get": {
-        "description": "Return documents whose name matches ``q``.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Designed as an HTMX\npartial in Phase 1; the JSON shape is returned at Phase 0 so the contract\nis OpenAPI-described from the start.\n\nArgs:\n    q: Free-text query string; must be at least one character.\n\nReturns:\n    DocumentSearchResponse: Matching documents in ranked order.",
-        "operationId": "documents_search_documents_search_get",
         "parameters": [
           {
-            "description": "Free-text search query.",
+            "description": "Optional name search.",
             "in": "query",
             "name": "q",
-            "required": true,
+            "required": false,
             "schema": {
-              "description": "Free-text search query.",
-              "minLength": 1,
-              "title": "Q",
-              "type": "string"
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional name search.",
+              "title": "Q"
             }
           }
         ],
         "responses": {
           "200": {
             "content": {
-              "application/json": {
+              "text/html": {
                 "schema": {
-                  "$ref": "#/components/schemas/DocumentSearchResponse"
+                  "type": "string"
                 }
               }
             },
@@ -445,7 +382,54 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Search documents by name",
+        "summary": "Document folders",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/documents/search": {
+      "get": {
+        "description": "Return the search results fragment used by the Documents page.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
+        "operationId": "documents_search_documents_search_get",
+        "parameters": [
+          {
+            "description": "Text to find in names.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "Text to find in names.",
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search documents by name (HTMX partial)",
         "tags": [
           "documents"
         ]
@@ -453,7 +437,7 @@
     },
     "/documents/{document_id}/download": {
       "get": {
-        "description": "Stream the original document as a file download.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content with a\n``Content-Disposition: attachment`` header.\n\nArgs:\n    document_id: Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder binary response.",
+        "description": "Download a document.\n\nThe file proxy to llc-manager lands with MVP task C5; until then a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until C5.",
         "operationId": "document_download_documents__document_id__download_get",
         "parameters": [
           {
@@ -469,9 +453,14 @@
         "responses": {
           "200": {
             "content": {
-              "application/octet-stream": {}
+              "application/json": {
+                "schema": {}
+              }
             },
-            "description": "Binary document download."
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Document not found"
           },
           "422": {
             "content": {
@@ -482,9 +471,12 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Not yet available"
           }
         },
-        "summary": "Download original document",
+        "summary": "Download a document",
         "tags": [
           "documents"
         ]
@@ -492,7 +484,7 @@
     },
     "/documents/{document_id}/preview": {
       "get": {
-        "description": "Stream a PDF preview proxied from the ``family_office`` backend.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content.\n\nArgs:\n    document_id: Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder PDF response.",
+        "description": "Show a document inline.\n\nThe file proxy to llc-manager lands with MVP task C5; until then a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until C5.",
         "operationId": "document_preview_documents__document_id__preview_get",
         "parameters": [
           {
@@ -508,9 +500,14 @@
         "responses": {
           "200": {
             "content": {
-              "application/pdf": {}
+              "application/json": {
+                "schema": {}
+              }
             },
-            "description": "PDF preview stream."
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Document not found"
           },
           "422": {
             "content": {
@@ -521,6 +518,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Not yet available"
           }
         },
         "summary": "Inline document preview",
@@ -531,7 +531,7 @@
     },
     "/entities": {
       "get": {
-        "description": "Render the entity list with compliance status.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Reads the cached\n``entities`` dataset sourced from the ``llc-manager`` backend.\n\nReturns:\n    HTMLResponse: Placeholder entity list page.",
+        "description": "Render every cached LLC and trust.\n\nAuthentication: Viewer or Admin (ADR-004).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered entity list.",
         "operationId": "entities_index_entities_get",
         "responses": {
           "200": {
@@ -545,7 +545,7 @@
             "description": "Successful Response"
           }
         },
-        "summary": "List entities",
+        "summary": "Entity list",
         "tags": [
           "entities"
         ]
@@ -553,7 +553,7 @@
     },
     "/entities/{entity_id}": {
       "get": {
-        "description": "Render a single entity detail view.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Raw identifiers\nare not surfaced to primary users (see CLAUDE.md frontend conventions);\nPhase 1 will render a plain-English summary backed by the cache.\n\nArgs:\n    entity_id: Opaque entity identifier sourced from the cache.\n\nReturns:\n    HTMLResponse: Placeholder entity detail page.",
+        "description": "Render one entity with its documents.\n\nAuthentication: Viewer or Admin (ADR-004).\n\nArgs:\n    request (Request): Current request.\n    entity_id (str): Entity identifier.\n\nReturns:\n    Response: Rendered entity page.\n\nRaises:\n    HTTPException: 404 when the entity is not cached.",
         "operationId": "entity_detail_entities__entity_id__get",
         "parameters": [
           {
@@ -577,6 +577,9 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "Entity not found"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -596,7 +599,7 @@
     },
     "/finances": {
       "get": {
-        "description": "Render the finances dashboard.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Aggregates the\n``holdings`` dataset (``pp-security-master``) with the ``positions``\ndataset (``xero_crypto``) from the SQLite cache.\n\nReturns:\n    HTMLResponse: Placeholder finances page.",
+        "description": "Render account totals and crypto positions from the cache.\n\nAuthentication: Viewer or Admin (ADR-004).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered finances page.",
         "operationId": "finances_finances_get",
         "responses": {
           "200": {
@@ -610,7 +613,7 @@
             "description": "Successful Response"
           }
         },
-        "summary": "Net worth and asset allocation",
+        "summary": "Account totals and digital currency",
         "tags": [
           "finances"
         ]
@@ -640,7 +643,7 @@
     },
     "/portfolio": {
       "get": {
-        "description": "Render the portfolio page.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Reads the cached\n``holdings`` and ``performance`` datasets sourced from the\n``pp-security-master`` backend.\n\nReturns:\n    HTMLResponse: Placeholder portfolio page.",
+        "description": "Render cached holdings from pp-security-master.\n\nAuthentication: Viewer or Admin (ADR-004).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered portfolio page.",
         "operationId": "portfolio_portfolio_get",
         "responses": {
           "200": {
@@ -654,7 +657,7 @@
             "description": "Successful Response"
           }
         },
-        "summary": "Holdings and performance",
+        "summary": "Holdings",
         "tags": [
           "portfolio"
         ]
@@ -671,19 +674,19 @@
       "name": "home"
     },
     {
-      "description": "Document folder views and proxied previews.",
+      "description": "Document folders, search, and previews.",
       "name": "documents"
     },
     {
-      "description": "Net worth and asset allocation aggregations.",
+      "description": "Account totals and digital currency.",
       "name": "finances"
     },
     {
-      "description": "Holdings and performance from pp-security-master.",
+      "description": "Holdings from pp-security-master.",
       "name": "portfolio"
     },
     {
-      "description": "LLC and trust list and detail views from llc-manager.",
+      "description": "LLC and trust views from llc-manager.",
       "name": "entities"
     },
     {

@@ -5,7 +5,7 @@
 This repository contains the Family Office Estate Portal, a private read-only
 web application that aggregates financial and entity data from internal backend
 services. It handles non-public financial information and operates behind
-Cloudflare Zero Trust access controls.
+Authentik forward-auth access controls on a self-hosted proxy.
 
 ## Supported Versions
 
@@ -41,10 +41,12 @@ not currently operate a paid bug bounty program.
 
 ## Security Architecture
 
-Authentication is handled entirely by Cloudflare Zero Trust at the network
-edge. The application validates Cloudflare Access JWTs on every non-static
-request and maps the `email` claim to `Viewer` or `Admin` role. No
-password-based auth, OAuth flows, or session cookies are implemented.
+Authentication is handled by Authentik forward auth at the Traefik proxy
+(ADR-004). The application validates the signed `X-authentik-jwt` header
+(signature, `iss`, `aud`, `exp`) on every non-static request, ignores unsigned
+identity headers, and maps the `groups` claim to `Viewer` or `Admin`. Viewers
+cannot see documents marked confidential. No password-based auth, OAuth flows,
+or session cookies are implemented.
 
 The application is read-only: it never writes to or directly contacts upstream
 commercial systems. All backend data flows through an internal SQLite cache

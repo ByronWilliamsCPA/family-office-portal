@@ -1,5 +1,10 @@
 # Technical Implementation Spec: Family Office Estate Portal
 
+**Note (2026-09-28)**: Authentication moved from Cloudflare Zero Trust to Authentik
+forward auth ([ADR-004](../architecture/adr/adr-004-authentication-authentik-forward-auth.md)),
+and documents now come from llc-manager. Where this document says otherwise,
+ADR-004 and `CLAUDE.md` take precedence.
+
 > **Status**: Draft
 > **Version**: 1.1 | **Updated**: 2026-05-23
 

@@ -4,10 +4,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse
+from starlette.responses import (
+    Response,  # noqa: TC002  # FastAPI reads return annotations at runtime
+)
+
+from app import cache
+from app.routes._context import balances_summary, include_confidential
+from app.templating import render
 
 router = APIRouter(tags=["home"])
+
+_UPCOMING_LIMIT = 5
+_RECENT_LIMIT = 5
 
 
 @router.get(
@@ -16,14 +26,33 @@ router = APIRouter(tags=["home"])
     response_class=HTMLResponse,
     status_code=status.HTTP_200_OK,
 )
-async def home() -> HTMLResponse:
-    """Render the landing dashboard.
+async def home(request: Request) -> Response:
+    """Render the landing dashboard: totals, upcoming dates, recent documents.
 
-    Authentication: Viewer or Admin via Cloudflare Access (see ADR-002). Phase 0
-    returns a static HTML placeholder; Phase 1 will swap in a Jinja2 template
-    that aggregates the five sections.
+    Authentication: Viewer or Admin (ADR-004).
+
+    Args:
+        request (Request): Current request.
 
     Returns:
-        HTMLResponse: Placeholder dashboard page.
+        Response: Rendered dashboard page.
     """
-    return HTMLResponse("<h1>Family Office Portal</h1>")
+    entities = await cache.get_entities()
+    upcoming = sorted(
+        (e for e in entities if e["next_date"]),
+        key=lambda e: str(e["next_date"]),
+    )[:_UPCOMING_LIMIT]
+    documents = await cache.get_documents(
+        include_confidential=include_confidential(request)
+    )
+    recent = sorted(documents, key=lambda d: str(d["added_at"] or ""), reverse=True)[
+        :_RECENT_LIMIT
+    ]
+    return render(
+        request,
+        "pages/home.html",
+        section="home",
+        upcoming=upcoming,
+        recent_documents=recent,
+        **(await balances_summary()),
+    )
