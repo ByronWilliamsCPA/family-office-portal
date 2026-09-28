@@ -21,15 +21,23 @@ jobs:
   detect-changes:
     name: Detect Security-Relevant Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       security_files: ${{ steps.filter.outputs.security }}
     steps:
+      - name: Harden the runner (Audit outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Check for security-relevant file changes
         id: filter
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4.0.3
         with:
           filters: |
             security:
@@ -41,6 +49,7 @@ jobs:
   dependency-security:
     name: Dependency Security Review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: detect-changes
     if: |
       github.event_name == 'pull_request' &&
@@ -50,7 +59,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Harden the runner (Audit outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -76,7 +85,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden the runner (Audit outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -127,6 +136,7 @@ jobs:
   osv-scanner:
     name: OSV Vulnerability Scanner
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: detect-changes
     if: |
       needs.detect-changes.outputs.security_files == 'true' ||
@@ -134,15 +144,28 @@ jobs:
       github.event_name == 'workflow_dispatch'
     steps:
       - name: Harden the runner (Audit outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # continue-on-error is intentional here and is a CI-007 exception (see
+      # 7baf8b9). OSV-Scanner's own exit codes are 0 (no vulns), 1 (vulns
+      # found, any severity), 127 (scanner error), 128 (no packages found);
+      # it exits 1 on a single LOW finding just as readily as on a CRITICAL
+      # one. Without continue-on-error, any LOW/MEDIUM finding fails this
+      # required Security Gate step directly, bypassing the severity
+      # threshold entirely. The actual gate is enforced by the next step,
+      # "Check OSV Results for HIGH/CRITICAL", which parses osv-results.json
+      # and fails only on HIGH/CRITICAL. That step also fails closed: it
+      # runs with `if: always()` and exits 1 if osv-results.json is missing
+      # or empty, so a scanner crash (exit 127/128) still fails the gate.
+      # #VERIFY if osv-scanner-action changes its exit code contract, confirm
+      # exit 1 still means "vulnerabilities found" before relying on this.
       - name: Run OSV Scanner
-        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
+        uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc  # v2.6.0
         continue-on-error: true
         with:
           scan-args: |-
@@ -199,6 +222,7 @@ jobs:
   owasp-dependency-check:
     name: OWASP Dependency Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: detect-changes
     if: |
       needs.detect-changes.outputs.security_files == 'true' ||
@@ -209,7 +233,7 @@ jobs:
       security-events: write
     steps:
       - name: Harden the runner (Audit outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -237,7 +261,7 @@ jobs:
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
         with:
           sarif_file: reports/dependency-check-report.sarif
 
@@ -262,7 +286,7 @@ jobs:
     if: always()
     steps:
       - name: Harden the runner (Audit outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
