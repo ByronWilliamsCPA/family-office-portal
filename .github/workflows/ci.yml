@@ -22,7 +22,7 @@ concurrency:
 jobs:
   ci:
     name: Org Reusable CI (Test, Lint, Type Check, Security)
-    uses: ByronWilliamsCPA/.github/.github/workflows/python-ci.yml@961eb17d8e9b7fe0d8bfc5dbe9d23c824484fb11  # main 2026-05-07
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-ci.yml@961eb17d8e9b7fe0d8bfc5dbe9d23c824484fb11  # main 2026-05-24
     permissions:
       contents: read
     with:
@@ -30,6 +30,19 @@ jobs:
       source-directory: 'app'
       test-directory: 'tests'
       coverage-threshold: 0
+      # Restore the 3.10-3.14 compatibility matrix (required by this
+      # project's CLAUDE.md tech-stack conventions, see 41e6b42) as part of the
+      # required CI Gate. python-ci.yml's matrix-testing job picks
+      # python-versions-pr on pull_request events and
+      # python-versions-comprehensive otherwise; both are set to the full
+      # supported range so the matrix is identical (and equally required)
+      # regardless of trigger. Its ci-gate job fails closed if
+      # matrix-testing is anything but success/skipped, and this repo's own
+      # ci-gate needs [ci, type-check-strict], so a matrix failure fails the
+      # required "ci" job and therefore the required "CI Gate" context.
+      enable-matrix-testing: true
+      python-versions-pr: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
+      python-versions-comprehensive: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
 
   type-check-strict:
     # #CRITICAL ByronWilliamsCPA/.github python-ci.yml (reusable, called above
@@ -40,21 +53,25 @@ jobs:
     # org reusable workflow does not silently weaken that standard.
     # #VERIFY if a future python-ci.yml revision adds its own hard-fail
     # input for type checking, drop this job and pass that input instead.
-    name: Type Checking (strict gate)
+    name: Type Checking (strict gate) and repo-wide Ruff
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
       contents: read
     steps:
-      # deferral: 2026-11-22 -- egress-policy remains audit pending
-      # confirmation of the full allowed-endpoints list for this job; flip to
-      # block once the audit log has been reviewed (CI-031).
+      # #ASSUME egress-policy remains audit pending confirmation of the full
+      # allowed-endpoints list for this job.
+      # #VERIFY confirm the endpoint list and flip to block by 2026-11-22
+      # (deferral date, CI-031); re-review this job's egress needs on or
+      # before that date.
       - name: Harden the runner (Audit outbound calls)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
@@ -72,6 +89,17 @@ jobs:
 
       - name: Type checking with BasedPyright (hard fail)
         run: uv run --frozen --no-build basedpyright app
+
+      # python-ci.yml (the reusable "ci" job above) only runs Ruff format/lint
+      # against source-directory/test-directory (app/, tests/), so it never
+      # covers scripts/ (scripts/__init__.py, _postman_helpers.py,
+      # export_openapi.py, generate_postman.py). Run Ruff repo-wide here so
+      # those files stay covered by the same lint/format standard.
+      - name: Ruff lint (repo-wide)
+        run: uv run --frozen --no-build ruff check .
+
+      - name: Ruff format check (repo-wide)
+        run: uv run --frozen --no-build ruff format --check .
 
   ci-gate:
     name: CI Gate

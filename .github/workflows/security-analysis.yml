@@ -32,6 +32,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Check for security-relevant file changes
         id: filter
@@ -149,12 +151,22 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
-      # CI-007: continue-on-error removed. This step invokes the OSV scanner
-      # (a security scanner covered by CI-007's scope), so suppressing its
-      # exit code here made a real scanner failure silently advisory before
-      # the "Check OSV Results" step ever ran its own HIGH/CRITICAL gate.
+      # continue-on-error is intentional here and is a CI-007 exception (see
+      # 7baf8b9). OSV-Scanner's own exit codes are 0 (no vulns), 1 (vulns
+      # found, any severity), 127 (scanner error), 128 (no packages found);
+      # it exits 1 on a single LOW finding just as readily as on a CRITICAL
+      # one. Without continue-on-error, any LOW/MEDIUM finding fails this
+      # required Security Gate step directly, bypassing the severity
+      # threshold entirely. The actual gate is enforced by the next step,
+      # "Check OSV Results for HIGH/CRITICAL", which parses osv-results.json
+      # and fails only on HIGH/CRITICAL. That step also fails closed: it
+      # runs with `if: always()` and exits 1 if osv-results.json is missing
+      # or empty, so a scanner crash (exit 127/128) still fails the gate.
+      # #VERIFY if osv-scanner-action changes its exit code contract, confirm
+      # exit 1 still means "vulnerabilities found" before relying on this.
       - name: Run OSV Scanner
         uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc  # v2.6.0
+        continue-on-error: true
         with:
           scan-args: |-
             --lockfile=uv.lock

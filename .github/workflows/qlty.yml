@@ -27,7 +27,15 @@ concurrency:
 
 jobs:
   # PR gate: diff mode, blocks merges that introduce medium+ severity issues.
-  # Check name: "qlty-gate / Qlty Gate" -- required by org docs-tier ruleset.
+  # Check name: "qlty-gate / Qlty Gate" -- advisory only, not a required
+  # status context on this repo's branch protection today.
+  # #ASSUME no org ruleset currently requires this context.
+  # #VERIFY before making it required: add a `merge_group:` trigger to this
+  # workflow (required contexts must report on merge-queue runs too), and
+  # emit the bare required-context name from a direct job (one with `steps:`,
+  # not `uses:`), since a reusable-workflow caller job can only ever report
+  # "<caller job name> / <inner job name>", never the bare name a ruleset
+  # would require.
   qlty-gate:
     if: github.event_name == 'pull_request'
     uses: ByronWilliamsCPA/.github/.github/workflows/python-qlty-gate.yml@b7c661ec3bfeb04370ce3a9c748bd8c4e93bfe89  # v10.1.9

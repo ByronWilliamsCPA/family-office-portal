@@ -21,7 +21,7 @@ concurrency:
 jobs:
   scorecard:
     name: Scorecard Analysis
-    uses: ByronWilliamsCPA/.github/.github/workflows/python-scorecard.yml@961eb17d8e9b7fe0d8bfc5dbe9d23c824484fb11  # main 2026-05-07
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-scorecard.yml@961eb17d8e9b7fe0d8bfc5dbe9d23c824484fb11  # main 2026-05-24
     with:
       publish-results: false
       upload-sarif: true
