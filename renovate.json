@@ -6,8 +6,12 @@
   "packageRules": [
     {
       "description": "Do not auto-update requires-python; version range is managed manually via the CI matrix strategy",
-      "matchManagers": ["pep621"],
-      "matchDepNames": ["python"],
+      "matchManagers": [
+        "pep621"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
       "enabled": false
     },
     {
@@ -31,7 +35,7 @@
       "automerge": true
     },
     {
-      "description": "Track org workflow floating v1 tag for SHA pin updates",
+      "description": "Advance org reusable-workflow SHA pins to the latest semver release tag. No followTag: the org tag-protection ruleset makes every vX.Y.Z tag immutable and no floating major tag exists, so a followed tag would freeze pins permanently.",
       "matchManagers": [
         "github-actions"
       ],
@@ -39,8 +43,7 @@
         "ByronWilliamsCPA/.github",
         "williaby/.github"
       ],
-      "versioning": "semver",
-      "followTag": "v1"
+      "versioning": "semver"
     }
   ],
   "lockFileMaintenance": {
