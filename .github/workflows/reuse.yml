@@ -10,11 +10,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: reuse-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   reuse:
     name: Check REUSE Compliance
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
+      # deferral: 2026-11-22 -- egress-policy remains audit pending
+      # confirmation of the full allowed-endpoints list for this job; flip to
+      # block once the audit log has been reviewed (CI-031).
       - name: Harden the runner (Audit outbound calls)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
