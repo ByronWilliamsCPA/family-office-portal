@@ -5,8 +5,9 @@
 Exercises FastAPI path/query parameter parsing and Pydantic request-body
 validation with adversarial and randomly generated inputs via Hypothesis.
 Satisfies OpenSSF Silver badge criterion 6.1 (dynamic analysis with many
-diverse inputs beyond mutation testing); see OSSF-011 / OSSF-013 in
-``docs/standards-manifest.yaml``.
+diverse inputs beyond mutation testing); see the organization's standards
+manifest, checks OSSF-011 / OSSF-013 (no copy of the manifest lives in this
+repository).
 
 The routes exercised here are Phase 0 placeholders that discard their inputs
 after FastAPI/Pydantic validation runs (``_ = document_id`` etc.). These
@@ -15,23 +16,44 @@ the handler body eventually does: validated input never produces an
 unhandled exception (HTTP 5xx) reaching the ASGI boundary, and the
 validation boundary itself (``min_length``, ``Literal`` membership, JSON body
 shape) rejects invalid input with 422 rather than silently accepting it.
+
+These tests currently run against the Phase 0 pass-through auth stub
+(``app/middleware/cloudflare_access.py``): every request is accepted
+regardless of headers. They must be revisited when Phase 1 JWT validation
+lands, since unauthenticated fuzz requests will then see 401/403 instead of
+the status codes asserted here.
 """
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+from fastapi import status
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
 
+# CI runs against the ASGI transport, which can vary in latency under a
+# loaded runner; `deadline=None` avoids flaking on timing rather than on the
+# input itself. `derandomize=True` under CI makes a given commit's fuzz run
+# reproducible across retries, at the cost of losing new-shrink coverage
+# between runs; local development keeps randomized exploration.
+settings.register_profile("ci", deadline=None, derandomize=True)
+settings.register_profile("dev", deadline=None)
+settings.load_profile("ci" if os.environ.get("CI") else "dev")
+
 # The `client` fixture is reused across every Hypothesis example within a
 # single test; each example issues an independent, stateless request against
 # the ASGI app, so the "function scoped fixture reused across examples"
-# health check does not indicate a real problem here.
+# health check does not indicate a real problem here. #ASSUME this holds
+# only while the Phase 0 handlers are pure, side-effect-free placeholders
+# that ignore their input; #VERIFY this suppression is still warranted once
+# Phase 1 wires the handlers to the shared SQLite cache (a stateful
+# dependency the fixture-reuse health check is designed to catch).
 _SUPPRESS = (HealthCheck.function_scoped_fixture,)
 _MAX_EXAMPLES = 100
 
@@ -71,19 +93,32 @@ def _adversarial_text(*, max_size: int = 200) -> st.SearchStrategy[str]:
 def _path_segment_text() -> st.SearchStrategy[str]:
     """Return adversarial text restricted to a single URL path segment.
 
-    Excludes the empty string, ``/``, and NUL: a literal ``/`` changes the
-    number of path segments rather than the segment's content, an empty
-    segment collapses the URL to a different route entirely, and NUL is
-    rejected by the HTTP client itself before the request reaches the app.
-    Everything else (including the samples in ``_ADVERSARIAL_EXAMPLES``) is
-    percent-encoded via ``quote(..., safe="")`` at call sites, matching how a
-    real HTTP client builds a request path.
+    Excludes the empty string, ``/``, NUL, ``.``, and ``..``: a literal
+    ``/`` changes the number of path segments rather than the segment's
+    content, an empty segment collapses the URL to a different route
+    entirely, NUL is rejected by the HTTP client itself before the request
+    reaches the app, and ``.``/``..`` are dot segments that httpx normalizes
+    away when it joins the request path onto the client's base URL, so a
+    generated ``.`` or ``..`` would silently miss the intended route instead
+    of exercising it. Everything else (including the samples in
+    ``_ADVERSARIAL_EXAMPLES``) is percent-encoded via ``quote(..., safe="")``
+    at call sites, matching how a real HTTP client builds a request path.
+
+    This strategy does not cover raw, slash-separated path-traversal
+    sequences such as ``../../../../etc/passwd``: the raw ``/`` characters
+    are filtered out because they would change the segment count rather
+    than stay within one segment. The percent-encoded traversal sample
+    (``..%2f..%2f..%2fetc%2fpasswd``) does survive this filter, since it
+    contains no raw ``/``, and is exercised as ordinary single-segment
+    content.
 
     Returns:
         st.SearchStrategy[str]: Strategy yielding single-segment path text.
     """
     return _adversarial_text().filter(
-        lambda s: len(s) > 0 and "/" not in s and "\x00" not in s
+        lambda s: (
+            len(s) > 0 and s not in {".", ".."} and "/" not in s and "\x00" not in s
+        )
     )
 
 
@@ -92,7 +127,13 @@ def _path_segment_text() -> st.SearchStrategy[str]:
 async def test_document_preview_path_param_never_crashes(
     client: AsyncClient, document_id: str
 ) -> None:
-    """Any opaque ``document_id`` must not raise a server error.
+    """Any opaque ``document_id`` must route and return 200.
+
+    The Phase 0 handler (``app/routes/documents.py::document_preview``)
+    accepts any single path segment and discards it (``_ = document_id``)
+    without an existence check, so every routable identifier returns 200;
+    there is no code path that legitimately 404s here yet. Phase 1 may
+    introduce a real existence check once ``app/cache.py`` exists.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
@@ -100,7 +141,7 @@ async def test_document_preview_path_param_never_crashes(
     """
     encoded = quote(document_id, safe="")
     response = await client.get(f"/documents/{encoded}/preview")
-    assert response.status_code < 500
+    assert response.status_code == status.HTTP_200_OK
 
 
 @given(document_id=_path_segment_text())
@@ -108,7 +149,13 @@ async def test_document_preview_path_param_never_crashes(
 async def test_document_download_path_param_never_crashes(
     client: AsyncClient, document_id: str
 ) -> None:
-    """Any opaque ``document_id`` must not raise a server error.
+    """Any opaque ``document_id`` must route and return 200.
+
+    The Phase 0 handler (``app/routes/documents.py::document_download``)
+    accepts any single path segment and discards it (``_ = document_id``)
+    without an existence check, so every routable identifier returns 200;
+    there is no code path that legitimately 404s here yet. Phase 1 may
+    introduce a real existence check once ``app/cache.py`` exists.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
@@ -116,7 +163,7 @@ async def test_document_download_path_param_never_crashes(
     """
     encoded = quote(document_id, safe="")
     response = await client.get(f"/documents/{encoded}/download")
-    assert response.status_code < 500
+    assert response.status_code == status.HTTP_200_OK
 
 
 @given(entity_id=_path_segment_text())
@@ -124,7 +171,13 @@ async def test_document_download_path_param_never_crashes(
 async def test_entity_detail_path_param_never_crashes(
     client: AsyncClient, entity_id: str
 ) -> None:
-    """Any opaque ``entity_id`` must not raise a server error.
+    """Any opaque ``entity_id`` must route and return 200.
+
+    The Phase 0 handler (``app/routes/entities.py::entity_detail``) accepts
+    any single path segment and discards it (``_ = entity_id``) without an
+    existence check, so every routable identifier returns 200; there is no
+    code path that legitimately 404s here yet. Phase 1 may introduce a real
+    existence check once ``app/cache.py`` exists.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
@@ -132,7 +185,7 @@ async def test_entity_detail_path_param_never_crashes(
     """
     encoded = quote(entity_id, safe="")
     response = await client.get(f"/entities/{encoded}")
-    assert response.status_code < 500
+    assert response.status_code == status.HTTP_200_OK
 
 
 @given(query=_adversarial_text(max_size=500))
