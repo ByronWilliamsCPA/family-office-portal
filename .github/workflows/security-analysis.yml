@@ -252,7 +252,9 @@ jobs:
     name: Security Gate Validation
     runs-on: ubuntu-latest
     permissions: {}
+    timeout-minutes: 5
     needs:
+      - detect-changes
       - dependency-security
       - security-scanning
       - osv-scanner
@@ -266,19 +268,27 @@ jobs:
 
       - name: Validate Security Results
         env:
+          DETECT_RESULT: ${{ needs.detect-changes.result }}
           DEP_RESULT: ${{ needs.dependency-security.result }}
           SCAN_RESULT: ${{ needs.security-scanning.result }}
           OSV_RESULT: ${{ needs.osv-scanner.result }}
           OWASP_RESULT: ${{ needs.owasp-dependency-check.result }}
         run: |
+          # #CRITICAL fail closed if change detection did not succeed. Every
+          # scan job needs detect-changes, so a failed detect-changes skips
+          # all four scans, and "skipped" alone would pass with no scan run.
+          # #VERIFY a skipped scan is acceptable only after detect-changes
+          # succeeded and reported no security-relevant files.
           is_acceptable() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
-          if is_acceptable "$DEP_RESULT" && \
+          if [[ "$DETECT_RESULT" == "success" ]] && \
+             is_acceptable "$DEP_RESULT" && \
              is_acceptable "$SCAN_RESULT" && \
              is_acceptable "$OSV_RESULT" && \
              is_acceptable "$OWASP_RESULT"; then
             echo "Security gate passed"
           else
             echo "Security gate FAILED"
+            echo "detect-changes: $DETECT_RESULT"
             echo "dep-security: $DEP_RESULT"
             echo "scanning: $SCAN_RESULT"
             echo "osv: $OSV_RESULT"
