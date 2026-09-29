@@ -147,7 +147,7 @@ configuration belongs to homelab-infra; ADR-005 records the contract.
 - The JWT must be RS256, signed by a key from the https JWKS at `AUTHENTIK_JWKS_URL`
   (cached with TTL; rate-limited refetch on an unknown `kid`).
 - `exp`, `iss` (`AUTHENTIK_ISSUER`) and `aud` (`AUTHENTIK_AUDIENCE`) are required and
-  validated with zero leeway. Skipping the `aud` check accepts tokens minted for other
+  validated with 10 s leeway for clock skew. Skipping the `aud` check accepts tokens minted for other
   Authentik applications. **#CRITICAL**
 - Role is determined by the `groups` claim: `fo-admin` is Admin and `fo-viewer` is
   Viewer (configurable via `FO_ADMIN_GROUP` / `FO_VIEWER_GROUP`); `/admin/*` requires

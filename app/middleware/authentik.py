@@ -6,9 +6,9 @@ Traefik sends every request for the portal to the Authentik embedded outpost
 (forward auth). On success the outpost forwards identity headers to the
 portal. This middleware trusts only the signed ``X-authentik-jwt`` header: it
 verifies the RS256 signature against the proxy provider's JWKS, checks
-``iss``, ``aud``, ``exp`` (plus ``nbf`` and ``iat`` when present) with zero
-leeway, and maps the ``groups`` claim to a portal role. Every failure returns
-403 (fail closed).
+``iss``, ``aud``, ``exp`` (plus ``nbf`` and ``iat`` when present) with a
+``JWT_LEEWAY_SECONDS`` clock-skew allowance, and maps the ``groups`` claim
+to a portal role. Every failure returns 403 (fail closed).
 
 #CRITICAL: security: the plain ``X-authentik-username``,
 ``X-authentik-groups`` and ``X-authentik-email`` headers are never read,
@@ -60,6 +60,15 @@ JWT_HEADER = "X-authentik-jwt"
 # #VERIFY: tests/unit/test_middleware.py rejects alg=none and an HS256 token
 # signed with the public key bytes.
 ALLOWED_ALGORITHMS = ("RS256",)
+# Clock-skew allowance for exp, nbf and iat. An Authentik proxy-provider token
+# is not minted per request: its iat and exp come from the session's access
+# token validity, so its iat can be seconds old or, after an NTP step on
+# either host, appear slightly in the future.
+# #ASSUME: timing: the Authentik host and the portal host are NTP-synced to
+# within JWT_LEEWAY_SECONDS of each other.
+# #VERIFY: compare `date -u +%s.%N` on both hosts, or check `chronyc tracking`
+# (System time offset) on each, and confirm the offset is well under 10 s.
+JWT_LEEWAY_SECONDS = 10
 ADMIN_PATH = "/admin"
 STATIC_PATH_PREFIX = "/static/"
 HEALTH_PATH = "/health"
@@ -481,9 +490,13 @@ def validate_authentik_jwt(
 ) -> dict[str, Any]:
     """Verify an ``X-authentik-jwt`` token and return its claims.
 
-    Zero leeway: forward auth mints the token on the same request, so clock
-    skew between Authentik and the portal host (both NTP-synced homelab
-    machines) is the only gap, and it is well under a second.
+    Time claims are checked with ``JWT_LEEWAY_SECONDS`` of clock-skew
+    allowance. The outpost does not mint a fresh token per request: ``iat``
+    and ``exp`` follow the Authentik session's access-token validity, and an
+    NTP correction on either host can step the clock by a second or more, so
+    an exact comparison would refuse valid users at the boundaries. The
+    allowance is small next to the token lifetime, so expired tokens are
+    still refused.
 
     Args:
         token (str): Encoded JWT.
@@ -505,7 +518,7 @@ def validate_authentik_jwt(
             algorithms=list(ALLOWED_ALGORITHMS),
             issuer=issuer,
             audience=audience,
-            leeway=0,
+            leeway=JWT_LEEWAY_SECONDS,
             options={"require": ["exp", "iss", "aud"]},
         )
     except jwt.PyJWTError as exc:

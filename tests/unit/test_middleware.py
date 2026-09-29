@@ -7,7 +7,8 @@ Contract (``CLAUDE.md`` "Authentication rules", ADR-005, tech-spec section 6):
 1. Identity comes only from the signed ``X-authentik-jwt`` header; the plain
    ``X-authentik-*`` identity headers are ignored.
 2. The token must be RS256, signed by a key in the provider JWKS, with a
-   matching ``iss`` and ``aud``, a future ``exp``, no future ``nbf``/``iat``,
+   matching ``iss`` and ``aud``, an ``exp`` not in the past and no
+   ``nbf``/``iat`` in the future (each within a small clock-skew leeway),
    and a non-empty identity claim.
 3. ``fo-admin`` grants Admin, ``fo-viewer`` grants Viewer, anyone else is 403.
 4. Every failure is 403. ``/health`` and ``/static/`` are public; ``/admin``
@@ -45,6 +46,7 @@ from structlog.testing import capture_logs
 
 from app.middleware import authentik
 from app.middleware.authentik import (
+    JWT_LEEWAY_SECONDS,
     AuthConfigError,
     AuthentikAuthMiddleware,
     AuthentikSettings,
@@ -143,7 +145,7 @@ def _claims(**overrides: object) -> dict[str, Any]:
         "sub": "sub-admin",
         "preferred_username": "admin",
         "groups": ["fo-admin"],
-        "iat": now,
+        "iat": now - 30,
         "exp": now + 3600,
         **overrides,
     }
@@ -337,39 +339,54 @@ async def test_invalid_claims_are_rejected(
     assert response.status_code == 403
 
 
-def test_exp_exactly_now_is_rejected(
+_FROZEN_NOW = "2026-09-29 12:00:00"
+_LEEWAY = JWT_LEEWAY_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("offsets", "reason"),
+    [
+        pytest.param({"exp": 0}, None, id="exp-now-accepted"),
+        pytest.param({"exp": -_LEEWAY + 1}, None, id="exp-inside-leeway-accepted"),
+        pytest.param({"exp": -_LEEWAY}, "expired", id="exp-at-leeway-rejected"),
+        pytest.param({"exp": -3600}, "expired", id="exp-long-past-rejected"),
+        pytest.param({"nbf": _LEEWAY}, None, id="nbf-at-leeway-accepted"),
+        pytest.param(
+            {"nbf": _LEEWAY + 1}, "not_yet_valid", id="nbf-beyond-leeway-rejected"
+        ),
+        pytest.param({"iat": _LEEWAY}, None, id="iat-at-leeway-accepted"),
+        pytest.param(
+            {"iat": _LEEWAY + 1}, "not_yet_valid", id="iat-beyond-leeway-rejected"
+        ),
+    ],
+)
+def test_time_claims_allow_only_the_clock_skew_leeway(
     rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
     jwt_factory: Callable[..., str],
+    offsets: dict[str, int],
+    reason: str | None,
 ) -> None:
-    """Zero leeway: a token whose ``exp`` equals the current second is expired."""
-    with freeze_time("2026-09-29 12:00:00"):
+    """Time-claim boundaries sit exactly ``JWT_LEEWAY_SECONDS`` from now.
+
+    ``offsets`` are seconds relative to a frozen now; ``reason`` is the
+    expected refusal, or ``None`` when the token must be accepted.
+    """
+    with freeze_time(_FROZEN_NOW):
         now = int(time.time())
-        token = jwt_factory(claims={"exp": now, "iat": now - 10})
+        claims = {"iat": now - 30, "exp": now + 3600}
+        claims.update({name: now + delta for name, delta in offsets.items()})
+        token = jwt_factory(claims=claims)
+        if reason is None:
+            verified = validate_authentik_jwt(
+                token, key=rsa_key_pair[1], issuer=TEST_ISSUER, audience=TEST_AUDIENCE
+            )
+            assert verified["preferred_username"] == "viewer"
+            return
         with pytest.raises(AuthError) as exc_info:
             validate_authentik_jwt(
-                token,
-                key=rsa_key_pair[1],
-                issuer=TEST_ISSUER,
-                audience=TEST_AUDIENCE,
+                token, key=rsa_key_pair[1], issuer=TEST_ISSUER, audience=TEST_AUDIENCE
             )
-    assert exc_info.value.reason == "expired"
-
-
-def test_exp_one_second_ahead_is_accepted(
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
-    jwt_factory: Callable[..., str],
-) -> None:
-    """The boundary is exact: one second of remaining life is still valid."""
-    with freeze_time("2026-09-29 12:00:00"):
-        now = int(time.time())
-        token = jwt_factory(claims={"exp": now + 1, "iat": now})
-        claims = validate_authentik_jwt(
-            token,
-            key=rsa_key_pair[1],
-            issuer=TEST_ISSUER,
-            audience=TEST_AUDIENCE,
-        )
-    assert claims["preferred_username"] == "viewer"
+    assert exc_info.value.reason == reason
 
 
 @pytest.mark.parametrize(

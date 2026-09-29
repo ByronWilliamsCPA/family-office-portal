@@ -171,7 +171,7 @@ The Authentik middleware must:
    https JWKS at `AUTHENTIK_JWKS_URL`, cached with a TTL and refetched at most
    once per 30 seconds for an unknown `kid`.
 3. Require and validate `exp`, `iss` (`AUTHENTIK_ISSUER`) and `aud`
-   (`AUTHENTIK_AUDIENCE`) with zero leeway, plus a non-empty `preferred_username`
+   (`AUTHENTIK_AUDIENCE`) with 10 s leeway for clock skew, plus a non-empty `preferred_username`
    or `sub`. Skipping the `aud` check accepts tokens minted for other Authentik
    applications. #CRITICAL
 4. Map the `groups` claim to a role: `FO_ADMIN_GROUP` (default `fo-admin`) is

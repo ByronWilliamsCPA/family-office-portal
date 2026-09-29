@@ -225,7 +225,9 @@ def jwt_factory(
             "email": f"{username}@example.com",
             "name": username.title(),
             "groups": ["fo-viewer"],
-            "iat": now,
+            # Back-dated so a backward wall-clock step (seen on WSL2) cannot
+            # make a fixture token look issued in the future.
+            "iat": now - 30,
             "exp": now + 3600,
             **(claims or {}),
         }

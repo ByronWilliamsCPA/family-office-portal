@@ -68,7 +68,9 @@ verify it against the Authentik provider's published keys, and map its
    - `iss` must equal `AUTHENTIK_ISSUER` exactly
    - `aud` must equal or contain `AUTHENTIK_AUDIENCE`
    - `exp`, `iss` and `aud` are required; `exp` must be in the future, and
-     `nbf` and `iat`, when present, must not be; zero leeway
+     `nbf` and `iat`, when present, must not be; 10 s leeway for clock skew
+     (`JWT_LEEWAY_SECONDS`), because the token's `iat` and `exp` follow the
+     Authentik session's access-token validity rather than the request
    - a non-empty identity claim (`preferred_username`, falling back to `sub`)
      is required
 3. The plain `X-authentik-username`, `X-authentik-groups`, `X-authentik-email`
@@ -116,7 +118,7 @@ it is configured from this repository.
 | 6 | The token audience is the provider's client ID | `AUTHENTIK_AUDIENCE` |
 | 7 | Groups `fo-admin` and `fo-viewer` exist, only the right people are members, and the token's `groups` claim lists group names | `FO_ADMIN_GROUP`, `FO_VIEWER_GROUP` |
 | 8 | The token carries `preferred_username` (or at least `sub`) | Identity claim check |
-| 9 | Authentik and the portal host keep NTP-synced clocks | Zero leeway on `exp`, `nbf`, `iat` |
+| 9 | Authentik and the portal host keep NTP-synced clocks, within 10 s of each other | 10 s leeway for clock skew on `exp`, `nbf`, `iat` (`#ASSUME`; `#VERIFY` by comparing `date -u +%s.%N` or `chronyc tracking` on both hosts) |
 | 10 | Primary users sign in without a password (passkeys, for example Face ID on their tablets) | Carried over from ADR-002; not enforced by the portal |
 | 11 | Authentik device sessions are long, so a primary user is not asked to sign in again during normal use, and an expired session shows Authentik's plain-English sign-in page rather than an error | Carried over from ADR-002; not enforced by the portal |
 | 12 | The portal is reachable only through Traefik (no published host port) | Deployment |

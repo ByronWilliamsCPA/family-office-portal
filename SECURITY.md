@@ -53,7 +53,8 @@ attack surface, not only how to file a report).
   (ADR-005, which supersedes ADR-002). `app/middleware/authentik.py` takes
   identity only from that header, verifies its RS256 signature against the
   https JWKS at `AUTHENTIK_JWKS_URL`, and requires `exp`, `iss`
-  (`AUTHENTIK_ISSUER`) and `aud` (`AUTHENTIK_AUDIENCE`) with zero leeway, so a
+  (`AUTHENTIK_ISSUER`) and `aud` (`AUTHENTIK_AUDIENCE`) with 10 s leeway for
+  clock skew, so a
   token minted for another Authentik application, an expired token, an
   `alg: none` or HS256 token, or one signed by an unknown key is refused with
   403. The plain `X-authentik-username`, `X-authentik-email` and

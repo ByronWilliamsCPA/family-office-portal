@@ -153,7 +153,7 @@ Phase-1 commitments that future code must honor.
   `AUTHENTIK_JWKS_URL`, cached with a TTL and refetched at most once per
   30 seconds for an unknown `kid`; (3) `aud` matches
   `AUTHENTIK_AUDIENCE` and `iss` matches `AUTHENTIK_ISSUER`; (4) `exp` is
-  required and checked with zero leeway, and `nbf` is honoured when
+  required and checked with 10 s leeway for clock skew, and `nbf` is honoured when
   present; (5) the `groups` claim maps to `Viewer` or `Admin`. Every
   failure returns a plain 403 and logs only a reason category. The
   `CF_TEAM_DOMAIN`, `CF_ACCESS_APP_ID`, `VIEWER_EMAILS` and

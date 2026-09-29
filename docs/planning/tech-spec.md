@@ -263,7 +263,7 @@ except `/health` and `/static/`:
    environment variables, follows no redirects, and is capped at 64 KiB and 10 seconds.
 3. The signature verifies, and `exp`, `iss` and `aud` are present, with `iss` equal to
    `AUTHENTIK_ISSUER`, `aud` containing `AUTHENTIK_AUDIENCE`, and `exp` in the future
-   (zero leeway). The `aud` check prevents accepting tokens minted for other Authentik
+   (10 s leeway for clock skew). The `aud` check prevents accepting tokens minted for other Authentik
    applications.
 4. `preferred_username` (or `sub`) is a non-empty string.
 
