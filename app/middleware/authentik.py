@@ -32,6 +32,7 @@ production use.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -59,14 +60,19 @@ JWT_HEADER = "X-authentik-jwt"
 # #VERIFY: tests/unit/test_middleware.py rejects alg=none and an HS256 token
 # signed with the public key bytes.
 ALLOWED_ALGORITHMS = ("RS256",)
-ADMIN_PATH_PREFIX = "/admin"
+ADMIN_PATH = "/admin"
 STATIC_PATH_PREFIX = "/static/"
 HEALTH_PATH = "/health"
 
 DEFAULT_ADMIN_GROUP = "fo-admin"
 DEFAULT_VIEWER_GROUP = "fo-viewer"
 DEFAULT_JWKS_CACHE_SECONDS = 600
+# Per-operation httpx timeout, plus a total deadline for the whole fetch so a
+# slow-drip response cannot hold the cache lock indefinitely.
 JWKS_FETCH_TIMEOUT_SECONDS = 5.0
+JWKS_FETCH_DEADLINE_SECONDS = 10.0
+# An Authentik JWKS holds a few keys (a few KiB); anything larger is refused.
+JWKS_MAX_BYTES = 64 * 1024
 # A token whose kid is not cached can force at most one JWKS refetch per
 # interval, so forged tokens cannot turn the portal into a JWKS load source.
 MIN_REFETCH_INTERVAL_SECONDS = 30.0
@@ -206,6 +212,61 @@ class AuthentikSettings:
         )
 
 
+class _JwksTooLargeError(Exception):
+    """Raised internally when a JWKS response exceeds ``JWKS_MAX_BYTES``."""
+
+
+class _JwksDeadlineError(Exception):
+    """Raised internally when a JWKS fetch outlives its total deadline."""
+
+
+async def _read_jwks_body(
+    url: str,
+    transport: httpx.AsyncBaseTransport | None,
+) -> bytes:
+    async with (
+        httpx.AsyncClient(
+            timeout=JWKS_FETCH_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            # Ignore HTTP(S)_PROXY, NO_PROXY and SSL_CERT_* from the
+            # environment, so the key fetch cannot be rerouted through an
+            # unexpected proxy or trust store.
+            trust_env=False,
+            transport=transport,
+        ) as client,
+        client.stream("GET", url, headers={"Accept": "application/json"}) as response,
+    ):
+        # raise_for_status also rejects 3xx, so an unfollowed redirect fails.
+        response.raise_for_status()
+        body = bytearray()
+        # aiter_bytes yields decoded bytes, so the cap also bounds a
+        # compressed body that inflates past the limit.
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > JWKS_MAX_BYTES:
+                raise _JwksTooLargeError
+        return bytes(body)
+
+
+async def _within_deadline(
+    url: str,
+    transport: httpx.AsyncBaseTransport | None,
+) -> bytes:
+    # asyncio.wait plus an explicit cancel instead of asyncio.wait_for: on
+    # Python 3.10 wait_for raises asyncio.TimeoutError, which is not the
+    # builtin TimeoutError, and the py312 lint target rewrites one to the
+    # other. This form needs no timeout exception class at all.
+    task = asyncio.ensure_future(_read_jwks_body(url, transport))
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=JWKS_FETCH_DEADLINE_SECONDS)
+    finally:
+        if not task.done():
+            task.cancel()
+    if task not in done:
+        raise _JwksDeadlineError
+    return task.result()
+
+
 async def fetch_authentik_jwks(
     url: str,
     *,
@@ -214,7 +275,9 @@ async def fetch_authentik_jwks(
     """Fetch the provider's JWKS document without blocking the event loop.
 
     Redirects are not followed, so a redirect cannot move the fetch off the
-    configured https URL.
+    configured https URL. Proxy and trust-store settings from the environment
+    are ignored, the body is capped at ``JWKS_MAX_BYTES``, and the whole
+    fetch must finish within ``JWKS_FETCH_DEADLINE_SECONDS``.
 
     Args:
         url (str): JWKS URL of the Authentik proxy provider.
@@ -226,23 +289,23 @@ async def fetch_authentik_jwks(
 
     Raises:
         AuthError: If the endpoint is unreachable, returns a non-2xx status,
-            or returns something other than a JSON object.
+            is too slow or too large, or returns something other than a JSON
+            object.
     """
-    document: object = None
+    msg = "jwks_unavailable"
     try:
-        async with httpx.AsyncClient(
-            timeout=JWKS_FETCH_TIMEOUT_SECONDS,
-            follow_redirects=False,
-            transport=transport,
-        ) as client:
-            response = await client.get(url)
-        # raise_for_status also rejects 3xx, so an unfollowed redirect fails.
-        document = response.raise_for_status().json()
-    except (httpx.HTTPError, ValueError) as exc:
-        msg = "jwks_unavailable"
+        body = await _within_deadline(url, transport)
+        document: object = json.loads(body)
+    except (
+        httpx.HTTPError,
+        ValueError,
+        _JwksTooLargeError,
+        _JwksDeadlineError,
+    ) as exc:
+        logger.warning("jwks_fetch_failed", reason=type(exc).__name__)
         raise AuthError(msg) from exc
     if not isinstance(document, dict):
-        msg = "jwks_unavailable"
+        logger.warning("jwks_fetch_failed", reason="not_an_object")
         raise AuthError(msg)
     return cast("dict[str, Any]", document)
 
@@ -292,9 +355,23 @@ class JwksCache:
     """Concurrency-safe in-memory JWKS cache with a TTL.
 
     Keys are fetched lazily on the first request, reused for ``ttl_seconds``,
-    and refetched early when a token names an unknown ``kid`` (key rotation),
-    at most once per ``MIN_REFETCH_INTERVAL_SECONDS``. An ``asyncio.Lock``
-    makes concurrent requests on a cold or expired cache share one fetch.
+    and refetched early when a token names an unknown ``kid`` (key rotation).
+    Fetch attempts, successful or not, are rate limited to one per
+    ``min(ttl_seconds, MIN_REFETCH_INTERVAL_SECONDS)``, so neither forged
+    ``kid`` values nor an unreachable JWKS endpoint turn requests into a
+    fetch storm. An ``asyncio.Lock`` makes concurrent requests on a cold or
+    expired cache share one fetch.
+
+    #EDGE: availability over prompt revocation. When a refetch fails, the
+    last good key set keeps validating tokens for one extra TTL (up to twice
+    ``ttl_seconds`` after the last successful fetch) instead of locking every
+    user out during a short Authentik outage. A key that Authentik removed
+    after a compromise therefore stays trusted for up to that long if the
+    JWKS endpoint is unreachable at the same time; after the grace period
+    every request fails closed with ``jwks_unavailable``.
+    #VERIFY: tests/unit/test_middleware.py shows a real token accepted during
+    the grace period and refused after it; confirm with homelab-infra that
+    ``2 * AUTHENTIK_JWKS_CACHE_SECONDS`` is an acceptable revocation delay.
     """
 
     def __init__(
@@ -303,24 +380,45 @@ class JwksCache:
         *,
         ttl_seconds: int,
         clock: Callable[[], float] = time.monotonic,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._url = url
         self._ttl = float(ttl_seconds)
+        self._grace = float(ttl_seconds)
+        self._refetch_interval = min(self._ttl, MIN_REFETCH_INTERVAL_SECONDS)
         self._clock = clock
+        self._transport = transport
         self._keys: dict[str, RSAPublicKey] = {}
+        # Last successful fetch, which dates the cached keys.
         self._fetched_at: float | None = None
+        # Last fetch attempt, successful or not, which drives rate limiting.
+        self._attempted_at: float | None = None
+        self._last_fetch_failed = False
         self._lock = asyncio.Lock()
 
-    def _age(self) -> float | None:
+    def _key_within(self, kid: str, max_age: float) -> RSAPublicKey | None:
         if self._fetched_at is None:
             return None
-        return self._clock() - self._fetched_at
-
-    def _fresh_key(self, kid: str) -> RSAPublicKey | None:
-        age = self._age()
-        if age is None or age >= self._ttl:
+        if self._clock() - self._fetched_at >= max_age:
             return None
         return self._keys.get(kid)
+
+    def _fetch_due(self) -> bool:
+        if self._attempted_at is None:
+            return True
+        return self._clock() - self._attempted_at >= self._refetch_interval
+
+    async def _refresh(self) -> None:
+        # Stamp the attempt before fetching, so a failure is rate limited too.
+        self._attempted_at = self._clock()
+        try:
+            document = await fetch_authentik_jwks(self._url, transport=self._transport)
+        except AuthError:
+            self._last_fetch_failed = True
+            return
+        self._keys = parse_jwks(document)
+        self._fetched_at = self._clock()
+        self._last_fetch_failed = False
 
     async def get_key(self, kid: str) -> RSAPublicKey:
         """Return the verification key for ``kid``, fetching keys if needed.
@@ -332,29 +430,23 @@ class JwksCache:
             RSAPublicKey: Public key that signed tokens with this ``kid``.
 
         Raises:
-            AuthError: If the JWKS cannot be fetched (``jwks_unavailable``) or
-                no key matches ``kid`` (``unknown_key``).
+            AuthError: If no usable key matches ``kid``: ``jwks_unavailable``
+                when the latest fetch attempt failed, else ``unknown_key``.
         """
-        key = self._fresh_key(kid)
+        key = self._key_within(kid, self._ttl)
         if key is not None:
             return key
         async with self._lock:
             # Another request may have refreshed the cache while this one
             # waited for the lock.
-            key = self._fresh_key(kid)
-            if key is not None:
-                return key
-            # Refetch when the cache is cold or expired, or when the kid is
-            # unknown and the last fetch is older than the rate-limit window.
-            # Otherwise the cached keys are fresh and the kid is not in them.
-            age = self._age()
-            if age is None or age >= self._ttl or age >= MIN_REFETCH_INTERVAL_SECONDS:
-                document = await fetch_authentik_jwks(self._url)
-                self._keys = parse_jwks(document)
-                self._fetched_at = self._clock()
-        key = self._keys.get(kid)
+            key = self._key_within(kid, self._ttl)
+            if key is None and self._fetch_due():
+                await self._refresh()
+            # Fresh keys after a successful fetch, or last good keys within
+            # the grace period after a failed or rate-limited one.
+            key = self._key_within(kid, self._ttl + self._grace)
         if key is None:
-            msg = "unknown_key"
+            msg = "jwks_unavailable" if self._last_fetch_failed else "unknown_key"
             raise AuthError(msg)
         return key
 
@@ -551,17 +643,38 @@ def _denied() -> PlainTextResponse:
     return PlainTextResponse("Access denied", status_code=403)
 
 
-def _is_public(path: str) -> bool:
-    return path == HEALTH_PATH or path.startswith(STATIC_PATH_PREFIX)
+def _route_path(scope: Scope) -> str:
+    # The path the router matches, relative to the app's mount point. This
+    # mirrors Starlette's own rule (starlette._utils.get_route_path, which is
+    # private): strip ``root_path`` when it is a whole-segment prefix.
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path) :]
+    return path
+
+
+def _is_public(route_path: str) -> bool:
+    return route_path == HEALTH_PATH or route_path.startswith(STATIC_PATH_PREFIX)
+
+
+def _is_admin_path(route_path: str) -> bool:
+    # Segment boundary: "/adminX" is an ordinary protected path, not admin.
+    return route_path == ADMIN_PATH or route_path.startswith(ADMIN_PATH + "/")
 
 
 class AuthentikAuthMiddleware:
     """Fail-closed ASGI middleware enforcing Authentik identity on every request.
 
     ``/health`` and ``/static/`` are public. Every other HTTP request needs a
-    valid ``X-authentik-jwt`` granting a portal role, and paths under
-    ``/admin`` need the Admin role. WebSocket connections are refused because
-    the portal serves none.
+    valid ``X-authentik-jwt`` granting a portal role, and ``/admin`` or
+    ``/admin/...`` needs the Admin role. Paths are judged after stripping any
+    ASGI ``root_path`` prefix, as the router matches them. WebSocket
+    connections are refused because the portal serves none.
     """
 
     def __init__(
@@ -592,7 +705,13 @@ class AuthentikAuthMiddleware:
         if scope["type"] != "http":
             await send({"type": "websocket.close", "code": 1008})
             return
-        path: str = scope["path"]
+        # #CRITICAL: security: the public and admin checks must see the same
+        # path the router matches. Checking the raw ``scope["path"]`` let a
+        # Viewer reach ``/portal/admin/...`` when the app runs under
+        # ``root_path="/portal"``.
+        # #VERIFY: tests/unit/test_middleware.py covers root_path requests for
+        # Viewer, Admin and /health, and the "/adminX" boundary.
+        path = _route_path(scope)
         if _is_public(path):
             await self.app(scope, receive, send)
             return
@@ -607,7 +726,7 @@ class AuthentikAuthMiddleware:
             logger.info("auth_denied", path=path, reason=exc.reason)
             await _denied()(scope, receive, send)
             return
-        if path.startswith(ADMIN_PATH_PREFIX) and not principal.is_admin:
+        if _is_admin_path(path) and not principal.is_admin:
             logger.info(
                 "auth_denied",
                 path=path,

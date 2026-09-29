@@ -258,15 +258,20 @@ except `/health` and `/static/`:
 2. The header's `alg` is `RS256` (the only accepted algorithm) and its `kid` names a
    key in the JWKS at `AUTHENTIK_JWKS_URL`. The JWKS is cached for
    `AUTHENTIK_JWKS_CACHE_SECONDS` and refetched at most once per 30 seconds when an
-   unknown `kid` appears.
+   unknown `kid` appears. Failed fetches count toward that limit, and after a failed
+   refetch the last good keys stay valid for one extra TTL. The fetch ignores proxy
+   environment variables, follows no redirects, and is capped at 64 KiB and 10 seconds.
 3. The signature verifies, and `exp`, `iss` and `aud` are present, with `iss` equal to
    `AUTHENTIK_ISSUER`, `aud` containing `AUTHENTIK_AUDIENCE`, and `exp` in the future
    (zero leeway). The `aud` check prevents accepting tokens minted for other Authentik
    applications.
 4. `preferred_username` (or `sub`) is a non-empty string.
 
-Any failure returns a plain 403, and the log records only a reason category, never
-the token.
+Public and admin paths are judged on the routed path (any ASGI `root_path` prefix
+stripped), and `/admin` matches only on a segment boundary. Any failure returns a
+plain 403, and the log records only a reason category, never the token. The portal
+needs its own single-application Authentik provider so that its `aud` is unique
+(ADR-005 contract item 13).
 
 ### Authorization
 

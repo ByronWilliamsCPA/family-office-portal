@@ -78,12 +78,20 @@ verify it against the Authentik provider's published keys, and map its
    `fo-admin` grants Admin and `fo-viewer` grants Viewer (names configurable
    through `FO_ADMIN_GROUP` and `FO_VIEWER_GROUP`). Admin wins when a user is
    in both. Anyone else gets 403, including members of broader homelab groups.
-5. `/admin` paths require Admin. Every failure is a 403 with a plain
-   "Access denied" body: missing header, malformed or invalid token, JWKS
-   unreachable, no portal group, or a Viewer on an admin path.
+5. `/admin` and `/admin/...` paths require Admin (`/adminX` is an ordinary
+   protected path). Public and admin checks use the routed path, with any
+   ASGI `root_path` prefix stripped the way Starlette's router does, so
+   mounting the app under a prefix cannot move an admin route past the role
+   check. Every failure is a 403 with a plain "Access denied" body: missing
+   header, malformed or invalid token, JWKS unreachable, no portal group, or a
+   Viewer on an admin path.
 6. JWKS keys are fetched lazily, cached for `AUTHENTIK_JWKS_CACHE_SECONDS`
-   (default 600), and refetched early when a token names an unknown `kid`, at
-   most once every 30 seconds.
+   (default 600), and refetched early when a token names an unknown `kid`.
+   Fetch attempts, failed ones included, are limited to one per 30 seconds
+   (or per TTL, if shorter). When a refetch fails, the last good key set keeps
+   validating tokens for one extra TTL, then every request fails closed. The
+   fetch ignores proxy settings from the environment, follows no redirects,
+   caps the body at 64 KiB and must finish within 10 seconds.
 
 ### Rationale
 
@@ -112,6 +120,17 @@ it is configured from this repository.
 | 10 | Primary users sign in without a password (passkeys, for example Face ID on their tablets) | Carried over from ADR-002; not enforced by the portal |
 | 11 | Authentik device sessions are long, so a primary user is not asked to sign in again during normal use, and an expired session shows Authentik's plain-English sign-in page rather than an error | Carried over from ADR-002; not enforced by the portal |
 | 12 | The portal is reachable only through Traefik (no published host port) | Deployment |
+| 13 | The portal has its own single-application Authentik proxy provider, not a domain-level forward-auth provider shared with sibling applications | `AUTHENTIK_AUDIENCE` and `AUTHENTIK_ISSUER` unique to the portal |
+
+Contract item 13 is a requirement on homelab-infra, not an infrastructure
+design. A provider shared across applications issues every application behind
+the same forward-auth chain tokens with the same `iss` and `aud`, so the
+portal's issuer and audience checks could not tell them apart: a compromised
+sibling application could replay an Admin user's token to the portal and be
+accepted. `#VERIFY`: decode a real `X-authentik-jwt` from the deployed outpost
+and confirm its `aud` (the provider's client ID) and `iss` belong to a
+provider bound only to the portal, and that no other application's tokens carry
+the same `aud`.
 
 Once the portal has a Dockerfile, it must run uvicorn with `--proxy-headers`
 and `--forwarded-allow-ips` restricted to the Traefik network's address range,
@@ -242,7 +261,8 @@ hold together:
 2. **Signature, issuer, and audience**: RS256 only, key from the provider JWKS,
    exact issuer, audience matching the provider's client ID. Without the
    audience check, a token Authentik minted for another application's proxy
-   provider, signed by the same certificate, would be accepted here.
+   provider, signed by the same certificate, would be accepted here. The check
+   only helps if the audience is the portal's alone (contract item 13).
 3. **Group-based roles**: only `fo-admin` and `fo-viewer` grant access. Broader
    homelab groups grant nothing.
 
@@ -267,8 +287,14 @@ against a deployed Authentik outpost.
 - **Key rotation**: a rotated key is picked up on the first request carrying
   the new `kid` once 30 seconds have passed since the last fetch, or at the
   latest when the cache TTL expires.
-- **JWKS outage**: while the JWKS cannot be fetched and the cache is cold or
-  expired, every request gets 403. This is the intended fail-closed behaviour.
+- **JWKS outage** `#EDGE`: while the JWKS cannot be fetched, the last good key
+  set keeps validating tokens until two full TTLs after the last successful
+  fetch; with a cold cache, or after that grace period, every request gets
+  403. The grace period trades prompt revocation for availability: a key
+  Authentik removed after a compromise stays trusted for up to
+  `2 * AUTHENTIK_JWKS_CACHE_SECONDS` if the JWKS is also unreachable.
+  `#VERIFY` that this delay is acceptable when homelab-infra sets the cache
+  lifetime; lowering `AUTHENTIK_JWKS_CACHE_SECONDS` shortens it.
 
 ## Validation
 

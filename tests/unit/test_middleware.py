@@ -11,9 +11,11 @@ Contract (``CLAUDE.md`` "Authentication rules", ADR-005, tech-spec section 6):
    and a non-empty identity claim.
 3. ``fo-admin`` grants Admin, ``fo-viewer`` grants Viewer, anyone else is 403.
 4. Every failure is 403. ``/health`` and ``/static/`` are public; ``/admin``
-   paths need Admin.
-5. The JWKS is cached with a TTL; an unknown ``kid`` forces at most one
-   rate-limited refetch.
+   and ``/admin/...`` need Admin. Paths are judged after ``root_path`` is
+   stripped.
+5. The JWKS is cached with a TTL; fetch attempts, failed ones included, are
+   rate limited, and last good keys serve for one extra TTL during an outage.
+6. The JWKS fetch ignores proxy env vars and is size- and time-bounded.
 
 Most tests run the middleware in front of a tiny echo app so the resulting
 principal can be asserted; a few run against the real ``app.main`` app.
@@ -122,9 +124,11 @@ def _client(
     settings: AuthentikSettings,
     *,
     cache: JwksCache | None = None,
+    root_path: str = "",
 ) -> AsyncClient:
     wrapped = AuthentikAuthMiddleware(_echo_app(), settings=settings, jwks_cache=cache)
-    return AsyncClient(transport=ASGITransport(app=wrapped), base_url="http://test")
+    transport = ASGITransport(app=wrapped, root_path=root_path)
+    return AsyncClient(transport=transport, base_url="http://test")
 
 
 def _b64url(raw: bytes) -> str:
@@ -573,6 +577,88 @@ async def test_viewer_is_denied_admin_paths(
     assert response.status_code == 403
 
 
+@pytest.mark.usefixtures("patched_jwks")
+async def test_root_path_does_not_hide_admin_paths_from_the_role_check(
+    auth_settings: AuthentikSettings,
+    jwt_factory: Callable[..., str],
+) -> None:
+    """Under ``root_path``, the admin gate sees the routed path (H1 regression).
+
+    With ``root_path="/portal"`` the router serves ``/portal/admin/thing`` as
+    ``/admin/thing``, so a Viewer must still get 403 there and an Admin must
+    still get through.
+    """
+    viewer = jwt_factory()
+    admin = jwt_factory(username="admin", claims={"groups": ["fo-admin"]})
+    async with _client(auth_settings, root_path="/portal") as ac:
+        viewer_response = await ac.get(
+            "/portal/admin/thing", headers={JWT_HEADER: viewer}
+        )
+        admin_response = await ac.get(
+            "/portal/admin/thing", headers={JWT_HEADER: admin}
+        )
+        viewer_section = await ac.get("/portal/whoami", headers={JWT_HEADER: viewer})
+    assert viewer_response.status_code == 403
+    assert admin_response.status_code == 200
+    assert admin_response.json()["role"] == "Admin"
+    assert viewer_section.status_code == 200
+
+
+@pytest.mark.usefixtures("patched_jwks")
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        pytest.param("/portal/health", 200, id="health-under-root-path"),
+        pytest.param("/portal/static/app.css", 200, id="static-under-root-path"),
+        pytest.param("/health", 200, id="path-outside-root-path"),
+        pytest.param("/portal", 403, id="bare-root-path"),
+        pytest.param("/portalx/health", 403, id="root-path-not-a-segment"),
+        pytest.param("/portal/admin/thing", 403, id="admin-under-root-path"),
+    ],
+)
+async def test_root_path_public_paths_without_token(
+    auth_settings: AuthentikSettings,
+    path: str,
+    expected: int,
+) -> None:
+    """Public paths are judged on the routed path; nothing else leaks."""
+    async with _client(auth_settings, root_path="/portal") as ac:
+        response = await ac.get(path)
+    assert response.status_code == expected
+
+
+@pytest.mark.usefixtures("patched_jwks")
+async def test_admin_match_is_on_a_segment_boundary(
+    auth_settings: AuthentikSettings,
+    jwt_factory: Callable[..., str],
+) -> None:
+    """``/adminX`` is an ordinary protected path: no token 403, Viewer passes."""
+    anonymous = await _get(auth_settings, "/adminX")
+    viewer = await _get(auth_settings, "/adminX", {JWT_HEADER: jwt_factory()})
+    viewer_bare_admin = await _get(auth_settings, "/admin", {JWT_HEADER: jwt_factory()})
+    assert anonymous.status_code == 403
+    # Past the middleware; the echo app has no such route.
+    assert viewer.status_code == 404
+    assert viewer_bare_admin.status_code == 403
+
+
+@pytest.mark.usefixtures("portal_env", "patched_jwks")
+async def test_real_app_under_root_path_enforces_admin_role(
+    viewer_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    """The reviewer's probe on the real app: Viewer 403, Admin 200, health 200."""
+    app = importlib.reload(importlib.import_module("app.main")).app
+    transport = ASGITransport(app=app, root_path="/portal")
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        viewer = await ac.get("/portal/admin/refresh-status", headers=viewer_headers)
+        admin = await ac.get("/portal/admin/refresh-status", headers=admin_headers)
+        health = await ac.get("/portal/health")
+    assert viewer.status_code == 403
+    assert admin.status_code == 200
+    assert health.status_code == 200
+
+
 async def test_real_app_admin_routes_enforce_role(
     anon_client: AsyncClient,
     viewer_headers: dict[str, str],
@@ -625,24 +711,24 @@ async def test_real_app_viewer_reaches_sections(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_jwks_fetch_failure_denies_access(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unreachable JWKS endpoint fails closed with 403."""
-    real_fetch = fetch_authentik_jwks
 
-    async def _unreachable(url: str) -> dict[str, Any]:
-        def _refuse(request: httpx.Request) -> httpx.Response:
-            msg = "connection refused"
-            raise httpx.ConnectError(msg, request=request)
+    def _refuse(request: httpx.Request) -> httpx.Response:
+        msg = "connection refused"
+        raise httpx.ConnectError(msg, request=request)
 
-        return await real_fetch(url, transport=httpx.MockTransport(_refuse))
-
-    monkeypatch.setattr(authentik, "fetch_authentik_jwks", _unreachable)
-    response = await _get(auth_settings, headers={JWT_HEADER: jwt_factory()})
+    cache = JwksCache(
+        auth_settings.jwks_url,
+        ttl_seconds=600,
+        transport=httpx.MockTransport(_refuse),
+    )
+    response = await _get(
+        auth_settings, headers={JWT_HEADER: jwt_factory()}, cache=cache
+    )
     assert response.status_code == 403
 
 
@@ -668,7 +754,7 @@ async def test_concurrent_cold_requests_share_one_fetch(
     """The cache lock collapses a burst of cold-cache requests into one fetch."""
     calls = 0
 
-    async def _slow_fetch(url: str) -> dict[str, Any]:
+    async def _slow_fetch(url: str, **_kwargs: object) -> dict[str, Any]:
         nonlocal calls
         del url
         calls += 1
@@ -754,6 +840,131 @@ async def test_empty_jwks_is_cached_not_refetched_every_request(
     assert patched_jwks["calls"] == 1
 
 
+class _SwitchableJwks:
+    """Fetch stub whose JWKS endpoint can be switched between up and down."""
+
+    def __init__(self, document: dict[str, Any]) -> None:
+        self.document = document
+        self.up = True
+        self.calls = 0
+
+    async def __call__(self, url: str, **_kwargs: object) -> dict[str, Any]:
+        del url
+        self.calls += 1
+        if not self.up:
+            msg = "jwks_unavailable"
+            raise AuthError(msg)
+        return self.document
+
+
+@pytest.fixture
+def switchable_jwks(
+    monkeypatch: pytest.MonkeyPatch,
+    jwks_document: dict[str, Any],
+) -> _SwitchableJwks:
+    """Replace the JWKS fetch with a stub that can simulate an outage.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        jwks_document: JWKS served while the stub is up.
+
+    Returns:
+        _SwitchableJwks: The installed stub.
+    """
+    stub = _SwitchableJwks(jwks_document)
+    monkeypatch.setattr(authentik, "fetch_authentik_jwks", stub)
+    return stub
+
+
+async def test_failing_jwks_rate_limits_random_kid_requests(
+    auth_settings: AuthentikSettings,
+    switchable_jwks: _SwitchableJwks,
+    jwt_factory: Callable[..., str],
+) -> None:
+    """During an outage, random kids cause at most one fetch per interval (M1)."""
+    clock = FakeClock()
+    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
+    async with _client(auth_settings, cache=cache) as ac:
+        assert (
+            await ac.get("/whoami", headers={JWT_HEADER: jwt_factory()})
+        ).status_code == 200
+        switchable_jwks.up = False
+        clock.now += 60
+        for i in range(50):
+            token = jwt_factory(kid=f"random-{i}")
+            response = await ac.get("/whoami", headers={JWT_HEADER: token})
+            assert response.status_code == 403
+        assert switchable_jwks.calls == 2
+        clock.now += 30
+        await ac.get("/whoami", headers={JWT_HEADER: jwt_factory(kid="random-x")})
+        assert switchable_jwks.calls == 3
+
+
+async def test_cold_cache_with_failing_jwks_is_rate_limited(
+    auth_settings: AuthentikSettings,
+    switchable_jwks: _SwitchableJwks,
+) -> None:
+    """A cold cache whose first fetch fails does not refetch on every request."""
+    switchable_jwks.up = False
+    clock = FakeClock()
+    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
+    for _ in range(20):
+        with pytest.raises(AuthError) as exc_info:
+            await cache.get_key(TEST_KID)
+        assert exc_info.value.reason == "jwks_unavailable"
+    assert switchable_jwks.calls == 1
+    # Once the window passes and the endpoint recovers, keys load normally.
+    switchable_jwks.up = True
+    clock.now += 30
+    assert await cache.get_key(TEST_KID) is not None
+    assert switchable_jwks.calls == 2
+
+
+async def test_last_good_keys_serve_through_grace_period_only(
+    auth_settings: AuthentikSettings,
+    switchable_jwks: _SwitchableJwks,
+    jwt_factory: Callable[..., str],
+) -> None:
+    """Last good keys validate real tokens for one extra TTL, then fail closed."""
+    clock = FakeClock()
+    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
+    token = jwt_factory()
+    async with _client(auth_settings, cache=cache) as ac:
+        assert (await ac.get("/whoami", headers={JWT_HEADER: token})).status_code == 200
+        switchable_jwks.up = False
+        # Expired, refetch fails, last good keys still accepted.
+        clock.now += 601
+        in_grace = await ac.get("/whoami", headers={JWT_HEADER: token})
+        assert in_grace.status_code == 200
+        assert switchable_jwks.calls == 2
+        # Near the end of the grace period: still served.
+        clock.now += 598
+        assert (await ac.get("/whoami", headers={JWT_HEADER: token})).status_code == 200
+        # Two full TTLs after the last good fetch: fail closed.
+        clock.now += 1
+        with capture_logs() as logs:
+            after = await ac.get("/whoami", headers={JWT_HEADER: token})
+        assert after.status_code == 403
+        assert logs[-1]["reason"] == "jwks_unavailable"
+        # Recovery restores access.
+        switchable_jwks.up = True
+        clock.now += 30
+        assert (await ac.get("/whoami", headers={JWT_HEADER: token})).status_code == 200
+
+
+async def test_short_ttl_refetch_interval_follows_ttl(
+    auth_settings: AuthentikSettings,
+    switchable_jwks: _SwitchableJwks,
+) -> None:
+    """With a TTL under the rate-limit window, expiry still triggers a refetch."""
+    clock = FakeClock()
+    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=10, clock=clock)
+    await cache.get_key(TEST_KID)
+    clock.now += 10
+    await cache.get_key(TEST_KID)
+    assert switchable_jwks.calls == 2
+
+
 async def test_fetch_returns_json_document() -> None:
     """The real fetcher returns the parsed JWKS object."""
 
@@ -785,6 +996,96 @@ async def test_fetch_failures_raise_jwks_unavailable(response: httpx.Response) -
     with pytest.raises(AuthError) as exc_info:
         await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
     assert exc_info.value.reason == "jwks_unavailable"
+
+
+async def test_fetch_rejects_oversized_body() -> None:
+    """A JWKS body over the size cap is refused (L2)."""
+    body = b'{"keys": [], "pad": "' + b"x" * authentik.JWKS_MAX_BYTES + b'"}'
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=body))
+    with pytest.raises(AuthError) as exc_info:
+        await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
+    assert exc_info.value.reason == "jwks_unavailable"
+
+
+async def test_fetch_accepts_body_at_the_size_cap() -> None:
+    """A body exactly at the cap is still read."""
+    prefix = b'{"keys": [], "pad": "'
+    suffix = b'"}'
+    pad = b"x" * (authentik.JWKS_MAX_BYTES - len(prefix) - len(suffix))
+    body = prefix + pad + suffix
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=body))
+    document = await fetch_authentik_jwks(
+        "https://auth.test/jwks/", transport=transport
+    )
+    assert document["keys"] == []
+
+
+async def test_fetch_enforces_total_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fetch slower than the total deadline is abandoned (L2)."""
+    monkeypatch.setattr(authentik, "JWKS_FETCH_DEADLINE_SECONDS", 0.05)
+
+    async def _stall(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={"keys": []})
+
+    with pytest.raises(AuthError) as exc_info:
+        await fetch_authentik_jwks(
+            "https://auth.test/jwks/", transport=httpx.MockTransport(_stall)
+        )
+    assert exc_info.value.reason == "jwks_unavailable"
+
+
+@pytest.mark.parametrize("failure", ["oversize", "deadline"])
+async def test_fetch_hardening_failures_deny_access(
+    auth_settings: AuthentikSettings,
+    jwt_factory: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """An oversized or stalled JWKS response ends in a 403, not a hang."""
+    monkeypatch.setattr(authentik, "JWKS_FETCH_DEADLINE_SECONDS", 0.05)
+
+    async def _serve(_request: httpx.Request) -> httpx.Response:
+        if failure == "deadline":
+            await asyncio.sleep(5)
+        return httpx.Response(200, content=b"x" * (authentik.JWKS_MAX_BYTES + 1))
+
+    cache = JwksCache(
+        auth_settings.jwks_url,
+        ttl_seconds=600,
+        transport=httpx.MockTransport(_serve),
+    )
+    response = await _get(
+        auth_settings, headers={JWT_HEADER: jwt_factory()}, cache=cache
+    )
+    assert response.status_code == 403
+
+
+async def test_fetch_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The JWKS client is built with ``trust_env=False`` (L2)."""
+    seen: dict[str, object] = {}
+    real_client = httpx.AsyncClient
+
+    def _spy(
+        *,
+        timeout: float,
+        follow_redirects: bool,
+        trust_env: bool,
+        transport: httpx.AsyncBaseTransport | None,
+    ) -> httpx.AsyncClient:
+        seen.update(trust_env=trust_env, follow_redirects=follow_redirects)
+        return real_client(
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+            trust_env=trust_env,
+            transport=transport,
+        )
+
+    monkeypatch.setattr(authentik.httpx, "AsyncClient", _spy)
+    transport = httpx.MockTransport(lambda _r: httpx.Response(200, json={"keys": []}))
+    await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
+    assert seen["trust_env"] is False
+    assert seen["follow_redirects"] is False
 
 
 def test_parse_jwks_keeps_only_usable_rs256_keys(
