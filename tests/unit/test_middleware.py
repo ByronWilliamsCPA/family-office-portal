@@ -1028,10 +1028,9 @@ async def test_fetch_enforces_total_deadline(monkeypatch: pytest.MonkeyPatch) ->
         await asyncio.sleep(5)
         return httpx.Response(200, json={"keys": []})
 
+    transport = httpx.MockTransport(_stall)
     with pytest.raises(AuthError) as exc_info:
-        await fetch_authentik_jwks(
-            "https://auth.test/jwks/", transport=httpx.MockTransport(_stall)
-        )
+        await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
     assert exc_info.value.reason == "jwks_unavailable"
 
 

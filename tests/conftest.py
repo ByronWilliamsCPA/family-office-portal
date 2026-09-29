@@ -28,7 +28,7 @@ from app.middleware import authentik
 from app.middleware.authentik import AuthentikSettings
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
     from cryptography.hazmat.primitives.asymmetric.rsa import (
@@ -314,30 +314,30 @@ def _load_app() -> FastAPI:
 
 
 @pytest.fixture
-async def anon_client(
+def anon_client(
     portal_env: dict[str, str],
     patched_jwks: dict[str, Any],
-) -> AsyncIterator[AsyncClient]:
-    """Yield an unopened client for the real app that sends no identity.
+) -> AsyncClient:
+    """Return an unopened client for the real app that sends no identity.
 
     Args:
         portal_env: Populates the required env vars before the app loads.
         patched_jwks: Keeps the JWKS fetch offline.
 
-    Yields:
+    Returns:
         AsyncClient: Client without an ``X-authentik-jwt`` header.
     """
     del portal_env, patched_jwks
-    yield AsyncClient(transport=ASGITransport(app=_load_app()), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=_load_app()), base_url="http://test")
 
 
 @pytest.fixture
-async def client(
+def client(
     portal_env: dict[str, str],
     patched_jwks: dict[str, Any],
     admin_headers: dict[str, str],
-) -> AsyncIterator[AsyncClient]:
-    """Yield an unopened client for the real app, authenticated as an Admin.
+) -> AsyncClient:
+    """Return an unopened client for the real app, authenticated as an Admin.
 
     Route tests use this client so they exercise handlers rather than auth;
     an Admin token reaches every route, including ``/admin/*``. Auth
@@ -348,11 +348,11 @@ async def client(
         patched_jwks: Keeps the JWKS fetch offline.
         admin_headers: Default identity header sent on every request.
 
-    Yields:
+    Returns:
         AsyncClient: Client sending an Admin ``X-authentik-jwt`` header.
     """
     del portal_env, patched_jwks
-    yield AsyncClient(
+    return AsyncClient(
         transport=ASGITransport(app=_load_app()),
         base_url="http://test",
         headers=admin_headers,
