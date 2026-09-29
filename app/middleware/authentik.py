@@ -615,6 +615,11 @@ async def authenticate(
     if not token:
         msg = "missing_token"
         raise AuthError(msg)
+    # SonarCloud python:S5659 flags this call; it is marked False Positive
+    # (PR #50). The header is read only to choose the JWKS key by ``kid`` and
+    # to reject a disallowed ``alg`` early; no claim is trusted until
+    # validate_authentik_jwt verifies the signature (RS256 only) plus iss,
+    # aud, and exp. This is the standard RFC 7515 key-selection step.
     try:
         header = jwt.get_unverified_header(token)
     except jwt.PyJWTError as exc:
