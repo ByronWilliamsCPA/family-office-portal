@@ -5,15 +5,16 @@
 The output is a Postman Collection v2.1 document. Every operation in the spec
 becomes one request that:
 
-* uses ``{{baseUrl}}`` for the host and ``{{apiKey}}`` for an
-  ``X-Api-Key`` header (the portal itself authenticates via Cloudflare Access
-  in production; the collection mirrors a generic backend auth pattern so
-  Newman can be wired into CI without leaking real Cloudflare tokens),
+* uses ``{{baseUrl}}`` for the host and, on every route except the public
+  ``/health`` probe, sends ``{{authentikJwt}}`` in the ``X-authentik-jwt``
+  header the Authentik middleware validates (ADR-005),
 * carries a minimal example body when the operation declares a JSON request
   body,
 * asserts that the response status is in the expected range and that the
   body parses as JSON when the operation declares an ``application/json``
-  response.
+  response. When ``authentikJwt`` is empty (the CI default) protected routes
+  must answer 403, so Newman checks the fail-closed contract; set it to a
+  real Admin token to check the success responses instead.
 
 A collection-level pre-request script seeds ``baseUrl`` to
 ``http://localhost:8000`` when the variable is unset, so Newman runs against
@@ -48,6 +49,10 @@ OUTPUT_PATH: Path = REPO_ROOT / "docs" / "api" / "postman-collection.json"
 
 METHODS: tuple[str, ...] = ("get", "post", "put", "patch", "delete", "options", "head")
 
+# Paths the Authentik middleware serves without a token (``/static/`` is not
+# part of the OpenAPI document).
+PUBLIC_PATHS: frozenset[str] = frozenset({"/health"})
+
 PRE_REQUEST_SCRIPT: str = (
     "if (!pm.variables.get('baseUrl')) { "
     "pm.variables.set('baseUrl', 'http://localhost:8000'); "
@@ -75,9 +80,12 @@ def _build_item(
     raw_url, segments = _path_to_postman(path)
     success_status = _success_status(operation.get("responses", {}))
     body_block = _build_request_body(operation, spec)
-    headers: list[dict[str, str]] = [
-        {"key": "X-Api-Key", "value": "{{apiKey}}", "type": "text"},
-    ]
+    requires_auth = path not in PUBLIC_PATHS
+    headers: list[dict[str, str]] = []
+    if requires_auth:
+        headers.append(
+            {"key": "X-authentik-jwt", "value": "{{authentikJwt}}", "type": "text"},
+        )
     if body_block is not None:
         headers.append(
             {"key": "Content-Type", "value": "application/json", "type": "text"},
@@ -117,6 +125,7 @@ def _build_item(
                         success_status,
                         _operation_returns_json(operation),
                         "422" in (operation.get("responses") or {}),
+                        requires_auth=requires_auth,
                     ).split("\n"),
                 },
             },
@@ -175,7 +184,7 @@ def generate() -> Path:
         },
         "variable": [
             {"key": "baseUrl", "value": "http://localhost:8000", "type": "string"},
-            {"key": "apiKey", "value": "", "type": "string"},
+            {"key": "authentikJwt", "value": "", "type": "string"},
         ],
         "event": [
             {
