@@ -5,7 +5,7 @@
 This repository contains the Family Office Estate Portal, a private read-only
 web application that aggregates financial and entity data from internal backend
 services. It handles non-public financial information and operates behind
-Cloudflare Zero Trust access controls.
+Authentik forward-auth access controls.
 
 ## Supported Versions
 
@@ -48,20 +48,26 @@ kept alongside the generic reporting process above (OpenSSF Best Practices
 Badge / OSSF-010: a security policy must describe the project's actual
 attack surface, not only how to file a report).
 
-- **Cloudflare Access JWT `aud` bypass.** Authentication happens at the
-  Cloudflare Zero Trust network edge: Access issues the
-  `CF-Access-JWT-Assertion` header and forwards only authenticated traffic to
-  the application (ADR-002). At Phase 0, `app/middleware/cloudflare_access.py`
-  is a pass-through stub: it does not itself verify the JWT signature or the
-  `aud` claim, and `tests/unit/test_middleware.py` skips until the Phase 1
-  validation API exists. Until Phase 1 ships, the application has no
-  application-level check that a token issued to a different app in the same
-  Cloudflare tenant is rejected; it relies solely on the edge configuration.
-  `#CRITICAL`: implement signature and `aud` validation in
-  `app/middleware/cloudflare_access.py` before any route depends on the
-  `Viewer`/`Admin` role split. `#VERIFY`: a fixture token with a foreign `aud`
-  must return 403 once Phase 1 validation lands, per the negative tests
-  planned in `tests/unit/test_middleware.py`.
+- **Forged or foreign identity token.** Authentik forward auth behind Traefik
+  authenticates users and forwards a signed `X-authentik-jwt` header
+  (ADR-005, which supersedes ADR-002). `app/middleware/authentik.py` takes
+  identity only from that header, verifies its RS256 signature against the
+  https JWKS at `AUTHENTIK_JWKS_URL`, and requires `exp`, `iss`
+  (`AUTHENTIK_ISSUER`) and `aud` (`AUTHENTIK_AUDIENCE`) with 10 s leeway for
+  clock skew, so a
+  token minted for another Authentik application, an expired token, an
+  `alg: none` or HS256 token, or one signed by an unknown key is refused with
+  403. The plain `X-authentik-username`, `X-authentik-email` and
+  `X-authentik-groups` headers are never read, because anything that reaches
+  the app could set them. `#CRITICAL`: the middleware must stay the only
+  source of identity. `#VERIFY`: `tests/unit/test_middleware.py` covers each
+  of these cases and must stay at or above 95% coverage.
+- **Direct access that bypasses Traefik.** The signed-JWT check means a
+  request that skips Traefik still needs a valid token, but it could replay
+  one captured within its lifetime. `#ASSUME`: homelab-infra publishes no host
+  port for the portal and lets only Traefik reach it (ADR-005 contract item
+  12). `#VERIFY`: from a host outside the Traefik network, a direct request to
+  the portal's container address must fail to connect.
 - **SQL injection via the SQLite read-through cache.** `app/cache.py` and
   `app/db.py` do not exist yet at Phase 0; no route handler queries SQLite.
   When Phase 1 introduces them, every query must be parameterized (no ORM,
@@ -91,15 +97,16 @@ attack surface, not only how to file a report).
 
 ## Security Architecture
 
-Authentication happens entirely at the Cloudflare Zero Trust network edge:
-Access enforces identity and issues the `CF-Access-JWT-Assertion` header
-before any request reaches the application (ADR-002). At Phase 0, the
-in-app `CloudflareAccessMiddleware` is a pass-through stub: it does not
-verify the JWT signature, the `aud` claim, or map the `email` claim to a
-role; every request that reaches the app is accepted. Phase 1 replaces the
-stub with the full validation pipeline described in "Authentication rules"
-in `CLAUDE.md`. No password-based auth, OAuth flows, or session cookies are
-implemented, and none are planned.
+Authentik forward auth behind Traefik handles sign-in and sessions and
+forwards a signed `X-authentik-jwt` header (ADR-005). The in-app
+`AuthentikAuthMiddleware` validates that token on every request except
+`/health` and `/static/`: RS256 signature against the provider's JWKS, `exp`,
+`iss` and `aud`, and a non-empty identity claim. It maps the `groups` claim
+to `Viewer` or `Admin`, requires `Admin` for `/admin/*`, and returns 403 on
+any failure (fail closed). The Authentik and Traefik configuration belongs to
+homelab-infra; ADR-005 records the contract the portal relies on. No
+password-based auth, OAuth flows, or session cookies are implemented in the
+portal, and none are planned.
 
 The application is designed to be read-only: it will never write to or
 directly contact upstream commercial systems. Phase 1 routes all backend
@@ -126,20 +133,21 @@ reassessment.
 ## Secret Management and Rotation
 
 This repository holds no application secrets in source control. Runtime
-secrets (CI tokens such as `CODECOV_TOKEN`, `SONAR_TOKEN`, and the Cloudflare
-Access application credentials referenced by `CF_TEAM_DOMAIN` /
-`CF_ACCESS_APP_ID`) are stored exclusively in GitHub Actions repository
-secrets or the Cloudflare Zero Trust dashboard, never committed to the
-repository.
+secrets (CI tokens such as `CODECOV_TOKEN` and `SONAR_TOKEN`) are stored
+exclusively in GitHub Actions repository secrets, never committed to the
+repository. The portal needs no authentication credential of its own. The
+`AUTHENTIK_JWKS_URL`, `AUTHENTIK_ISSUER` and `AUTHENTIK_AUDIENCE` values are
+public, and the signing key stays inside Authentik, managed by homelab-infra.
 
 Rotation cadence:
 
 - CI/CD tokens (Codecov, SonarCloud, any future backend API keys): reviewed
   and rotated quarterly, aligned with the same quarterly cadence used for
   unfixed-CVE reassessment above.
-- Cloudflare Access service credentials: rotated per Cloudflare's own
-  recommended schedule, or immediately upon suspected compromise or
-  contributor offboarding.
+- Authentik token signing key: rotated in Authentik by homelab-infra, or
+  immediately upon suspected compromise. The portal picks up the new key from
+  the JWKS on its next refetch (an unknown `kid` triggers one, rate-limited to
+  once per 30 seconds), so rotation needs no portal change or restart.
 - Any secret is rotated immediately, outside the regular cadence, if exposure
   is suspected (e.g., accidental commit, leaked CI log, compromised
   contributor account).

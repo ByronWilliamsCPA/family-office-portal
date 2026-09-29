@@ -39,14 +39,15 @@ information.
 
 ### Core Value
 
-One URL with Cloudflare magic-link login that shows the family's complete estate --
+One URL with passwordless Authentik login that shows the family's complete estate --
 documents, entities, finances, and portfolio -- in plain English, read-only, with
 graceful degradation when any backend is slow.
 
 ### Key Capabilities (MVP)
 
-1. **Authenticated dashboard**: Cloudflare Zero Trust with email magic link; no password
-   to remember; 30-day sessions on trusted devices
+1. **Authenticated dashboard**: Authentik forward auth with passwordless sign-in (for
+   example passkeys); no password to remember; long sessions on trusted devices
+   (ADR-005; originally Cloudflare Zero Trust magic links, ADR-002)
 2. **Estate documents**: browse by category, search by name, download and preview PDFs
    inline -- all documents accessible within two navigation steps
 3. **Entity compliance**: LLC and trust status at a glance (green/yellow/red), next key
@@ -67,7 +68,7 @@ graceful degradation when any backend is slow.
 - Portfolio section: performance chart vs S&P 500, holdings table (plain names),
   sector allocation
 - Entities section: status list, per-entity detail, linked documents
-- Cloudflare Zero Trust authentication (magic link, 30-day device sessions)
+- Authentik forward-auth authentication (passwordless sign-in, long device sessions)
 - Two access levels: Viewer (read-only) and Admin
 - Tablet-first responsive layout (iPad and desktop); phone layout out of scope for v1
 - Staleness indicators and graceful degraded states for all sections
@@ -90,7 +91,8 @@ graceful degradation when any backend is slow.
 ### Technical
 
 - **Frontend**: HTMX + Jinja2 + Tailwind CSS; server-rendered HTML, no SPA patterns
-- **Authentication**: Cloudflare Zero Trust (magic link only; no password credentials)
+- **Authentication**: Authentik forward auth at the reverse proxy (passwordless; no
+  password credentials in the portal); see ADR-005
 - **Backend services**: `llc-manager` v0.1.0, `pp-security-master` (alpha),
   `xero_crypto` v1.0.0, `family_office` (active) -- portal is a read-only consumer
 - **Navigation depth**: maximum two levels anywhere in the information architecture
@@ -105,8 +107,9 @@ graceful degradation when any backend is slow.
 
 ## Assumptions to Validate
 
-- [ ] Cloudflare Zero Trust access policy for the family email domain is already
-  configured or will be configured before Phase 0 completes
+- [ ] The Authentik proxy provider, `fo-admin` / `fo-viewer` groups and Traefik
+  forward-auth middleware are configured by homelab-infra before Phase 0 completes
+  (contract in ADR-005)
 - [ ] Each backend service exposes a stable internal API (not just CLI or direct DB
   access) that the portal can consume over HTTP
 - [ ] `pp-security-master` alpha status is acceptable for read-only display with a

@@ -17,11 +17,10 @@ unhandled exception (HTTP 5xx) reaching the ASGI boundary, and the
 validation boundary itself (``min_length``, ``Literal`` membership, JSON body
 shape) rejects invalid input with 422 rather than silently accepting it.
 
-These tests currently run against the Phase 0 pass-through auth stub
-(``app/middleware/cloudflare_access.py``): every request is accepted
-regardless of headers. They must be revisited when Phase 1 JWT validation
-lands, since unauthenticated fuzz requests will then see 401/403 instead of
-the status codes asserted here.
+The shared ``client`` fixture sends a valid Admin ``X-authentik-jwt`` token
+(see ``tests/conftest.py``), so every request passes the Authentik middleware
+and the status codes asserted here come from the route handlers. Fail-closed
+auth behaviour is covered separately in ``tests/unit/test_middleware.py``.
 """
 
 from __future__ import annotations

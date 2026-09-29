@@ -25,8 +25,10 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 async def refresh_status() -> RefreshStatusResponse:
     """Return the most recent refresh outcome per backend service.
 
-    Authentication: Admin only via Cloudflare Access. Reads the ``refresh_log``
-    table populated by the APScheduler jobs.
+    Authentication: Admin role only. The Authentik middleware returns 403 for
+    any ``/admin`` path unless the verified token's ``groups`` claim holds the
+    admin group (``FO_ADMIN_GROUP``, default ``fo-admin``). Reads the
+    ``refresh_log`` table populated by the APScheduler jobs.
 
     Returns:
         RefreshStatusResponse: One entry per tracked backend.
@@ -46,9 +48,10 @@ async def trigger_refresh(
 ) -> RefreshTriggerResponse:
     """Enqueue an out-of-band refresh for the named backend service.
 
-    Authentication: Admin only via Cloudflare Access. Phase 0 returns a stub
-    response; Phase 1 will dispatch to the APScheduler job for the matching
-    service (``entities``, ``holdings``, ``positions``, ``documents``).
+    Authentication: Admin role only, enforced by the Authentik middleware
+    (see ``refresh_status``). Phase 0 returns a stub response; Phase 1 will
+    dispatch to the APScheduler job for the matching service (``entities``,
+    ``holdings``, ``positions``, ``documents``).
 
     Args:
         service (Literal["entities", "holdings", "positions", "documents"]):

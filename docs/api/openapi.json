@@ -283,7 +283,7 @@
     "contact": {
       "name": "Byron Williams"
     },
-    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from four internal backend services behind a SQLite read-through cache. Runs behind Cloudflare Zero Trust. Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the full contract.",
+    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from four internal backend services behind a SQLite read-through cache. Runs behind Authentik forward auth. Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the full contract.",
     "license": {
       "identifier": "MIT",
       "name": "MIT"
@@ -295,7 +295,7 @@
   "paths": {
     "/": {
       "get": {
-        "description": "Render the landing dashboard.\n\nAuthentication: Viewer or Admin via Cloudflare Access (see ADR-002). Phase 0\nreturns a static HTML placeholder; Phase 1 will swap in a Jinja2 template\nthat aggregates the five sections.\n\nReturns:\n    HTMLResponse: Placeholder dashboard page.",
+        "description": "Render the landing dashboard.\n\nAuthentication: Viewer or Admin via Authentik (see ADR-005). Phase 0\nreturns a static HTML placeholder; Phase 1 will swap in a Jinja2 template\nthat aggregates the five sections.\n\nReturns:\n    HTMLResponse: Placeholder dashboard page.",
         "operationId": "home__get",
         "responses": {
           "200": {
@@ -317,7 +317,7 @@
     },
     "/admin/refresh-status": {
       "get": {
-        "description": "Return the most recent refresh outcome per backend service.\n\nAuthentication: Admin only via Cloudflare Access. Reads the ``refresh_log``\ntable populated by the APScheduler jobs.\n\nReturns:\n    RefreshStatusResponse: One entry per tracked backend.",
+        "description": "Return the most recent refresh outcome per backend service.\n\nAuthentication: Admin role only. The Authentik middleware returns 403 for\nany ``/admin`` path unless the verified token's ``groups`` claim holds the\nadmin group (``FO_ADMIN_GROUP``, default ``fo-admin``). Reads the\n``refresh_log`` table populated by the APScheduler jobs.\n\nReturns:\n    RefreshStatusResponse: One entry per tracked backend.",
         "operationId": "refresh_status_admin_refresh_status_get",
         "responses": {
           "200": {
@@ -339,7 +339,7 @@
     },
     "/admin/refresh/{service}": {
       "post": {
-        "description": "Enqueue an out-of-band refresh for the named backend service.\n\nAuthentication: Admin only via Cloudflare Access. Phase 0 returns a stub\nresponse; Phase 1 will dispatch to the APScheduler job for the matching\nservice (``entities``, ``holdings``, ``positions``, ``documents``).\n\nArgs:\n    service: Backend service identifier to refresh.\n    body: Trigger options; set ``force`` to bypass the staleness check.\n\nReturns:\n    RefreshTriggerResponse: Confirmation of the scheduling decision.",
+        "description": "Enqueue an out-of-band refresh for the named backend service.\n\nAuthentication: Admin role only, enforced by the Authentik middleware\n(see ``refresh_status``). Phase 0 returns a stub response; Phase 1 will\ndispatch to the APScheduler job for the matching service (``entities``,\n``holdings``, ``positions``, ``documents``).\n\nArgs:\n    service (Literal[\"entities\", \"holdings\", \"positions\", \"documents\"]):\n        Backend service identifier to refresh.\n    body (RefreshTriggerRequest): Trigger options; set ``force`` to\n        bypass the staleness check.\n\nReturns:\n    RefreshTriggerResponse: Confirmation of the scheduling decision.",
         "operationId": "trigger_refresh_admin_refresh__service__post",
         "parameters": [
           {
@@ -347,6 +347,12 @@
             "name": "service",
             "required": true,
             "schema": {
+              "enum": [
+                "entities",
+                "holdings",
+                "positions",
+                "documents"
+              ],
               "title": "Service",
               "type": "string"
             }
@@ -385,7 +391,7 @@
     },
     "/documents": {
       "get": {
-        "description": "Render the document folder view.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Data is read from\nthe SQLite cache populated by the ``refresh_documents`` job; the route\nnever calls the upstream ``family_office`` service directly (ADR-003).\n\nReturns:\n    HTMLResponse: Placeholder folder listing page.",
+        "description": "Render the document folder view.\n\nAuthentication: Viewer or Admin via Authentik. Data is read from\nthe SQLite cache populated by the ``refresh_documents`` job; the route\nnever calls the upstream ``family_office`` service directly (ADR-003).\n\nReturns:\n    HTMLResponse: Placeholder folder listing page.",
         "operationId": "documents_index_documents_get",
         "responses": {
           "200": {
@@ -407,7 +413,7 @@
     },
     "/documents/search": {
       "get": {
-        "description": "Return documents whose name matches ``q``.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Designed as an HTMX\npartial in Phase 1; the JSON shape is returned at Phase 0 so the contract\nis OpenAPI-described from the start.\n\nArgs:\n    q: Free-text query string; must be at least one character.\n\nReturns:\n    DocumentSearchResponse: Matching documents in ranked order.",
+        "description": "Return documents whose name matches ``q``.\n\nAuthentication: Viewer or Admin via Authentik. Designed as an HTMX\npartial in Phase 1; the JSON shape is returned at Phase 0 so the contract\nis OpenAPI-described from the start.\n\nArgs:\n    q (Annotated[str, Query(min_length=1, description=\"Free-text search query.\")]):\n        Free-text query string; must be at least one character.\n\nReturns:\n    DocumentSearchResponse: Matching documents in ranked order.",
         "operationId": "documents_search_documents_search_get",
         "parameters": [
           {
@@ -453,7 +459,7 @@
     },
     "/documents/{document_id}/download": {
       "get": {
-        "description": "Stream the original document as a file download.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content with a\n``Content-Disposition: attachment`` header.\n\nArgs:\n    document_id: Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder binary response.",
+        "description": "Stream the original document as a file download.\n\nAuthentication: Viewer or Admin via Authentik. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content with a\n``Content-Disposition: attachment`` header.\n\nArgs:\n    document_id (str): Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder binary response.",
         "operationId": "document_download_documents__document_id__download_get",
         "parameters": [
           {
@@ -492,7 +498,7 @@
     },
     "/documents/{document_id}/preview": {
       "get": {
-        "description": "Stream a PDF preview proxied from the ``family_office`` backend.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content.\n\nArgs:\n    document_id: Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder PDF response.",
+        "description": "Stream a PDF preview proxied from the ``family_office`` backend.\n\nAuthentication: Viewer or Admin via Authentik. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content.\n\nArgs:\n    document_id (str): Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder PDF response.",
         "operationId": "document_preview_documents__document_id__preview_get",
         "parameters": [
           {
@@ -531,7 +537,7 @@
     },
     "/entities": {
       "get": {
-        "description": "Render the entity list with compliance status.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Reads the cached\n``entities`` dataset sourced from the ``llc-manager`` backend.\n\nReturns:\n    HTMLResponse: Placeholder entity list page.",
+        "description": "Render the entity list with compliance status.\n\nAuthentication: Viewer or Admin via Authentik. Reads the cached\n``entities`` dataset sourced from the ``llc-manager`` backend.\n\nReturns:\n    HTMLResponse: Placeholder entity list page.",
         "operationId": "entities_index_entities_get",
         "responses": {
           "200": {
@@ -553,7 +559,7 @@
     },
     "/entities/{entity_id}": {
       "get": {
-        "description": "Render a single entity detail view.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Raw identifiers\nare not surfaced to primary users (see CLAUDE.md frontend conventions);\nPhase 1 will render a plain-English summary backed by the cache.\n\nArgs:\n    entity_id: Opaque entity identifier sourced from the cache.\n\nReturns:\n    HTMLResponse: Placeholder entity detail page.",
+        "description": "Render a single entity detail view.\n\nAuthentication: Viewer or Admin via Authentik. Raw identifiers\nare not surfaced to primary users (see CLAUDE.md frontend conventions);\nPhase 1 will render a plain-English summary backed by the cache.\n\nArgs:\n    entity_id (str): Opaque entity identifier sourced from the cache.\n\nReturns:\n    HTMLResponse: Placeholder entity detail page.",
         "operationId": "entity_detail_entities__entity_id__get",
         "parameters": [
           {
@@ -596,7 +602,7 @@
     },
     "/finances": {
       "get": {
-        "description": "Render the finances dashboard.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Aggregates the\n``holdings`` dataset (``pp-security-master``) with the ``positions``\ndataset (``xero_crypto``) from the SQLite cache.\n\nReturns:\n    HTMLResponse: Placeholder finances page.",
+        "description": "Render the finances dashboard.\n\nAuthentication: Viewer or Admin via Authentik. Aggregates the\n``holdings`` dataset (``pp-security-master``) with the ``positions``\ndataset (``xero_crypto``) from the SQLite cache.\n\nReturns:\n    HTMLResponse: Placeholder finances page.",
         "operationId": "finances_finances_get",
         "responses": {
           "200": {
@@ -640,7 +646,7 @@
     },
     "/portfolio": {
       "get": {
-        "description": "Render the portfolio page.\n\nAuthentication: Viewer or Admin via Cloudflare Access. Reads the cached\n``holdings`` and ``performance`` datasets sourced from the\n``pp-security-master`` backend.\n\nReturns:\n    HTMLResponse: Placeholder portfolio page.",
+        "description": "Render the portfolio page.\n\nAuthentication: Viewer or Admin via Authentik. Reads the cached\n``holdings`` and ``performance`` datasets sourced from the\n``pp-security-master`` backend.\n\nReturns:\n    HTMLResponse: Placeholder portfolio page.",
         "operationId": "portfolio_portfolio_get",
         "responses": {
           "200": {

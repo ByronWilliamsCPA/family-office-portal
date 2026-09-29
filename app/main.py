@@ -3,7 +3,7 @@
 """FastAPI application instantiation, middleware registration, and meta routes.
 
 Phase 0 ships the five section stubs, the ``/health`` liveness probe, the admin
-surface, and the Cloudflare Access middleware described in ADR-002. The
+surface, and the Authentik forward-auth middleware described in ADR-005. The
 APScheduler refresh jobs and the live SQLite cache reader land in Phase 1.
 """
 
@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from starlette.staticfiles import StaticFiles
 
 from app import __version__
-from app.middleware import CloudflareAccessMiddleware
+from app.middleware import AuthConfigError, AuthentikAuthMiddleware, AuthentikSettings
 from app.routes import admin, documents, entities, finances, health, home, portfolio
 
 _REQUIRED_ENV_VARS = (
@@ -25,23 +25,29 @@ _REQUIRED_ENV_VARS = (
     "BACKEND_PP_SECURITY_URL",
     "BACKEND_XERO_CRYPTO_URL",
     "BACKEND_FAMILY_OFFICE_URL",
-    "CF_TEAM_DOMAIN",
-    "CF_ACCESS_APP_ID",
-    "VIEWER_EMAILS",
-    "ADMIN_EMAILS",
+    "AUTHENTIK_JWKS_URL",
+    "AUTHENTIK_ISSUER",
+    "AUTHENTIK_AUDIENCE",
     "SQLITE_PATH",
 )
 
 for _var in _REQUIRED_ENV_VARS:
     if not os.environ.get(_var):
+        sys.stderr.write(f"Missing required environment variable: {_var}\n")
         sys.exit(1)
+
+try:
+    _AUTH_SETTINGS = AuthentikSettings.from_env()
+except AuthConfigError as _exc:
+    sys.stderr.write(f"Invalid authentication configuration: {_exc}\n")
+    sys.exit(1)
 
 app: FastAPI = FastAPI(
     title="Family Office Portal",
     description=(
         "Private read-only family estate portal aggregating entity, document, "
         "finance, and portfolio data from four internal backend services behind "
-        "a SQLite read-through cache. Runs behind Cloudflare Zero Trust. "
+        "a SQLite read-through cache. Runs behind Authentik forward auth. "
         "Page routes return server-rendered HTML; admin and health routes return JSON. "
         "See docs/planning/tech-spec.md for the full contract."
     ),
@@ -74,7 +80,7 @@ app: FastAPI = FastAPI(
     ],
 )
 
-app.add_middleware(CloudflareAccessMiddleware)
+app.add_middleware(AuthentikAuthMiddleware, settings=_AUTH_SETTINGS)
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

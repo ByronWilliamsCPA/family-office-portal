@@ -1,6 +1,6 @@
 # Project Plan: Family Office Estate Portal
 
-> **Status**: Active | **Version**: 1.0.0 | **Updated**: 2026-05-07
+> **Status**: Active | **Version**: 1.0.1 | **Updated**: 2026-09-29
 >
 > Authoritative synthesis of all foundational planning documents. Supersedes
 > individual documents when there is a conflict, but the source documents remain
@@ -11,8 +11,9 @@
 > [Tech Spec](docs/planning/tech-spec.md) |
 > [Roadmap](docs/planning/roadmap.md) |
 > [ADR-001](docs/architecture/adr/adr-001-frontend-rendering-architecture.md) |
-> [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) |
-> [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md)
+> [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) (superseded) |
+> [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md) |
+> [ADR-005](docs/architecture/adr/adr-005-authentication-authentik-forward-auth.md)
 
 ---
 
@@ -44,8 +45,8 @@ LLC and trust compliance, financial summaries, and investment portfolio performa
 
 Today the two primary users must navigate multiple professional systems, call advisors,
 and log into separate tools (Kubera, Portfolio Performance, Box) to answer basic questions
-about their own estate. The portal replaces all of that with one URL, one Cloudflare magic
-link login, and five clearly labeled sections presented in plain English.
+about their own estate. The portal replaces all of that with one URL, one passwordless Authentik
+login, and five clearly labeled sections presented in plain English.
 
 Key design priorities, in order:
 
@@ -53,7 +54,7 @@ Key design priorities, in order:
    sections, no unhandled errors visible to primary users.
 2. **Simplicity**: Maximum two navigation levels; five top-level sections; plain English
    throughout; standard browser navigation always works.
-3. **Security**: Authentication at the network edge via Cloudflare Zero Trust; no password
+3. **Security**: Authentication at the reverse proxy via Authentik forward auth; no password
    management for primary users; read-only portal (no write operations for the Viewer role).
 
 The portal is a read-only consumer of four internal backend services. It never contacts
@@ -77,7 +78,7 @@ Estimated delivery: 9-10 weeks across five phases (Phase 5 is future scope, not 
   sector allocation
 - Entities section: LLC and trust status list (green/yellow/red), per-entity detail,
   linked documents
-- Cloudflare Zero Trust authentication (magic link, 30-day device sessions)
+- Authentik forward-auth authentication (passwordless sign-in, long device sessions)
 - Two access levels: Viewer (read-only primary routes) and Admin (adds refresh triggers and
   refresh status view)
 - Tablet-first responsive layout (1024x768 landscape) with desktop support
@@ -127,28 +128,36 @@ HTMX handles partial updates (search results, chart refreshes) without a JavaScr
 See [ADR-001](docs/architecture/adr/adr-001-frontend-rendering-architecture.md) for the full
 decision record.
 
-### ADR-002: Cloudflare Zero Trust Authentication (Settled)
+### ADR-005: Authentik Forward-Auth Authentication (Settled; supersedes ADR-002)
 
-**Decision**: Cloudflare Zero Trust with email magic links handles all authentication.
-The portal's only responsibility is JWT validation in middleware.
+**Decision**: Authentik forward auth behind Traefik handles all authentication. The
+portal's only responsibility is validating the signed JWT in middleware. This replaces
+ADR-002 (Cloudflare Zero Trust with email magic links), which is kept as history.
 
-**Rationale**: Primary users cannot reliably manage passwords. Cloudflare sits in front of
-the application and validates sessions before any request reaches the portal server. The
-login instruction fits in one sentence: "Check your email and tap the link."
+**Rationale**: Primary users cannot reliably manage passwords. Authentik sits in front of
+the application with passwordless sign-in and long device sessions, and authenticates
+every request before it reaches the portal server. The Authentik and Traefik
+configuration belongs to homelab-infra; ADR-005 records the contract.
 
 **Consequence for implementation**:
 
-- CF JWT middleware validates `CF-Access-JWT-Assertion` on every non-static request.
-- JWT signature is verified against Cloudflare public keys fetched at startup from
-  `https://<CF_TEAM_DOMAIN>/cdn-cgi/access/certs` (cached with TTL).
-- The `aud` claim MUST be validated against `CF_ACCESS_APP_ID`. Skipping this check
-  allows tokens issued to other apps in the same Cloudflare tenant. **#CRITICAL**
-- Role is determined by mapping the JWT `email` claim against `VIEWER_EMAILS` and
-  `ADMIN_EMAILS` env vars.
+- The Authentik middleware takes identity only from the signed `X-authentik-jwt` header
+  on every request except `/health` and `/static/`; plain `X-authentik-*` headers are
+  never read. **#CRITICAL**
+- The JWT must be RS256, signed by a key from the https JWKS at `AUTHENTIK_JWKS_URL`
+  (cached with TTL; rate-limited refetch on an unknown `kid`).
+- `exp`, `iss` (`AUTHENTIK_ISSUER`) and `aud` (`AUTHENTIK_AUDIENCE`) are required and
+  validated with 10 s leeway for clock skew. Skipping the `aud` check accepts tokens minted for other
+  Authentik applications. **#CRITICAL**
+- Role is determined by the `groups` claim: `fo-admin` is Admin and `fo-viewer` is
+  Viewer (configurable via `FO_ADMIN_GROUP` / `FO_VIEWER_GROUP`); `/admin/*` requires
+  Admin; every failure is 403.
 - No password-based auth, OAuth flows, or session cookies are implemented.
 
-See [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) for the
-full decision record.
+See [ADR-005](docs/architecture/adr/adr-005-authentication-authentik-forward-auth.md) for the
+full decision record and
+[ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) for the
+superseded one.
 
 ### ADR-003: SQLite Read-Through Cache (Settled)
 
@@ -203,7 +212,7 @@ decision record.
 | Testing | pytest + pytest-asyncio + httpx | Async test client for route handler tests |
 | Logging | structlog (structured JSON) | Never log financial values, document contents, or email addresses beyond INFO-level auth events |
 | CI/CD | GitHub Actions | Lint, type-check, test, Docker build on every push |
-| Auth | Cloudflare Zero Trust | Magic link; JWT middleware in portal (see ADR-002) |
+| Auth | Authentik forward auth (Traefik) | Passwordless sign-in; JWT middleware in portal (see ADR-005) |
 | Container | Docker (single container) | SQLite volume-mounted; see Phase 4 for prod image |
 
 ### Environment Variables (All Required at Startup)
@@ -214,14 +223,15 @@ decision record.
 | `BACKEND_PP_SECURITY_URL` | Base URL for `pp-security-master` HTTP API |
 | `BACKEND_XERO_CRYPTO_URL` | Base URL for `xero_crypto` HTTP API |
 | `BACKEND_FAMILY_OFFICE_URL` | Base URL for `family_office` HTTP API |
-| `CF_TEAM_DOMAIN` | Cloudflare team domain (used to fetch JWT public keys) |
-| `CF_ACCESS_APP_ID` | Cloudflare Access Application ID (validated against JWT `aud`) |
-| `VIEWER_EMAILS` | Comma-separated viewer-role email addresses |
-| `ADMIN_EMAILS` | Comma-separated admin-role email addresses |
+| `AUTHENTIK_JWKS_URL` | `https://` JWKS endpoint of the Authentik provider |
+| `AUTHENTIK_ISSUER` | Expected JWT `iss` claim |
+| `AUTHENTIK_AUDIENCE` | Expected JWT `aud` claim (the provider's client ID) |
 | `SQLITE_PATH` | Filesystem path to the SQLite cache database |
 
-The application must call `sys.exit(1)` if any variable is absent. No optional env vars
-without a documented default.
+The application must call `sys.exit(1)` if any variable is absent, or if
+`AUTHENTIK_JWKS_URL` is not `https://`. No optional env vars without a documented
+default: `FO_ADMIN_GROUP` defaults to `fo-admin`, `FO_VIEWER_GROUP` to `fo-viewer`, and
+`AUTHENTIK_JWKS_CACHE_SECONDS` to `600`.
 
 ---
 
@@ -235,8 +245,8 @@ without a documented default.
 
 #### Goal
 
-Establish the development environment, project scaffold, CI pipeline, and Cloudflare Zero
-Trust integration. At phase completion, an authenticated admin user can reach all five
+Establish the development environment, project scaffold, CI pipeline, and Authentik
+forward-auth integration (ADR-005). At phase completion, an authenticated admin user can reach all five
 section shells in a browser. No backend data is required; sections render empty states only.
 
 #### Deliverables
@@ -244,7 +254,8 @@ section shells in a browser. No backend data is required; sections render empty 
 - Project scaffold: `pyproject.toml`, UV workspace, Ruff, BasedPyright, pre-commit
 - FastAPI application with Jinja2 templates and Tailwind CSS compiled at build time
 - HTMX v2 loaded as a static asset; Chart.js v4 vendored
-- Cloudflare Zero Trust configured; CF JWT middleware validating all requests
+- Authentik forward auth configured (homelab-infra); Authentik JWT middleware validating
+  the signed `X-authentik-jwt` header on every non-public request
 - SQLite database initialized with all six cache tables
   (see [Tech Spec Section 3](docs/planning/tech-spec.md))
 - All five navigation sections render (empty state; no backend calls yet)
@@ -269,8 +280,8 @@ Merge target: `main` via pull request after phase gate passes.
 | Configure Ruff, BasedPyright, pre-commit | 2 |
 | FastAPI application with Jinja2 template setup | 2 |
 | Tailwind CSS build pipeline (no Node runtime) | 1 |
-| CF Zero Trust Access policy setup | 2 |
-| CF JWT validation middleware | 3 |
+| Authentik provider and Traefik forward auth (homelab-infra) | 2 |
+| Authentik JWT validation middleware | 3 |
 | SQLite schema migration (all 6 tables) | 2 |
 | Navigation shell templates (5 sections, empty state) | 3 |
 | `.env.example` with all required env vars | 1 |
@@ -281,7 +292,8 @@ Merge target: `main` via pull request after phase gate passes.
 #### Acceptance Criteria
 
 - Authenticated admin user can reach all five sections in a browser.
-- CF JWT middleware rejects requests without a valid Cloudflare Access token with HTTP 403.
+- Authentik JWT middleware rejects requests without a valid signed `X-authentik-jwt` token
+  with HTTP 403.
 - CI pipeline passes on `main` branch (lint, type-check, test, Docker build).
 - Local setup documented: clone to running portal in under 20 minutes.
 
@@ -289,15 +301,16 @@ Merge target: `main` via pull request after phase gate passes.
 
 - Ruff and BasedPyright strict pass with zero errors.
 - Pre-commit hooks pass on all files (`pre-commit run --all-files`).
-- Minimum test coverage: 80% line; 95% on CF JWT middleware (critical path).
+- Minimum test coverage: 80% line; 95% on the Authentik JWT middleware (critical path).
 - Docker image builds successfully and container starts without errors.
 - No em-dashes in any committed text file (enforced by `no-em-dash` pre-commit hook).
 
 #### Dependencies
 
 - None (this is the first phase).
-- Cloudflare Zero Trust access policy for the family email domain must be configured
-  or in progress during this phase. It gates every subsequent phase. **#CRITICAL**
+- The Authentik provider, `fo-admin` / `fo-viewer` groups and Traefik forward-auth
+  middleware (homelab-infra, contract in ADR-005) must be configured or in progress
+  during this phase. It gates every subsequent phase. **#CRITICAL**
 
 ---
 
@@ -686,7 +699,7 @@ addressing the navigation constraint.**
 | --- | --- | --- | --- |
 | `pp-security-master` API contract unstable (alpha) | High | Medium | Cache layer absorbs failures as staleness (ADR-003); Phase 3 integrates this backend last, after the cache pattern is proven in Phases 1-2 |
 | `family_office` document proxy URLs not stable | Medium | High | Confirm URL format and TTL with backend team before Phase 2 begins; treat short-lived URLs as a blocking dependency |
-| Cloudflare Zero Trust setup delay | Low | High | Begin CF configuration in Phase 0 Week 1; it blocks every subsequent phase; escalate immediately if CF policy is not in place by end of Week 1 |
+| Authentik forward-auth setup delay | Low | High | Agree the ADR-005 contract with homelab-infra in Phase 0 Week 1; it blocks every subsequent phase; escalate immediately if the provider is not in place by end of Week 1 |
 | Tablet layout issues with Chart.js | Medium | Low | Validate chart rendering at 1024x768 during Phase 3; Chart.js is responsive by default; allocate 3 hours for E2E chart validation |
 | Backend API contract disagreements | Medium | Medium | Publish required endpoint shapes (Tech Spec Section 4) to backend teams before Phase 1; treat unconfirmed contracts as Phase blockers |
 | SQLite WAL write contention | Low | Medium | `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=5000` initialized at startup (ADR-003); aiosqlite for async reads; synchronous writes only in APScheduler context |
@@ -750,16 +763,17 @@ Immediate environment setup tasks to begin Phase 0:
 - [ ] Download and vendor HTMX v2 to `static/htmx.min.js`
 - [ ] Download and vendor Chart.js v4 to `static/chart.min.js`
 - [ ] Set up Tailwind CSS CLI build (no Node runtime)
-- [ ] Create `.env.example` with all nine required env vars
+- [ ] Create `.env.example` with all eight required env vars
 - [ ] Initialize SQLite schema with all six tables and WAL mode pragmas
 - [ ] Scaffold five empty-state route handlers and templates (Home, Documents, Finances,
   Portfolio, Entities)
-- [ ] Implement CF JWT middleware (validate header, signature, `aud` claim, role mapping)
-- [ ] Write unit tests for CF JWT middleware to 95% coverage
+- [ ] Implement Authentik JWT middleware (validate header, signature, `iss`, `aud`,
+  `exp`, group-to-role mapping)
+- [ ] Write unit tests for the Authentik JWT middleware to 95% coverage
 - [ ] Create `Dockerfile` and `docker-compose.yml`
 - [ ] Configure GitHub Actions CI workflow (lint, type-check, test, Docker build)
-- [ ] Confirm Cloudflare Zero Trust access policy is in place for family email addresses
-  **#CRITICAL**
+- [ ] Confirm the Authentik provider and `fo-admin` / `fo-viewer` groups are in place for
+  the family's accounts (homelab-infra) **#CRITICAL**
 - [ ] Verify all backend teams have received the required endpoint shapes from
   Tech Spec Section 4
 
@@ -771,5 +785,6 @@ Immediate environment setup tasks to begin Phase 0:
 - *[Technical Implementation Spec](docs/planning/tech-spec.md) v1.0*
 - *[Development Roadmap](docs/planning/roadmap.md) (2026-05-06)*
 - *[ADR-001: Frontend Rendering Architecture](docs/architecture/adr/adr-001-frontend-rendering-architecture.md)*
-- *[ADR-002: Authentication via Cloudflare Zero Trust](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)*
+- *[ADR-002: Authentication via Cloudflare Zero Trust](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) (superseded)*
 - *[ADR-003: Backend Data Aggregation Pattern](docs/architecture/adr/adr-003-backend-data-aggregation.md)*
+- *[ADR-005: Authentication via Authentik Forward Auth](docs/architecture/adr/adr-005-authentication-authentik-forward-auth.md)*

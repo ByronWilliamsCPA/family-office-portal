@@ -245,6 +245,8 @@ def _test_script(
     success_status: int,
     expects_json: bool,
     declares_422: bool,
+    *,
+    requires_auth: bool = False,
 ) -> str:
     """Build the Postman test script for an operation.
 
@@ -253,23 +255,45 @@ def _test_script(
         expects_json: True when the success response declares JSON content.
         declares_422: True when the operation declares a 422 response (i.e.
             it accepts a request body or validated parameters).
+        requires_auth: True when the route sits behind the Authentik
+            middleware. Without an ``authentikJwt`` variable such a route
+            must answer 403 (fail closed) and the JSON check is skipped.
 
     Returns:
         str: JavaScript test script for the Postman request.
     """
     allowed = [success_status, 422] if declares_422 else [success_status]
     allowed_js = ", ".join(str(code) for code in allowed)
-    lines: list[str] = [
+    if not requires_auth:
+        lines: list[str] = [
+            "pm.test('status is in the expected range', function () {",
+            f"    pm.expect([{allowed_js}]).to.include(pm.response.code);",
+            "});",
+        ]
+        if expects_json:
+            lines.extend(
+                [
+                    "pm.test('response body is valid JSON', function () {",
+                    "    pm.response.to.have.jsonBody();",
+                    "});",
+                ],
+            )
+        return "\n".join(lines)
+    lines = [
+        "const authed = Boolean(pm.variables.get('authentikJwt'));",
         "pm.test('status is in the expected range', function () {",
-        f"    pm.expect([{allowed_js}]).to.include(pm.response.code);",
+        f"    const expected = authed ? [{allowed_js}] : [403];",
+        "    pm.expect(expected).to.include(pm.response.code);",
         "});",
     ]
     if expects_json:
         lines.extend(
             [
-                "pm.test('response body is valid JSON', function () {",
-                "    pm.response.to.have.jsonBody();",
-                "});",
+                "if (authed) {",
+                "    pm.test('response body is valid JSON', function () {",
+                "        pm.response.to.have.jsonBody();",
+                "    });",
+                "}",
             ],
         )
     return "\n".join(lines)

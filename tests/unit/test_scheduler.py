@@ -36,7 +36,7 @@ db = pytest.importorskip("app.db")
 def initialized_db(
     tmp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    cf_env: dict[str, str],
+    portal_env: dict[str, str],
 ) -> Path:
     """Initialize a SQLite schema and point env at it for the scheduler.
 

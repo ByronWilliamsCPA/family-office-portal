@@ -1,6 +1,6 @@
 # Development Roadmap: Family Office Estate Portal
 
-> **Status**: Active | **Updated**: 2026-05-06
+> **Status**: Active | **Updated**: 2026-09-29
 
 ## TL;DR
 
@@ -34,8 +34,8 @@ Phase 4: Polish           ░░░░░░░░░░░░░░░░░░
 
 ### Objective
 
-Establish the development environment, project scaffold, CI pipeline, and Cloudflare
-Zero Trust integration. At the end of this phase, a logged-in admin user can reach all
+Establish the development environment, project scaffold, CI pipeline, and Authentik
+forward-auth integration (ADR-005). At the end of this phase, a logged-in admin user can reach all
 five section shells (empty pages, correct navigation, no data yet).
 
 ### Deliverables
@@ -43,7 +43,8 @@ five section shells (empty pages, correct navigation, no data yet).
 - [ ] Project scaffold: `pyproject.toml`, UV workspace, Ruff, BasedPyright, pre-commit
 - [ ] FastAPI app with Jinja2 templates and Tailwind CSS compiled at build time
 - [ ] HTMX loaded as static asset; Chart.js vendored
-- [ ] Cloudflare Zero Trust configured; CF JWT middleware validating all requests
+- [ ] Authentik forward auth configured (homelab-infra); Authentik JWT middleware
+  validating the signed `X-authentik-jwt` header on every non-public request
 - [ ] SQLite database initialized with all cache tables (see [Tech Spec §3](./tech-spec.md#3-data-model))
 - [ ] All five navigation sections render (empty state, no backend calls yet)
 - [ ] `.env.example` documenting all required environment variables (see [Tech Spec §4](./tech-spec.md#4-api-endpoints-internal-portal-routes))
@@ -53,7 +54,9 @@ five section shells (empty pages, correct navigation, no data yet).
 ### Success Criteria
 
 - Authenticated admin user can reach all five sections in a browser
-- CF JWT middleware rejects requests without a valid Cloudflare Access token
+- Authentik JWT middleware returns 403 for any request without a valid signed
+  `X-authentik-jwt` token (bad signature, wrong `iss` or `aud`, expired, or no portal
+  group), and for non-Admin users on `/admin/*`
 - CI pipeline passes on `main` branch
 - Local setup documented: clone → running portal in < 20 minutes
 
@@ -65,8 +68,8 @@ five section shells (empty pages, correct navigation, no data yet).
 | Configure Ruff, BasedPyright, pre-commit | 2 | Planned |
 | FastAPI app with Jinja2 template setup | 2 | Planned |
 | Tailwind CSS build pipeline (no Node runtime) | 1 | Planned |
-| CF Zero Trust Access policy setup | 2 | Planned |
-| CF JWT validation middleware | 3 | Planned |
+| Authentik provider and Traefik forward auth (homelab-infra) | 2 | Planned |
+| Authentik JWT validation middleware | 3 | Planned |
 | SQLite schema migration (all 6 tables) | 2 | Planned |
 | Navigation shell templates (5 sections, empty) | 3 | Planned |
 | `.env.example` with all required env vars | 1 | Planned |
@@ -348,7 +351,7 @@ Key design requirements (captured here for future reference):
 | --- | --- | --- | --- |
 | `pp-security-master` API contract unstable (alpha) | High | Medium | Cache layer absorbs failures as staleness; Phase 3 integrates this last |
 | `family_office` document proxy URLs not stable | Medium | High | Confirm URL format and TTL with backend team before Phase 2 |
-| Cloudflare Zero Trust setup delay | Low | High | Begin CF configuration in Phase 0 Week 1; it gates everything |
+| Authentik forward-auth setup delay | Low | High | Agree the ADR-005 contract with homelab-infra in Phase 0 Week 1; it gates everything |
 | Tablet layout issues with Chart.js | Medium | Low | Validate chart rendering at 1024x768 during Phase 3; Chart.js is responsive by default |
 | Backend API contract disagreements | Medium | Medium | Publish required endpoint shapes (Tech Spec §4) to backend teams before Phase 1 |
 
@@ -368,5 +371,6 @@ A feature is complete when:
 - [Project Vision](./project-vision.md)
 - [Technical Spec](./tech-spec.md)
 - [ADR-001: Frontend Architecture](../architecture/adr/adr-001-frontend-rendering-architecture.md)
-- [ADR-002: Authentication](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)
+- [ADR-002: Authentication (superseded)](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)
+- [ADR-005: Authentication, Authentik forward auth](../architecture/adr/adr-005-authentication-authentik-forward-auth.md)
 - [ADR-003: Backend Data Aggregation](../architecture/adr/adr-003-backend-data-aggregation.md)

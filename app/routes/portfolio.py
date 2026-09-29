@@ -19,7 +19,7 @@ router = APIRouter(tags=["portfolio"])
 async def portfolio() -> HTMLResponse:
     """Render the portfolio page.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Reads the cached
+    Authentication: Viewer or Admin via Authentik. Reads the cached
     ``holdings`` and ``performance`` datasets sourced from the
     ``pp-security-master`` backend.
 
