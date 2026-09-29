@@ -31,10 +31,9 @@ REQUIRED_ENV_VARS = (
     "BACKEND_PP_SECURITY_URL",
     "BACKEND_XERO_CRYPTO_URL",
     "BACKEND_FAMILY_OFFICE_URL",
-    "CF_TEAM_DOMAIN",
-    "CF_ACCESS_APP_ID",
-    "VIEWER_EMAILS",
-    "ADMIN_EMAILS",
+    "AUTHENTIK_JWKS_URL",
+    "AUTHENTIK_ISSUER",
+    "AUTHENTIK_AUDIENCE",
     "SQLITE_PATH",
 )
 
@@ -64,7 +63,7 @@ phase1 = pytest.mark.skipif(
 
 
 def test_app_attribute_is_a_fastapi_instance(
-    cf_env: dict[str, str],
+    portal_env: dict[str, str],
 ) -> None:
     """``app.main.app`` is a FastAPI instance after env-driven startup.
 
@@ -72,7 +71,7 @@ def test_app_attribute_is_a_fastapi_instance(
 
     # noqa
     """
-    del cf_env
+    del portal_env
     from fastapi import FastAPI
 
     main = importlib.import_module("app.main")
@@ -83,7 +82,7 @@ def test_app_attribute_is_a_fastapi_instance(
 @phase1
 @pytest.mark.parametrize("missing", REQUIRED_ENV_VARS)
 def test_missing_env_var_causes_startup_failure(
-    cf_env: dict[str, str],
+    portal_env: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
     missing: str,
 ) -> None:
@@ -91,7 +90,7 @@ def test_missing_env_var_causes_startup_failure(
 
     # noqa
     """
-    del cf_env
+    del portal_env
     monkeypatch.delenv(missing, raising=False)
 
     main = importlib.import_module("app.main")
@@ -103,14 +102,14 @@ def test_missing_env_var_causes_startup_failure(
 
 @phase1
 def test_static_files_mount_is_registered(
-    cf_env: dict[str, str],
+    portal_env: dict[str, str],
 ) -> None:
     """Per ``CLAUDE.md``: htmx.min.js and chart.umd.min.js are vendored under
     ``static/`` and must be served by the application (no CDN).
 
     # noqa
     """
-    del cf_env
+    del portal_env
     main = importlib.import_module("app.main")
     importlib.reload(main)
     routes = [getattr(r, "path", "") for r in main.app.routes]

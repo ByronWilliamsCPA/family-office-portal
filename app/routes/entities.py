@@ -19,7 +19,7 @@ router = APIRouter(prefix="/entities", tags=["entities"])
 async def entities_index() -> HTMLResponse:
     """Render the entity list with compliance status.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Reads the cached
+    Authentication: Viewer or Admin via Authentik. Reads the cached
     ``entities`` dataset sourced from the ``llc-manager`` backend.
 
     Returns:
@@ -37,7 +37,7 @@ async def entities_index() -> HTMLResponse:
 async def entity_detail(entity_id: str) -> HTMLResponse:
     """Render a single entity detail view.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Raw identifiers
+    Authentication: Viewer or Admin via Authentik. Raw identifiers
     are not surfaced to primary users (see CLAUDE.md frontend conventions);
     Phase 1 will render a plain-English summary backed by the cache.
 

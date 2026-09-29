@@ -23,7 +23,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def documents_index() -> HTMLResponse:
     """Render the document folder view.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Data is read from
+    Authentication: Viewer or Admin via Authentik. Data is read from
     the SQLite cache populated by the ``refresh_documents`` job; the route
     never calls the upstream ``family_office`` service directly (ADR-003).
 
@@ -43,7 +43,7 @@ async def documents_search(
 ) -> DocumentSearchResponse:
     """Return documents whose name matches ``q``.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Designed as an HTMX
+    Authentication: Viewer or Admin via Authentik. Designed as an HTMX
     partial in Phase 1; the JSON shape is returned at Phase 0 so the contract
     is OpenAPI-described from the start.
 
@@ -73,7 +73,7 @@ async def documents_search(
 async def document_preview(document_id: str) -> Response:
     """Stream a PDF preview proxied from the ``family_office`` backend.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an
+    Authentication: Viewer or Admin via Authentik. Phase 0 returns an
     empty placeholder; Phase 1 will stream upstream content.
 
     Args:
@@ -101,7 +101,7 @@ async def document_preview(document_id: str) -> Response:
 async def document_download(document_id: str) -> Response:
     """Stream the original document as a file download.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Phase 0 returns an
+    Authentication: Viewer or Admin via Authentik. Phase 0 returns an
     empty placeholder; Phase 1 will stream upstream content with a
     ``Content-Disposition: attachment`` header.
 

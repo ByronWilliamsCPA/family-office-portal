@@ -4,9 +4,10 @@
 
 These tests cover the public surface enriched in the OpenAPI / Postman PR.
 They assert status codes, content types, and the JSON shape of each typed
-response. They do not exercise upstream backends or middleware (none exist
-at Phase 0); subsequent phases will layer integration and resilience tests
-on top of this baseline.
+response. They do not exercise upstream backends. The ``client`` fixture sends a
+valid Admin Authentik token so each request reaches its handler; auth
+behaviour is covered in ``tests/unit/test_middleware.py``. Subsequent phases
+will layer integration and resilience tests on top of this baseline.
 """
 
 from __future__ import annotations

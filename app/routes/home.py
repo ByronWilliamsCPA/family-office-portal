@@ -19,7 +19,7 @@ router = APIRouter(tags=["home"])
 async def home() -> HTMLResponse:
     """Render the landing dashboard.
 
-    Authentication: Viewer or Admin via Cloudflare Access (see ADR-002). Phase 0
+    Authentication: Viewer or Admin via Authentik (see ADR-005). Phase 0
     returns a static HTML placeholder; Phase 1 will swap in a Jinja2 template
     that aggregates the five sections.
 

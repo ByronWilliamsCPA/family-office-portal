@@ -19,7 +19,7 @@ router = APIRouter(tags=["finances"])
 async def finances() -> HTMLResponse:
     """Render the finances dashboard.
 
-    Authentication: Viewer or Admin via Cloudflare Access. Aggregates the
+    Authentication: Viewer or Admin via Authentik. Aggregates the
     ``holdings`` dataset (``pp-security-master``) with the ``positions``
     dataset (``xero_crypto``) from the SQLite cache.
 
