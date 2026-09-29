@@ -53,7 +53,7 @@ Example: `fix(middleware): validate aud claim before returning 200`
 ## Testing Requirements
 
 - Overall line coverage must remain at or above 80%.
-- Critical paths (CF JWT middleware in `app/middleware/`, cache reads and staleness
+- Critical paths (Authentik JWT middleware in `app/middleware/`, cache reads and staleness
   logic in `app/cache.py`) must remain at or above 95% coverage.
 - Run `uv run pytest` locally before opening a PR. CI will run unit and integration
   test suites on every push.

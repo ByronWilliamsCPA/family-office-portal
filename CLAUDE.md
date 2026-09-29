@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Status**: Active | **Version**: 1.2.0 | **Updated**: 2026-05-23
+> **Status**: Active | **Version**: 1.2.1 | **Updated**: 2026-09-29
 >
 > Project-specific rules for the family-office-portal FastAPI application.
 > Global standards are in `~/.claude/CLAUDE.md` and apply everywhere.
@@ -68,7 +68,7 @@ Exists today (Phase 0):
 app/
   main.py              # FastAPI app instantiation, lifespan, middleware registration
   models.py            # Pydantic request/response models
-  middleware/          # CF JWT validation middleware
+  middleware/          # Authentik forward-auth JWT validation middleware
   routes/              # One module per section: home, documents, finances,
                        # portfolio, entities, health, admin
 static/
@@ -93,7 +93,7 @@ Component-to-file mapping from `docs/planning/tech-spec.md`:
 
 | Component | Location | Status | Notes |
 | --- | --- | --- | --- |
-| CF JWT Middleware | `app/middleware/` | Stub (Phase 0); validation Phase 1 | Phase 0 is a pass-through stub that accepts every request; Phase 1 adds header, signature, `aud` claim, and role-mapping validation |
+| Authentik JWT Middleware | `app/middleware/authentik.py` | Exists (Phase 0) | Validates the signed `X-authentik-jwt` header (RS256 signature via JWKS, `iss`, `aud`, `exp`), maps groups to a role, fails closed with 403 (ADR-005) |
 | Route Handlers | `app/routes/` | Exists (Phase 0 placeholders) | Return placeholder `HTMLResponse`/JSON today; Phase 1 wires them to return `TemplateResponse` and read SQLite via the cache reader, once `app/cache.py` and `templates/` exist |
 | Cache Reader | `app/cache.py` | Planned, Phase 1 | Async `aiosqlite` reads; called by routes |
 | Refresh Scheduler | `app/scheduler.py` | Planned, Phase 1 | Sync writes; calls backend services via `httpx` |
@@ -115,8 +115,9 @@ Key documents to read before making architectural or data-model decisions:
 - `docs/planning/tech-spec.md` -- canonical stack, schema, endpoints, env vars
 - `docs/architecture/adr/adr-001-frontend-rendering-architecture.md` -- server-rendered
   HTML is a settled decision; do not propose SPA patterns
-- `docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md` -- auth is at
-  the network edge; do not add application-level password handling
+- `docs/architecture/adr/adr-005-authentication-authentik-forward-auth.md` -- auth is
+  Authentik forward auth at the reverse proxy; the portal only validates the signed
+  JWT; do not add application-level password handling (supersedes ADR-002)
 - `docs/architecture/adr/adr-003-backend-data-aggregation.md` -- all data flows through
   the SQLite read-through cache; route handlers never call backend services directly
 - `docs/planning/roadmap.md` -- current phase and acceptance criteria
@@ -155,19 +156,29 @@ Key documents to read before making architectural or data-model decisions:
 
 ## Authentication rules
 
-Cloudflare Zero Trust handles authentication at the network edge (ADR-002). The
-portal's only auth responsibility is JWT validation in middleware.
+Authentik forward auth behind Traefik handles login, passkeys and sessions
+(ADR-005, which supersedes ADR-002). The portal's only auth responsibility is
+validating the signed JWT in `app/middleware/authentik.py`. The Authentik
+blueprint, groups, Traefik and compose wiring, and session length belong to
+homelab-infra; ADR-005 records the contract.
 
-The CF JWT middleware must:
+The Authentik middleware must:
 
-1. Require the `CF-Access-JWT-Assertion` header on every non-static request.
-2. Validate the JWT signature against Cloudflare public keys fetched from
-   `https://<CF_TEAM_DOMAIN>/cdn-cgi/access/certs` at startup (cache with TTL).
-3. Validate the `aud` claim against `CF_ACCESS_APP_ID`. Skipping this check allows
-   tokens issued to other apps in the same Cloudflare tenant -- a security gap
-   documented in ADR-002. #CRITICAL
-4. Map the `email` claim to `Viewer` or `Admin` role via `VIEWER_EMAILS` and
-   `ADMIN_EMAILS` env vars.
+1. Take identity only from the signed `X-authentik-jwt` header. Never read the
+   plain `X-authentik-username`, `X-authentik-email` or `X-authentik-groups`
+   headers; anything that reaches the app could forge them. #CRITICAL
+2. Verify the signature with `algorithms=["RS256"]` only, against keys from the
+   https JWKS at `AUTHENTIK_JWKS_URL`, cached with a TTL and refetched at most
+   once per 30 seconds for an unknown `kid`.
+3. Require and validate `exp`, `iss` (`AUTHENTIK_ISSUER`) and `aud`
+   (`AUTHENTIK_AUDIENCE`) with zero leeway, plus a non-empty `preferred_username`
+   or `sub`. Skipping the `aud` check accepts tokens minted for other Authentik
+   applications. #CRITICAL
+4. Map the `groups` claim to a role: `FO_ADMIN_GROUP` (default `fo-admin`) is
+   Admin, `FO_VIEWER_GROUP` (default `fo-viewer`) is Viewer, anything else is 403.
+   Store the principal on `request.state.principal`.
+5. Fail closed with 403. Only `/health` and `/static/` are public; `/admin/*`
+   requires Admin. Log the reason category only, never the token.
 
 Never implement password-based auth, OAuth flows, or session cookies.
 
@@ -194,8 +205,11 @@ startup. The application must call `sys.exit(1)` if any are absent. Do not add
 optional env vars without a documented default.
 
 Required: `BACKEND_LLC_MANAGER_URL`, `BACKEND_PP_SECURITY_URL`,
-`BACKEND_XERO_CRYPTO_URL`, `BACKEND_FAMILY_OFFICE_URL`, `CF_TEAM_DOMAIN`,
-`CF_ACCESS_APP_ID`, `VIEWER_EMAILS`, `ADMIN_EMAILS`, `SQLITE_PATH`.
+`BACKEND_XERO_CRYPTO_URL`, `BACKEND_FAMILY_OFFICE_URL`, `AUTHENTIK_JWKS_URL`
+(must be `https://`), `AUTHENTIK_ISSUER`, `AUTHENTIK_AUDIENCE`, `SQLITE_PATH`.
+
+Optional, with documented defaults: `FO_ADMIN_GROUP` (`fo-admin`),
+`FO_VIEWER_GROUP` (`fo-viewer`), `AUTHENTIK_JWKS_CACHE_SECONDS` (`600`).
 
 ## Frontend conventions
 
@@ -243,7 +257,7 @@ Use `httpx.AsyncClient` (already a project dependency) as the FastAPI test clien
 | Read-only exploration | Haiku 4.5 | File scanning, quick lookups |
 
 Use Haiku for the built-in `Explore` subagent (file scanning, structure mapping).
-Use Opus when reasoning about CF JWT middleware security or SQLite WAL concurrency.
+Use Opus when reasoning about Authentik JWT middleware security or SQLite WAL concurrency.
 
 ## Response-Aware Development (RAD)
 
@@ -254,7 +268,8 @@ and `#EDGE` markers paired with `#VERIFY` instructions. Mandatory categories:
 - **External resources**: backend service availability; `pp-security-master` alpha
   status is a standing `#ASSUME`
 - **Data integrity**: SQLite WAL concurrency between async readers and sync writer
-- **Security**: CF JWT `aud` claim validation; any bypass is a `#CRITICAL`
+- **Security**: Authentik JWT signature, `iss` and `aud` validation, and never
+  trusting plain identity headers; any bypass is a `#CRITICAL`
 - **Financial**: net worth aggregation logic; any rounding or currency assumption
   is an `#ASSUME` requiring `#VERIFY`
 

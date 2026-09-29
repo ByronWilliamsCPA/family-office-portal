@@ -6,8 +6,8 @@ should read this file before beginning any task in this repository.
 ## Project overview
 
 `family-office-portal` is a FastAPI web application that aggregates financial
-and entity data from internal backend services. It runs behind Cloudflare Zero
-Trust and serves a single authenticated family as a read-only portal.
+and entity data from internal backend services. It runs behind Authentik
+forward auth and serves a single authenticated family as a read-only portal.
 
 <!-- core-directives:v1 -->
 ## Core Directives
@@ -57,8 +57,10 @@ pyproject.toml uv project manifest and tool configuration
 These rules are non-negotiable, mirrored from CLAUDE.md so non-Claude agents
 (Codex, Cursor, Aider) see them without reading Claude-specific files:
 
-- **CF JWT `aud` claim validation** is mandatory. Skipping it is a security
-  defect tagged `#CRITICAL`. See ADR-002.
+- **Authentik JWT validation** is mandatory: identity comes only from the
+  signed `X-authentik-jwt` header (RS256 signature, `iss`, `aud`, `exp`), never
+  from plain `X-authentik-*` headers. Skipping any check is a security defect
+  tagged `#CRITICAL`. See ADR-005.
 - **Route handlers read from SQLite only.** They must never call backend HTTP
   services directly. See ADR-003.
 - **Python 3.12 only.** Do not introduce 3.13 syntax or features.

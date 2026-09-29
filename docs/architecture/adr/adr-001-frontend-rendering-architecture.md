@@ -135,7 +135,7 @@ hydration concerns, and a JavaScript build pipeline the project doesn't need.
 
 ## Related
 
-- [ADR-002](./adr-002-authentication-cloudflare-zero-trust.md): Auth integration
+- [ADR-005](./adr-005-authentication-authentik-forward-auth.md): Auth integration (supersedes ADR-002)
   uses server-side session validation, consistent with server-rendered approach
 - [ADR-003](./adr-003-backend-data-aggregation.md): Data aggregation layer feeds
   template context directly

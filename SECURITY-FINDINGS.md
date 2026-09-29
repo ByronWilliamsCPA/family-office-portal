@@ -6,6 +6,9 @@
 > **Reviewer**: Automated OWASP Top 10 (2021) review
 > **Date**: 2026-05-15
 > **Branch**: `claude/owasp-security-hardening-TAfUX`
+> **Updated**: 2026-09-29, F-06 resolved by the Authentik forward-auth middleware
+> (ADR-005 supersedes ADR-002). The original findings text is kept as the audit
+> record; status notes mark what changed.
 
 ## Executive Summary
 
@@ -108,7 +111,9 @@ Phase-1 commitments that future code must honor.
   `Strict-Transport-Security` by default. Because the portal renders
   sensitive financial HTML, missing headers leave the app exposed to
   clickjacking, MIME-sniffing, and -- if Cloudflare ever stops adding
-  HSTS at the edge -- downgrade attacks.
+  HSTS at the edge -- downgrade attacks. (Status 2026-09-29: the edge is
+  now Traefik with Authentik forward auth per ADR-005, so HSTS depends on
+  the Traefik configuration in homelab-infra; this finding stays open.)
 - **Recommended fix**: Phase 1 must add a Starlette middleware (or
   `starlette.middleware.trustedhost.TrustedHostMiddleware` plus a
   custom response-header middleware) that sets at minimum:
@@ -139,6 +144,23 @@ Phase-1 commitments that future code must honor.
   (5) `email` claim mapped to `Viewer` or `Admin`. A failure at any
   step must return 403 with no information disclosure. Unit-test
   coverage must be 95 percent per `CLAUDE.md`.
+- **Status (2026-09-29)**: Resolved, with a changed identity provider.
+  ADR-005 replaces Cloudflare Access with Authentik forward auth, and
+  `app/middleware/authentik.py` implements the equivalent pipeline: (1)
+  the signed `X-authentik-jwt` header is present (plain `X-authentik-*`
+  headers are never read); (2) the header `alg` is RS256 and the
+  signature verifies against a key from the https JWKS at
+  `AUTHENTIK_JWKS_URL`, cached with a TTL and refetched at most once per
+  30 seconds for an unknown `kid`; (3) `aud` matches
+  `AUTHENTIK_AUDIENCE` and `iss` matches `AUTHENTIK_ISSUER`; (4) `exp` is
+  required and checked with zero leeway, and `nbf` is honoured when
+  present; (5) the `groups` claim maps to `Viewer` or `Admin`. Every
+  failure returns a plain 403 and logs only a reason category. The
+  `CF_TEAM_DOMAIN`, `CF_ACCESS_APP_ID`, `VIEWER_EMAILS` and
+  `ADMIN_EMAILS` variables are removed. `tests/unit/test_middleware.py`
+  covers the module at 100 percent, including foreign `aud`, wrong `iss`,
+  expired, `alg: none`, HS256 key confusion, unknown `kid` and forged
+  plain-header cases.
 
 ### F-07 Transitive urllib3 2.6.3 had two open CVEs | **High**
 
@@ -178,13 +200,13 @@ Phase-1 commitments that future code must honor.
 
 | OWASP Item | Phase 0 Status | Phase 1 Gate |
 | --- | --- | --- |
-| A01 Broken Access Control | No routes exist; nothing to bypass | F-06 (CF JWT `aud`) |
+| A01 Broken Access Control | No routes exist; nothing to bypass | F-06 (CF JWT `aud`); resolved 2026-09-29 by the Authentik middleware (ADR-005) |
 | A02 Cryptographic Failures | No secrets in source. F-04 (http example) | Confirm internal TLS at deploy |
 | A03 Injection | No SQL/shell code yet; CLAUDE.md mandates parameterized queries | Code review enforces |
 | A04 Insecure Design | F-01 fixed (assert-in-production now blocked) | Threat model in Phase 1 |
 | A05 Security Misconfiguration | F-02, F-03 fixed; F-05 forward-looking | Add security-headers middleware |
 | A06 Vulnerable Components | pip-audit, OSV, OWASP-DC, dependency-review all wired | Maintain `known-vulnerabilities.md` |
-| A07 AuthN Failures | No app-level auth (Cloudflare at edge per ADR-002) | F-06 |
+| A07 AuthN Failures | No app-level auth (Cloudflare at edge per ADR-002) | F-06; resolved 2026-09-29, Authentik forward auth plus in-app JWT validation (ADR-005) |
 | A08 Software/Data Integrity | All Actions pinned to SHA; harden-runner in audit mode | Maintain on every PR |
 | A09 Logging Failures | structlog mandated; CLAUDE.md forbids logging financial values or emails beyond INFO auth events | Enforced via code review |
 | A10 SSRF | No HTTP client yet; APScheduler refresher will use closed URL allowlist (env-configured) | Validate at Phase 1 |
@@ -225,11 +247,14 @@ workflow already monitors and re-checks the in-repo posture weekly.
 
 - F-05: response-header middleware (CSP, XFO, XCTO, HSTS, Referrer-Policy).
 - F-06: CF JWT validation middleware with mandatory `aud` claim check.
+  (Resolved 2026-09-29 as Authentik JWT validation; see F-06 status.)
 - F-04 (verification): confirm production deployment uses HTTPS for all
   backend calls, or document the trusted-network assumption.
 - Add CSRF-not-applicable note once routes exist (the portal is read-only,
   but any future POST/PUT endpoint must use Starlette's
   `SessionMiddleware` + token, or rely on Cloudflare-issued service tokens).
+  (Status 2026-09-29: Cloudflare service tokens no longer apply after
+  ADR-005; the CSRF note remains open for any future write endpoint.)
 
 ## Verification Steps
 

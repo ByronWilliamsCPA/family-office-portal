@@ -35,15 +35,18 @@ Most project context, conventions, and rules are written for Claude Code.
 | Interactivity   | HTMX (vendored static asset)                |
 | CSS             | Tailwind CSS (compiled via CLI binary)      |
 | Database        | SQLite via aiosqlite                        |
-| Auth            | Cloudflare Zero Trust (JWT middleware only) |
+| Auth            | Authentik forward auth (JWT middleware)     |
 | Scheduler       | APScheduler v3                              |
 | Package manager | uv                                          |
 
 ## Critical rules
 
-- **Authentication**: CF JWT middleware MUST validate the `aud` claim against
-  `CF_ACCESS_APP_ID`. Skipping this allows tokens issued to other apps in the
-  same Cloudflare tenant. This is `#CRITICAL` per RAD. See ADR-002.
+- **Authentication**: the Authentik middleware MUST take identity only from
+  the signed `X-authentik-jwt` header and validate its RS256 signature, `iss`
+  (`AUTHENTIK_ISSUER`), `aud` (`AUTHENTIK_AUDIENCE`) and `exp`. Skipping the
+  `aud` check accepts tokens minted for other Authentik applications; trusting
+  plain `X-authentik-*` headers lets anyone forge identity. This is `#CRITICAL`
+  per RAD. See ADR-005.
 - **Data layer**: route handlers read from SQLite only; they never call backend
   HTTP services directly. APScheduler refresh jobs are the only writers. See
   ADR-003.

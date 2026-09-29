@@ -1,14 +1,15 @@
 # Technical Implementation Spec: Family Office Estate Portal
 
 > **Status**: Draft
-> **Version**: 1.1 | **Updated**: 2026-05-23
+> **Version**: 1.2 | **Updated**: 2026-09-29
 
 ## TL;DR
 
 Python/FastAPI server rendering Jinja2 templates with HTMX and Tailwind CSS, backed
 by a SQLite read-through cache populated by a scheduled refresher that calls four backend
-services (`llc-manager`, `pp-security-master`, `xero_crypto`, `family_office`). Authentication
-is handled entirely by Cloudflare Zero Trust at the network edge.
+services (`llc-manager`, `pp-security-master`, `xero_crypto`, `family_office`). Authentik
+forward auth at the reverse proxy handles login; the portal validates the signed JWT it
+forwards (ADR-005).
 
 ## 1. Technology Stack
 
@@ -39,7 +40,7 @@ is handled entirely by Cloudflare Zero Trust at the network edge.
 ### Infrastructure
 
 - **CI/CD**: GitHub Actions
-- **Authentication**: Cloudflare Zero Trust (see [ADR-002](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md))
+- **Authentication**: Authentik forward auth behind Traefik (see [ADR-005](../architecture/adr/adr-005-authentication-authentik-forward-auth.md), which supersedes ADR-002)
 - **Container**: Docker (single container; SQLite volume-mounted)
 
 ## 2. Architecture
@@ -56,15 +57,15 @@ Server-rendered monolith with a background refresh scheduler. See [ADR-001](../a
           │ HTTPS
           ▼
   ┌───────────────────────────────────┐
-  │     Cloudflare Zero Trust         │
-  │  (magic link auth, JWT issuance)  │
+  │  Traefik + Authentik outpost      │
+  │  (forward auth, signs the JWT)    │
   └───────────────────┬───────────────┘
-                      │ CF-Access-JWT header on all requests
+                      │ X-authentik-jwt header on all requests
                       ▼
   ┌───────────────────────────────────┐
   │      FastAPI Portal Server        │
   │  ┌────────────────────────────┐   │
-  │  │  CF JWT Middleware         │   │
+  │  │  Authentik JWT Middleware  │   │
   │  │  (validates JWT, sets role)│   │
   │  ├────────────────────────────┤   │
   │  │  Route Handlers            │   │
@@ -98,7 +99,7 @@ Server-rendered monolith with a background refresh scheduler. See [ADR-001](../a
 
 | Component | Purpose | Key Functions |
 | --- | --- | --- |
-| CF JWT Middleware | Auth enforcement and role extraction | `validate_cf_jwt`, `get_role_from_email` |
+| Authentik JWT Middleware | Auth enforcement and role extraction | `AuthentikAuthMiddleware`, `authenticate`, `validate_authentik_jwt`, `role_from_groups` |
 | Route Handlers | Map URL paths to template contexts | `home_route`, `documents_route`, `finances_route`, `portfolio_route`, `entities_route` |
 | Cache Reader | Async SQLite reads for template context | `get_entities`, `get_holdings`, `get_positions`, `get_documents` |
 | Refresh Scheduler | Periodic HTTP calls to backends; writes to SQLite | `refresh_entities`, `refresh_holdings`, `refresh_positions`, `refresh_documents` |
@@ -223,37 +224,62 @@ env vars once the mechanism is decided.
 | `BACKEND_PP_SECURITY_URL` | Base URL for `pp-security-master` HTTP API |
 | `BACKEND_XERO_CRYPTO_URL` | Base URL for `xero_crypto` HTTP API |
 | `BACKEND_FAMILY_OFFICE_URL` | Base URL for `family_office` HTTP API |
-| `CF_TEAM_DOMAIN` | Cloudflare team domain (used to fetch JWT public keys at startup) |
-| `CF_ACCESS_APP_ID` | Cloudflare Access Application ID (validated against JWT `aud` claim) |
-| `VIEWER_EMAILS` | Comma-separated list of viewer-role email addresses |
-| `ADMIN_EMAILS` | Comma-separated list of admin-role email addresses |
+| `AUTHENTIK_JWKS_URL` | JWKS endpoint of the Authentik provider; must be `https://` (e.g. `https://auth.example.com/application/o/family-office-portal/jwks/`) |
+| `AUTHENTIK_ISSUER` | Exact expected `iss` claim (e.g. `https://auth.example.com/application/o/family-office-portal/`) |
+| `AUTHENTIK_AUDIENCE` | Expected `aud` claim: the Authentik provider's client ID |
 | `SQLITE_PATH` | Filesystem path to the SQLite cache database (e.g. `/data/portal.db`) |
 
-All variables are required at startup; the application must fail fast if any are absent.
+All variables above are required at startup; the application writes the missing variable's
+name to stderr and exits with status 1 if any is absent, and also exits 1 if
+`AUTHENTIK_JWKS_URL` is not `https://`.
+
+Optional variables, each with a documented default:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granted the Admin role |
+| `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granted the Viewer role; must differ from `FO_ADMIN_GROUP` |
+| `AUTHENTIK_JWKS_CACHE_SECONDS` | `600` | JWKS cache lifetime in seconds (positive integer) |
 
 ## 5. Security
 
 ### Authentication
 
-Cloudflare Zero Trust (magic link) -- see [ADR-002](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md).
+Authentik forward auth behind Traefik -- see [ADR-005](../architecture/adr/adr-005-authentication-authentik-forward-auth.md)
+(supersedes [ADR-002](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)).
+Login, passwordless sign-in and session length are Authentik's job, configured in
+homelab-infra.
 
-CF JWT middleware must validate three things on every request:
+The Authentik JWT middleware (`app/middleware/authentik.py`) validates every request
+except `/health` and `/static/`:
 
-1. `CF-Access-JWT-Assertion` header is present
-2. JWT signature verified against Cloudflare team domain public keys (fetched from
-   `https://<CF_TEAM_DOMAIN>/cdn-cgi/access/certs` at startup; cached with TTL)
-3. `aud` claim matches `CF_ACCESS_APP_ID` env var -- prevents accepting tokens issued
-   to other applications in the same Cloudflare tenant
+1. The signed `X-authentik-jwt` header is present. The plain `X-authentik-username`,
+   `X-authentik-email` and `X-authentik-groups` headers are never read.
+2. The header's `alg` is `RS256` (the only accepted algorithm) and its `kid` names a
+   key in the JWKS at `AUTHENTIK_JWKS_URL`. The JWKS is cached for
+   `AUTHENTIK_JWKS_CACHE_SECONDS` and refetched at most once per 30 seconds when an
+   unknown `kid` appears.
+3. The signature verifies, and `exp`, `iss` and `aud` are present, with `iss` equal to
+   `AUTHENTIK_ISSUER`, `aud` containing `AUTHENTIK_AUDIENCE`, and `exp` in the future
+   (zero leeway). The `aud` check prevents accepting tokens minted for other Authentik
+   applications.
+4. `preferred_username` (or `sub`) is a non-empty string.
+
+Any failure returns a plain 403, and the log records only a reason category, never
+the token.
 
 ### Authorization
 
 Role-based: Viewer (read-only; all primary portal routes) vs Admin (adds refresh triggers
-and refresh status view). Role determined by JWT `email` claim mapped against
-`VIEWER_EMAILS` and `ADMIN_EMAILS` environment variable lists.
+and refresh status view). Role determined by the JWT `groups` claim: membership of
+`FO_ADMIN_GROUP` (default `fo-admin`) grants Admin, `FO_VIEWER_GROUP` (default
+`fo-viewer`) grants Viewer, and a token with neither is refused. Every `/admin/*` path
+requires Admin. The principal (username, email, name, role) is stored on
+`request.state.principal`.
 
 ### Data Protection
 
-- **In Transit**: TLS enforced by Cloudflare; internal backend service calls over HTTPS
+- **In Transit**: TLS terminated at Traefik; internal backend service calls over HTTPS
   or trusted private network
 - **At Rest**: SQLite file on the portal host; no PII beyond email addresses and financial
   summaries; disk encryption at host level is the operator's responsibility
@@ -314,6 +340,7 @@ or an error message visible to primary users. Backend errors during refresh are 
 
 - [Project Vision](./project-vision.md)
 - [ADR-001: Frontend Rendering](../architecture/adr/adr-001-frontend-rendering-architecture.md)
-- [ADR-002: Authentication](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)
+- [ADR-002: Authentication (superseded)](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)
+- [ADR-005: Authentication, Authentik forward auth](../architecture/adr/adr-005-authentication-authentik-forward-auth.md)
 - [ADR-003: Backend Data Aggregation](../architecture/adr/adr-003-backend-data-aggregation.md)
 - [Development Roadmap](./roadmap.md)
