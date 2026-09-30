@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def include_confidential(request: Request) -> bool:
-    """Return True when the signed-in user may see confidential documents (D-14).
+    """Return True when the signed-in user may see confidential documents.
 
     Args:
         request (Request): Current request.
@@ -53,7 +53,7 @@ AS_OF_WARN_DAYS = 35
 async def balances_summary() -> dict[str, Any]:
     """Return the current USD account total with its fetch and as-of freshness.
 
-    Only USD rows are summed (contract C-1 is USD-only for the MVP); other
+    Only USD rows are summed (the balance feed is USD-only for now); other
     currencies are counted so the page can say they are left out.
 
     Returns:

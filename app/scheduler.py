@@ -366,7 +366,7 @@ def refresh_positions() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Documents from llc-manager, per decision D-15
+# Documents from llc-manager
 # --------------------------------------------------------------------------- #
 
 
@@ -420,7 +420,7 @@ def refresh_documents() -> None:
 
 # Scheduled jobs. ``refresh_holdings`` and ``refresh_positions`` stay
 # callable from the admin trigger but are not scheduled: no backend serves
-# their endpoints yet, and MVP task B5 replaces positions with the C-1
+# their endpoints yet, and a later phase replaces positions with the account
 # balance jobs.
 JOBS: dict[str, Callable[[], None]] = {
     "refresh_entities": refresh_entities,

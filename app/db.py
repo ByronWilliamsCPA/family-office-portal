@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS refresh_log (
 CREATE INDEX IF NOT EXISTS idx_refresh_log_service_ran_at
     ON refresh_log (service, ran_at);
 
--- Current account-level balance snapshot per account (MVP choice M-1).
+-- Current balance snapshot, one row per account (balances are account level).
 -- #CRITICAL: financial: values are stored as integer cents to avoid binary
 -- floating point drift in totals. #VERIFY writers round with Decimal before
 -- converting to cents.
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS account_balances (
     fetched_at    TEXT NOT NULL
 );
 
--- Daily history of account balances (D-16). This table is durable history,
+-- Daily history of account balances. This table is durable history,
 -- not a cache: it must be included in backups.
 CREATE TABLE IF NOT EXISTS balances_daily (
     date          TEXT NOT NULL,

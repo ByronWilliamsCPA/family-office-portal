@@ -103,10 +103,8 @@ users view it on tablets. Reliability and plain-English presentation are the top
 priorities. The portal is a read-only consumer of four backend services; it never
 writes to or contacts upstream commercial systems directly.
 
-**Current phase**: MVP foundation (M0) built: settings, SQLite schema, cache readers,
-refresh scheduler, Authentik auth, five section templates, Docker image. The MVP plan
-and critical path live in the private `williaby/family_office` repository
-(`planning/mvp-critical-path.md`).
+**Current phase**: the portal foundation is built: settings, SQLite schema, cache
+readers, refresh scheduler, Authentik auth, five section templates, Docker image.
 
 Key documents to read before making architectural or data-model decisions:
 
@@ -149,13 +147,13 @@ Key documents to read before making architectural or data-model decisions:
   writes in APScheduler refresh jobs. Initialize with `PRAGMA journal_mode=WAL` and
   `PRAGMA busy_timeout=5000`. No ORM; use raw SQL with parameterized queries.
   Schema changes go in `app.db.MIGRATIONS`, tracked by `PRAGMA user_version`.
-- **Money**: totals are USD only (contract C-1); other currencies are counted and
+- **Money**: totals are USD only; other currencies are counted and
   shown as left out. Format with `Decimal`, never float arithmetic.
 - **HTTP client**: `httpx` for outbound calls in APScheduler refresh jobs. Use
   `httpx.Client` (synchronous) inside scheduler jobs; `httpx.AsyncClient` in tests.
   Backends are reached on a private Docker network; each refresh job sends its
   optional per-service API key as `X-API-Key` when one is set, and no key header
-  when it is unset (MVP task A5). #ASSUME backends implement the key check.
+  when it is unset. #ASSUME backends implement the key check.
   #VERIFY with each backend before its refresh job is enabled.
 - **Logging**: `structlog` in structured JSON format. Never log financial values,
   document contents, or email addresses beyond INFO-level auth events.
@@ -190,7 +188,7 @@ The Authentik middleware must:
    requires Admin. Log the reason category only, never the token.
 
 The document routes, not the middleware, hide documents marked confidential
-from Viewers (D-14).
+from Viewers; only Admins see them.
 
 Never implement password-based auth, OAuth flows, or session cookies.
 

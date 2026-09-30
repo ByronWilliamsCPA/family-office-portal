@@ -7,8 +7,7 @@ Spec contract (``CLAUDE.md`` "Tech stack conventions" + tech-spec §4):
 
 * Four refresh jobs: ``refresh_entities`` (llc-manager), ``refresh_holdings``
   (pp-security-master), ``refresh_positions`` (xero_crypto),
-  ``refresh_documents`` (llc-manager documents, D-15 in the family office
-  planning log; previously family_office).
+  ``refresh_documents`` (llc-manager documents; previously family_office).
 * Use synchronous ``httpx.Client`` for outbound calls.
 * Write fetched rows to SQLite with a ``fetched_at`` timestamp.
 * Audit each run in the ``refresh_log`` table with status ``success`` or ``error``.
@@ -379,7 +378,7 @@ def test_refresh_entities_accepts_llc_manager_paged_shape(
 def test_refresh_sends_backend_api_key(
     initialized_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each job sends the per-service API key (A5).
+    """Each job sends the per-service API key.
 
     # noqa
     """

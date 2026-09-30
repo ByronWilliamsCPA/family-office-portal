@@ -153,7 +153,7 @@
           ],
           "name": "Document folders",
           "request": {
-            "description": "Render documents grouped by category, with optional name search.\n\nWorks without JavaScript: the search form submits here with ``q``.\nAuthentication: Viewer or Admin (ADR-005). Viewers never see\nconfidential documents (D-14).\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n\nReturns:\n    Response: Rendered documents page.",
+            "description": "Render documents grouped by category, with optional name search.\n\nWorks without JavaScript: the search form submits here with ``q``.\nAuthentication: Viewer or Admin (ADR-005). Viewers never see\nconfidential documents.\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n\nReturns:\n    Response: Rendered documents page.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -253,7 +253,7 @@
           ],
           "name": "Download a document",
           "request": {
-            "description": "Download a document.\n\nThe file proxy to llc-manager lands with MVP task C5; until then a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until C5.",
+            "description": "Download a document.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -305,7 +305,7 @@
           ],
           "name": "Inline document preview",
           "request": {
-            "description": "Show a document inline.\n\nThe file proxy to llc-manager lands with MVP task C5; until then a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until C5.",
+            "description": "Show a document inline.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
             "header": [
               {
                 "key": "X-authentik-jwt",

@@ -119,7 +119,7 @@ async def get_documents(
 
     Args:
         include_confidential (bool): Include documents flagged confidential.
-            Only the Admin role may set this (D-14).
+            Only the Admin role may set this.
         entity_id (str | None): Limit to one entity's documents.
 
     Returns:

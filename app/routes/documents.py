@@ -52,7 +52,7 @@ async def documents_index(
 
     Works without JavaScript: the search form submits here with ``q``.
     Authentication: Viewer or Admin (ADR-005). Viewers never see
-    confidential documents (D-14).
+    confidential documents.
 
     Args:
         request (Request): Current request.
@@ -130,7 +130,7 @@ async def _require_document(request: Request, document_id: str) -> aiosqlite.Row
 async def document_preview(request: Request, document_id: str) -> NoReturn:
     """Show a document inline.
 
-    The file proxy to llc-manager lands with MVP task C5; until then a known
+    The planned file proxy to llc-manager is not built yet; until it is, a known
     document returns 503.
 
     Args:
@@ -138,7 +138,7 @@ async def document_preview(request: Request, document_id: str) -> NoReturn:
         document_id (str): Document identifier.
 
     Raises:
-        HTTPException: 404 when unknown or not visible, 503 until C5.
+        HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.
     """
     await _require_document(request, document_id)
     raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -156,7 +156,7 @@ async def document_preview(request: Request, document_id: str) -> NoReturn:
 async def document_download(request: Request, document_id: str) -> NoReturn:
     """Download a document.
 
-    The file proxy to llc-manager lands with MVP task C5; until then a known
+    The planned file proxy to llc-manager is not built yet; until it is, a known
     document returns 503.
 
     Args:
@@ -164,7 +164,7 @@ async def document_download(request: Request, document_id: str) -> NoReturn:
         document_id (str): Document identifier.
 
     Raises:
-        HTTPException: 404 when unknown or not visible, 503 until C5.
+        HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.
     """
     await _require_document(request, document_id)
     raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)

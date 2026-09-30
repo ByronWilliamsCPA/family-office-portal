@@ -378,7 +378,7 @@ async def test_documents_search_returns_html_partial(
 
 
 # --------------------------------------------------------------------------- #
-# Header spoofing and confidential documents (ADR-005, D-14)
+# Header spoofing and confidential documents (ADR-005)
 # --------------------------------------------------------------------------- #
 
 

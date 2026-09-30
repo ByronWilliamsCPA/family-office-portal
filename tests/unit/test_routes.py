@@ -123,7 +123,7 @@ async def test_document_preview_known_document_not_yet_available(
     viewer_headers: dict[str, str],
     tmp_db_path: object,
 ) -> None:
-    """A cached document returns 503 until the file proxy (C5) lands."""
+    """A cached document returns 503 until the planned file proxy lands."""
     with sqlite3.connect(str(tmp_db_path)) as conn:
         conn.execute(
             "INSERT INTO documents (id, name, category, proxy_url, fetched_at) "
