@@ -324,3 +324,155 @@ against a deployed Authentik outpost.
   its user constraints carry over as requirements on homelab-infra
 - [Tech Spec](../../planning/tech-spec.md#5-security): identity validation
   rules and environment variables
+
+## Amendment 2026-09-29: HS256 forward-auth token
+
+> **Status**: Accepted
+> **Amends**: the original text above, which is left intact for the record.
+> **Base**: PR #50 (commit `0a01edf`)
+
+### Why the original signature contract cannot hold
+
+The original decision assumed the proxy provider signs `X-authentik-jwt` with
+an RSA key, sets a `kid` header and publishes the key at a JWKS URL. That
+assumption is false for this provider type. Read from the Authentik 2025.10.3
+source:
+
+- `ProxyProvider.set_oauth_defaults()` in `authentik/providers/proxy/models.py`
+  sets `self.signing_key = None`. It runs on every serializer create and
+  update, which covers blueprint apply, admin UI edits and API PATCH calls, so
+  a proxy provider cannot keep a signing key.
+- With no signing key, `OAuth2Provider.jwt_key` returns the provider's
+  `client_secret` and the algorithm `HS256`.
+- `encode()` adds a `kid` header only when a signing key exists, so the tokens
+  carry no `kid`.
+- The provider's JWKS document is therefore empty, and OIDC discovery
+  advertises `HS256` as the ID-token signing algorithm.
+- The embedded outpost itself verifies against an HS256 key set for this
+  provider.
+
+Implemented as written, the RS256 and JWKS design would answer 403 to every
+request: first on the missing `kid`, then on the algorithm pin. Forcing a
+signing key into the provider with the ORM was rejected: it reverts on the
+next re-apply or UI edit, and it would most likely break the outpost's own
+callback verification.
+
+### Decision
+
+**The portal validates `X-authentik-jwt` as HS256 only, keyed by the proxy
+provider's client secret.** Forward auth, the header name, the claim checks
+and the group-to-role mapping are unchanged.
+
+What this supersedes in the original text:
+
+- **Decision item 2, signature rule** (RS256, `kid` lookup, `AUTHENTIK_JWKS_URL`
+  over https): the signature is `HS256` only, verified with the secret in
+  `AUTHENTIK_JWT_SECRET`. There is no key lookup and no `kid` requirement.
+- **Decision item 6** (JWKS fetch, cache, refetch limits, grace period, size
+  and time caps): removed. The portal makes no outbound request to
+  authenticate anything. `AUTHENTIK_JWKS_URL` and
+  `AUTHENTIK_JWKS_CACHE_SECONDS` no longer exist.
+- **Contract item 3**: the proxy provider has no signing key, so it signs
+  `HS256` with its client secret. The portal accepts `HS256` and nothing else.
+- **Contract item 4**: there is no JWKS to serve. The deployment stack
+  instead injects the provider's client secret into the portal environment as
+  `AUTHENTIK_JWT_SECRET`.
+- **Contract item 6**: the token audience is the 40-character `client_id` that
+  Authentik generates for the provider (the field is read-only, so it cannot
+  be chosen). The deployment stack copies it into the portal environment as
+  `AUTHENTIK_AUDIENCE`.
+- The components, testing strategy, trust model and residual risk sections
+  above describe the RS256 and JWKS design; read them together with this
+  amendment, which takes precedence wherever they differ.
+
+Unchanged: `iss`, `aud` and `exp` remain required, the 10 s leeway stays, the
+identity claim rule stays, roles still come from exact `groups` matches, the
+plain `X-authentik-*` headers are still never read, and every failure is still
+a 403.
+
+### Startup validation of the secret
+
+`AUTHENTIK_JWT_SECRET` is required at startup, and the process exits with
+status 1 when it is unusable. It is rejected when it is empty, when it is
+shorter than 32 characters, when it equals the stack's placeholder value
+(`CHANGE_ME_IN_PORTAINER`), or when it has leading or trailing whitespace.
+The value is never stripped: stripping would silently change the HMAC key
+bytes and make every token fail verification. The error names the variable and
+never echoes the value, and the settings object omits the secret from its
+`repr`.
+
+### Why a single-algorithm HS256 pin is not algorithm confusion
+
+pyjwt GHSA-jq35-7prp-9v3f, and the older class of attacks it belongs to,
+needs a verifier that accepts both an asymmetric and a symmetric algorithm, so
+that an attacker can present an HMAC token keyed with the RSA public key. A
+verifier pinned to the one-element list `("HS256",)` and keyed with a random
+secret has no public key to confuse and no second family to switch to.
+
+The rule from the original `#CRITICAL` note therefore still holds and stays in
+the code: never mix algorithm families. Only the family changes. It is
+enforced by the module constant `ALLOWED_ALGORITHMS = ("HS256",)`, passed to
+`jwt.decode` as the `algorithms` argument. Never add an asymmetric algorithm
+next to it. `#VERIFY`: the unit tests refuse a validly signed RS256 token with
+otherwise perfect claims, refuse `alg: none`, and refuse a token signed with a
+different secret.
+
+### Contract item 13 is now load-bearing
+
+`#CRITICAL`: the same client secret signs the token and verifies it, so the
+secret must be unique to the portal's own single-application proxy provider
+and must never be shared with another application or provider. Anyone
+holding it can mint a token the portal accepts, including an Admin token, if
+they also know the `iss` and `aud` values. Under the original design a
+sibling application on a shared provider could at most replay a token; under
+this one it could forge one. `#VERIFY`: decode a real `X-authentik-jwt` from
+the deployed outpost and confirm `alg` is `HS256`, `aud` equals the provider's
+`client_id`, `iss` equals `AUTHENTIK_ISSUER`, `groups` lists `fo-viewer` or
+`fo-admin`, and no other application is bound to the same provider.
+
+### Accepted residual risks
+
+These are accepted and documented, not engineered away here:
+
+- **Symmetric secret in the stack environment.** The secret lives in the
+  deployment stack's environment, next to the portal's database credentials.
+  Whoever can read that environment can forge portal tokens. The database
+  credentials in the same place already expose the data more directly.
+- **Two-phase rotation with a fail-closed gap.** Rotating the client secret
+  changes what Authentik signs with immediately, while the portal keeps
+  verifying with the old value until it is restarted with the new one. Between
+  those two steps every request gets 403. There is no key overlap and no
+  hot reload.
+- **Provider recreate causes a full lockout.** Recreating the provider issues
+  a new client secret and a new `client_id`. Until the stack environment
+  carries both new values, every request gets 403.
+- **Group demotion lag.** A user removed from `fo-admin` or `fo-viewer` keeps
+  the role in the outpost session until the session's access token is
+  refreshed, which can take up to 24 hours.
+- **Token replay** is unchanged from the original decision: a copied token is
+  valid until its `exp`.
+
+A holder of the secret still cannot obtain a token for a family user from
+Authentik's token endpoint. The `client_credentials` grant yields a generated
+service account, and the application policy, which binds only `fo-viewer` and
+`fo-admin`, denies it.
+
+### Alternative weighed and rejected: the portal as its own OIDC relying party
+
+Making the portal a relying party with an RS256 key set would remove the
+shared secret from the token check. It was rejected because:
+
+- The portal would still hold a session-signing key and a confidential client
+  secret in the same environment, so it would still hold a forging capability.
+- It adds session, CSRF, logout and refresh code to a component meant to stay
+  thin, which is the cost Option 3 above was rejected for.
+
+### Consequences of the amendment
+
+- `AUTHENTIK_JWT_SECRET` replaces `AUTHENTIK_JWKS_URL` in the required
+  environment variables, and `AUTHENTIK_JWKS_CACHE_SECONDS` is removed.
+- The portal no longer holds "no credentials": it holds one stack-injected
+  secret. `SECURITY.md` records how to handle and rotate it.
+- The portal has no outbound dependency on Authentik for authentication, so
+  an Authentik outage no longer changes token validation (new sign-ins still
+  need Authentik).
