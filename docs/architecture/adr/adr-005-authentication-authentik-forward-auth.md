@@ -3,6 +3,7 @@
 > **Status**: Accepted
 > **Date**: 2026-09-29
 > **Supersedes**: [ADR-002](adr-002-authentication-cloudflare-zero-trust.md)
+> **Amended**: 2026-09-29 (HS256 forward-auth token; see "Amendment 2026-09-29" below)
 
 ## TL;DR
 
@@ -65,6 +66,9 @@ verify it against the Authentik provider's published keys, and map its
    and `/static/`:
    - signature: RS256 only, against the key whose `kid` matches, taken from
      the provider JWKS at `AUTHENTIK_JWKS_URL` (which must be `https://`)
+
+     > Superseded by the 2026-09-29 amendment below.
+
    - `iss` must equal `AUTHENTIK_ISSUER` exactly
    - `aud` must equal or contain `AUTHENTIK_AUDIENCE`
    - `exp`, `iss` and `aud` are required; `exp` must be in the future, and
@@ -123,6 +127,8 @@ it is configured from this repository.
 | 11 | Authentik device sessions are long, so a primary user is not asked to sign in again during normal use, and an expired session shows Authentik's plain-English sign-in page rather than an error | Carried over from ADR-002; not enforced by the portal |
 | 12 | The portal is reachable only through Traefik (no published host port) | Deployment |
 | 13 | The portal has its own single-application Authentik proxy provider, not a domain-level forward-auth provider shared with sibling applications | `AUTHENTIK_AUDIENCE` and `AUTHENTIK_ISSUER` unique to the portal |
+
+> Contract item 3: superseded by the 2026-09-29 amendment below.
 
 Contract item 13 is a requirement on homelab-infra, not an infrastructure
 design. A provider shared across applications issues every application behind

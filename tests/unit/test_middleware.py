@@ -775,6 +775,8 @@ async def test_lifespan_scope_passes_through(
 # --------------------------------------------------------------------------- #
 
 _JWT_ENV_NAME = "AUTHENTIK_JWT_SECRET"
+# Wording only the placeholder branch of the secret check produces.
+_PLACEHOLDER_MESSAGE = f"{_JWT_ENV_NAME} is still the placeholder value"
 
 
 @pytest.fixture
@@ -795,7 +797,11 @@ def base_env(jwt_secret: str) -> dict[str, str]:
 
 
 def test_settings_defaults(base_env: dict[str, str], jwt_secret: str) -> None:
-    """Optional variables fall back to their documented defaults."""
+    """Optional variables fall back to their documented defaults.
+
+    ``jwt_secret`` is excluded from comparison, so the secret is checked on
+    its own with ``compare_digest``, which never prints either value.
+    """
     settings = AuthentikSettings.from_env(base_env)
     assert settings == AuthentikSettings(
         jwt_secret=jwt_secret,
@@ -804,6 +810,18 @@ def test_settings_defaults(base_env: dict[str, str], jwt_secret: str) -> None:
         admin_group="fo-admin",
         viewer_group="fo-viewer",
     )
+    assert secrets.compare_digest(settings.jwt_secret, jwt_secret)
+
+
+def test_settings_equality_ignores_the_secret(auth_settings: AuthentikSettings) -> None:
+    """Equality skips ``jwt_secret``, so a failing comparison cannot print it."""
+    other = AuthentikSettings(
+        jwt_secret=secrets.token_urlsafe(48),
+        issuer=auth_settings.issuer,
+        audience=auth_settings.audience,
+    )
+    assert other == auth_settings
+    assert not secrets.compare_digest(other.jwt_secret, auth_settings.jwt_secret)
 
 
 def test_settings_overrides(base_env: dict[str, str]) -> None:
@@ -819,7 +837,11 @@ def test_settings_overrides(base_env: dict[str, str]) -> None:
 
 
 def test_settings_repr_never_shows_the_secret(base_env: dict[str, str]) -> None:
-    """``repr`` (and so any settings dump or assertion diff) omits the secret."""
+    """``repr``, and so any settings dump, omits the secret.
+
+    This covers ``repr`` only; keeping the secret out of a failing equality
+    assertion is the job of ``compare=False`` on the field.
+    """
     settings = AuthentikSettings.from_env(base_env)
     assert base_env[_JWT_ENV_NAME] not in repr(settings)
     assert "jwt_secret" not in repr(settings)
@@ -840,7 +862,6 @@ def test_secret_of_exactly_the_minimum_length_is_accepted(
     [
         pytest.param(lambda s: s[: MIN_JWT_SECRET_LENGTH - 1], id="31-chars"),
         pytest.param(lambda s: s[:8], id="short"),
-        pytest.param(lambda _s: STACK_PLACEHOLDER_VALUE, id="placeholder"),
         pytest.param(lambda s: f" {s}", id="leading-space"),
         pytest.param(lambda s: f"{s}\n", id="trailing-newline"),
         pytest.param(lambda _s: "   ", id="whitespace-only"),
@@ -851,12 +872,64 @@ def test_invalid_secret_is_refused_without_echoing_it(
     base_env: dict[str, str],
     make_secret: Callable[[str], str],
 ) -> None:
-    """Short, placeholder and padded secrets raise, naming only the variable."""
+    """Short and padded secrets raise, naming only the variable."""
     secret = make_secret(secrets.token_urlsafe(64))
     with pytest.raises(AuthConfigError, match=_JWT_ENV_NAME) as exc_info:
         AuthentikSettings.from_env({**base_env, _JWT_ENV_NAME: secret})
     if secret.strip():
         assert secret.strip() not in str(exc_info.value)
+
+
+def _stack_placeholder(_monkeypatch: pytest.MonkeyPatch) -> str:
+    """Return the shipped stack placeholder unchanged.
+
+    Args:
+        _monkeypatch: Unused; keeps the signature shared with the long variant.
+
+    Returns:
+        str: ``STACK_PLACEHOLDER_VALUE`` as shipped.
+    """
+    return STACK_PLACEHOLDER_VALUE
+
+
+def _long_placeholder(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Patch in a placeholder long enough to pass the length check.
+
+    The shipped placeholder is shorter than ``MIN_JWT_SECRET_LENGTH``, so the
+    length check alone would refuse it. This one is longer, so only the
+    placeholder check can refuse it.
+
+    Args:
+        monkeypatch: Fixture used to patch ``STACK_PLACEHOLDER_VALUE``.
+
+    Returns:
+        str: The placeholder the settings code now compares against.
+    """
+    placeholder = f"CHANGE_ME_{'X' * MIN_JWT_SECRET_LENGTH}"
+    monkeypatch.setattr(
+        "app.middleware.authentik.STACK_PLACEHOLDER_VALUE",
+        placeholder,
+    )
+    return placeholder
+
+
+_PLACEHOLDER_CASES = [
+    pytest.param(_stack_placeholder, id="stack-value"),
+    pytest.param(_long_placeholder, id="32-plus-chars"),
+]
+
+
+@pytest.mark.parametrize("make_placeholder", _PLACEHOLDER_CASES)
+def test_placeholder_secret_is_refused_as_the_placeholder(
+    base_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    make_placeholder: Callable[[pytest.MonkeyPatch], str],
+) -> None:
+    """The placeholder is refused by its own check, not by the length check."""
+    placeholder = make_placeholder(monkeypatch)
+    with pytest.raises(AuthConfigError, match=_PLACEHOLDER_MESSAGE) as exc_info:
+        AuthentikSettings.from_env({**base_env, _JWT_ENV_NAME: placeholder})
+    assert placeholder not in str(exc_info.value)
 
 
 def test_missing_secret_is_refused(base_env: dict[str, str]) -> None:
@@ -893,7 +966,6 @@ def test_settings_reject_invalid_values(
     "make_secret",
     [
         pytest.param(lambda s: s[: MIN_JWT_SECRET_LENGTH - 1], id="31-chars"),
-        pytest.param(lambda _s: STACK_PLACEHOLDER_VALUE, id="placeholder"),
         pytest.param(lambda s: f"{s} ", id="trailing-space"),
     ],
 )
@@ -912,6 +984,25 @@ def test_invalid_secret_exits_at_startup_without_printing_it(
     err = capsys.readouterr().err
     assert _JWT_ENV_NAME in err
     assert secret.strip() not in err
+
+
+@pytest.mark.usefixtures("portal_env")
+@pytest.mark.parametrize("make_placeholder", _PLACEHOLDER_CASES)
+def test_placeholder_secret_exits_at_startup_as_the_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    make_placeholder: Callable[[pytest.MonkeyPatch], str],
+) -> None:
+    """``app.main`` exits 1 through the placeholder check, not the length check."""
+    main = importlib.import_module("app.main")
+    placeholder = make_placeholder(monkeypatch)
+    monkeypatch.setenv(_JWT_ENV_NAME, placeholder)
+    with pytest.raises(SystemExit) as exc_info:
+        importlib.reload(main)
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert _PLACEHOLDER_MESSAGE in err
+    assert placeholder not in err
 
 
 @pytest.mark.usefixtures("portal_env")

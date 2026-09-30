@@ -180,8 +180,9 @@ class AuthentikSettings:
 
     Attributes:
         jwt_secret (str): ``AUTHENTIK_JWT_SECRET``, the proxy provider's client
-            secret, used as the HS256 verification key. Excluded from ``repr``
-            so a settings dump never prints it.
+            secret, used as the HS256 verification key. Excluded from repr and
+            comparison, so neither a settings dump nor a failing equality
+            assertion prints it.
         issuer (str): ``AUTHENTIK_ISSUER``, the exact expected ``iss`` claim.
         audience (str): ``AUTHENTIK_AUDIENCE``, the expected ``aud`` claim
             (the provider's client ID).
@@ -189,7 +190,7 @@ class AuthentikSettings:
         viewer_group (str): ``FO_VIEWER_GROUP``, group granting Viewer.
     """
 
-    jwt_secret: str = field(repr=False)
+    jwt_secret: str = field(repr=False, compare=False)
     issuer: str
     audience: str
     admin_group: str = DEFAULT_ADMIN_GROUP
