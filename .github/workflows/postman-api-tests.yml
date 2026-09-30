@@ -9,19 +9,22 @@
 #   BACKEND_PP_SECURITY_URL    Base URL of the pp-security-master backend.
 #   BACKEND_XERO_CRYPTO_URL    Base URL of the xero_crypto backend.
 #   BACKEND_FAMILY_OFFICE_URL  Base URL of the family_office backend.
-#   AUTHENTIK_JWKS_URL         https JWKS URL of the Authentik proxy provider.
+#   AUTHENTIK_JWT_SECRET       Client secret of the Authentik proxy provider
+#                              (HS256 key for X-authentik-jwt).
 #   AUTHENTIK_ISSUER           Expected ``iss`` claim of X-authentik-jwt.
 #   AUTHENTIK_AUDIENCE         Expected ``aud`` claim (provider client ID).
 #   SQLITE_PATH                Filesystem path to the SQLite cache database.
 #
 # In this workflow the variables are seeded with harmless placeholder values
-# so that no real credentials are hardcoded. Override any of the above in the
-# repository's Actions secrets to point Newman at a non-stub environment.
+# so that no real credentials are hardcoded. AUTHENTIK_JWT_SECRET has no
+# placeholder: a step generates a random value at runtime, so no secret
+# literal lives in this file. Override any of the above in the repository's
+# Actions secrets to point Newman at a non-stub environment.
 #
 # Newman sends no identity token, so every protected route must answer 403
 # (the collection's fail-closed contract, ADR-005) and only /health returns
-# 200. The placeholder JWKS URL is never fetched: requests without a token
-# are refused before any key lookup.
+# 200. The generated secret never verifies anything here: requests without a
+# token are denied before any signature verification.
 ---
 name: Postman API Tests
 
@@ -48,7 +51,6 @@ jobs:
       BACKEND_PP_SECURITY_URL: ${{ secrets.BACKEND_PP_SECURITY_URL || 'http://localhost:9002' }}
       BACKEND_XERO_CRYPTO_URL: ${{ secrets.BACKEND_XERO_CRYPTO_URL || 'http://localhost:9003' }}
       BACKEND_FAMILY_OFFICE_URL: ${{ secrets.BACKEND_FAMILY_OFFICE_URL || 'http://localhost:9004' }}
-      AUTHENTIK_JWKS_URL: ${{ secrets.AUTHENTIK_JWKS_URL || 'https://auth.example.invalid/application/o/family-office-portal/jwks/' }}
       AUTHENTIK_ISSUER: ${{ secrets.AUTHENTIK_ISSUER || 'https://auth.example.invalid/application/o/family-office-portal/' }}
       AUTHENTIK_AUDIENCE: ${{ secrets.AUTHENTIK_AUDIENCE || 'placeholder-client-id' }}
       SQLITE_PATH: ${{ secrets.SQLITE_PATH || '/tmp/portal.db' }}
@@ -85,6 +87,19 @@ jobs:
 
       - name: Install Newman
         run: npm install --global newman@6.2.1
+
+      - name: Generate the auth test secret
+        env:
+          AUTHENTIK_JWT_SECRET_OVERRIDE: ${{ secrets.AUTHENTIK_JWT_SECRET }}
+        run: |
+          if [ -n "${AUTHENTIK_JWT_SECRET_OVERRIDE}" ]; then
+            echo "::add-mask::${AUTHENTIK_JWT_SECRET_OVERRIDE}"
+            echo "AUTHENTIK_JWT_SECRET=${AUTHENTIK_JWT_SECRET_OVERRIDE}" >> "$GITHUB_ENV"
+          else
+            secret="$(openssl rand -hex 32)"
+            echo "::add-mask::${secret}"
+            echo "AUTHENTIK_JWT_SECRET=${secret}" >> "$GITHUB_ENV"
+          fi
 
       - name: Start FastAPI app in background
         run: |
