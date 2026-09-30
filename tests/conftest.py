@@ -3,8 +3,9 @@
 """Shared pytest fixtures for the family office portal test suite.
 
 Identity fixtures emulate the Authentik proxy provider (ADR-005): tests mint
-RS256 JWTs with ``jwt_factory`` and ``patched_jwks`` replaces the JWKS fetch
-with the matching public key, so no test ever makes a network call.
+HS256 JWTs with ``jwt_factory``, signed with a random per-session secret from
+``jwt_secret``, so no test ever makes a network call and no secret literal is
+committed.
 
 ``app.main`` exits at import when a required env var is missing, so it is
 imported inside fixture bodies after ``portal_env`` has populated the
@@ -13,41 +14,31 @@ environment, never at module level.
 
 from __future__ import annotations
 
-import base64
 import importlib
+import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
 import jwt as pyjwt
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient
 
-from app.middleware import authentik
 from app.middleware.authentik import AuthentikSettings
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from cryptography.hazmat.primitives.asymmetric.rsa import (
-        RSAPrivateKey,
-        RSAPublicKey,
-    )
     from fastapi import FastAPI
 
 TEST_ISSUER = "https://auth.test/application/o/family-office-portal/"
 TEST_AUDIENCE = "test-client-id"
-TEST_JWKS_URL = "https://auth.test/application/o/family-office-portal/jwks/"
-TEST_KID = "test-key-id"
 
 # Optional auth variables cleared by ``portal_env`` so a developer's shell
 # cannot change test outcomes.
 _OPTIONAL_AUTH_ENV_VARS = (
     "FO_ADMIN_GROUP",
     "FO_VIEWER_GROUP",
-    "AUTHENTIK_JWKS_CACHE_SECONDS",
 )
 
 
@@ -78,12 +69,14 @@ def tmp_db_path(tmp_path: Path) -> Path:
 def portal_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_db_path: Path,
+    jwt_secret: str,
 ) -> Iterator[dict[str, str]]:
     """Set every environment variable ``app.main`` requires at startup.
 
     Args:
         monkeypatch: Pytest monkeypatch fixture.
         tmp_db_path: Temp SQLite path used for ``SQLITE_PATH``.
+        jwt_secret: Random per-session HS256 secret for ``AUTHENTIK_JWT_SECRET``.
 
     Yields:
         dict[str, str]: The values set, as the single source of truth.
@@ -93,7 +86,7 @@ def portal_env(
         "BACKEND_PP_SECURITY_URL": "http://pp-security.test",
         "BACKEND_XERO_CRYPTO_URL": "http://xero-crypto.test",
         "BACKEND_FAMILY_OFFICE_URL": "http://family-office.test",
-        "AUTHENTIK_JWKS_URL": TEST_JWKS_URL,
+        "AUTHENTIK_JWT_SECRET": jwt_secret,
         "AUTHENTIK_ISSUER": TEST_ISSUER,
         "AUTHENTIK_AUDIENCE": TEST_AUDIENCE,
         "SQLITE_PATH": str(tmp_db_path),
@@ -106,14 +99,17 @@ def portal_env(
 
 
 @pytest.fixture
-def auth_settings() -> AuthentikSettings:
+def auth_settings(jwt_secret: str) -> AuthentikSettings:
     """Return Authentik settings matching the tokens ``jwt_factory`` mints.
 
+    Args:
+        jwt_secret: Random per-session HS256 secret.
+
     Returns:
-        AuthentikSettings: Test issuer, audience, JWKS URL and default groups.
+        AuthentikSettings: Test secret, issuer, audience and default groups.
     """
     return AuthentikSettings(
-        jwks_url=TEST_JWKS_URL,
+        jwt_secret=jwt_secret,
         issuer=TEST_ISSUER,
         audience=TEST_AUDIENCE,
     )
@@ -125,94 +121,37 @@ def auth_settings() -> AuthentikSettings:
 
 
 @pytest.fixture(scope="session")
-def rsa_key_pair() -> tuple[RSAPrivateKey, RSAPublicKey]:
-    """Generate one RSA-2048 key pair for signing test JWTs.
+def jwt_secret() -> str:
+    """Generate one random HS256 secret for signing test JWTs.
+
+    Generated at runtime, never a literal, so no secret is committed.
 
     Returns:
-        tuple[RSAPrivateKey, RSAPublicKey]: The signing and verification keys.
+        str: A URL-safe secret of at least 64 characters.
     """
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    return private_key, private_key.public_key()
-
-
-def _b64_uint(value: int) -> str:
-    byte_length = (value.bit_length() + 7) // 8
-    raw = value.to_bytes(byte_length, "big")
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
-def public_jwk(public_key: RSAPublicKey, kid: str = TEST_KID) -> dict[str, str]:
-    """Return the RS256 signing JWK for ``public_key``.
-
-    Args:
-        public_key: RSA public key to publish.
-        kid: Key ID to publish it under.
-
-    Returns:
-        dict[str, str]: One JWK entry.
-    """
-    numbers = public_key.public_numbers()
-    return {
-        "kty": "RSA",
-        "kid": kid,
-        "use": "sig",
-        "alg": "RS256",
-        "n": _b64_uint(numbers.n),
-        "e": _b64_uint(numbers.e),
-    }
+    return secrets.token_urlsafe(64)
 
 
 @pytest.fixture
-def make_jwks() -> Callable[[Sequence[tuple[RSAPublicKey, str]]], dict[str, Any]]:
-    """Return a builder for JWKS documents from ``(public_key, kid)`` pairs.
-
-    Returns:
-        Callable: Builder returning a ``{"keys": [...]}`` document.
-    """
-
-    def _build(entries: Sequence[tuple[RSAPublicKey, str]]) -> dict[str, Any]:
-        return {"keys": [public_jwk(key, kid) for key, kid in entries]}
-
-    return _build
-
-
-@pytest.fixture(scope="session")
-def jwks_document(rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey]) -> dict[str, Any]:
-    """Return a JWKS document publishing the test public key.
-
-    Args:
-        rsa_key_pair: Session RSA key pair.
-
-    Returns:
-        dict[str, Any]: JWKS with one key under ``TEST_KID``.
-    """
-    return {"keys": [public_jwk(rsa_key_pair[1])]}
-
-
-@pytest.fixture
-def jwt_factory(
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
-) -> Callable[..., str]:
+def jwt_factory(jwt_secret: str) -> Callable[..., str]:
     """Return a factory that mints Authentik-style ``X-authentik-jwt`` tokens.
 
-    Defaults produce a valid Viewer token. Override ``username``, ``kid`` or
-    ``private_key``; pass ``claims`` to add or replace any claim (for example
-    ``groups``, ``aud`` or ``exp``) and ``omit`` to drop claims entirely.
+    Defaults produce a valid Viewer token signed HS256 with the session
+    secret. Override ``username`` or ``secret``; pass ``claims`` to add or
+    replace any claim (for example ``groups``, ``aud`` or ``exp``) and
+    ``omit`` to drop claims entirely.
 
     Args:
-        rsa_key_pair: Session RSA key pair; its private key is the default
-            signer.
+        jwt_secret: Session secret; the default signing key.
 
     Returns:
         Callable[..., str]: Token factory.
     """
-    default_private_key, _ = rsa_key_pair
 
     def _make(
         *,
         username: str = "viewer",
-        kid: str = TEST_KID,
-        private_key: RSAPrivateKey | None = None,
+        secret: str | None = None,
         claims: dict[str, Any] | None = None,
         omit: tuple[str, ...] = (),
     ) -> str:
@@ -233,42 +172,10 @@ def jwt_factory(
         }
         for claim in omit:
             payload.pop(claim, None)
-        key = private_key if private_key is not None else default_private_key
-        pem = key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        return pyjwt.encode(payload, pem, algorithm="RS256", headers={"kid": kid})
+        key = secret if secret is not None else jwt_secret
+        return pyjwt.encode(payload, key, algorithm="HS256")
 
     return _make
-
-
-@pytest.fixture
-def patched_jwks(
-    monkeypatch: pytest.MonkeyPatch,
-    jwks_document: dict[str, Any],
-) -> dict[str, Any]:
-    """Replace the Authentik JWKS fetch with an in-memory stub.
-
-    Args:
-        monkeypatch: Pytest monkeypatch fixture.
-        jwks_document: Default JWKS the stub serves.
-
-    Returns:
-        dict[str, Any]: Mutable stub state. ``calls`` counts fetches;
-        ``document`` is the JWKS served and may be replaced by a test.
-    """
-    state: dict[str, Any] = {"calls": 0, "document": jwks_document}
-
-    async def _stub(url: str, **_kwargs: object) -> dict[str, Any]:
-        assert url == TEST_JWKS_URL
-        state["calls"] += 1
-        document: dict[str, Any] = state["document"]
-        return document
-
-    monkeypatch.setattr(authentik, "fetch_authentik_jwks", _stub)
-    return state
 
 
 @pytest.fixture
@@ -318,25 +225,22 @@ def _load_app() -> FastAPI:
 @pytest.fixture
 def anon_client(
     portal_env: dict[str, str],
-    patched_jwks: dict[str, Any],
 ) -> AsyncClient:
     """Return an unopened client for the real app that sends no identity.
 
     Args:
         portal_env: Populates the required env vars before the app loads.
-        patched_jwks: Keeps the JWKS fetch offline.
 
     Returns:
         AsyncClient: Client without an ``X-authentik-jwt`` header.
     """
-    del portal_env, patched_jwks
+    del portal_env
     return AsyncClient(transport=ASGITransport(app=_load_app()), base_url="http://test")
 
 
 @pytest.fixture
 def client(
     portal_env: dict[str, str],
-    patched_jwks: dict[str, Any],
     admin_headers: dict[str, str],
 ) -> AsyncClient:
     """Return an unopened client for the real app, authenticated as an Admin.
@@ -347,13 +251,12 @@ def client(
 
     Args:
         portal_env: Populates the required env vars before the app loads.
-        patched_jwks: Keeps the JWKS fetch offline.
         admin_headers: Default identity header sent on every request.
 
     Returns:
         AsyncClient: Client sending an Admin ``X-authentik-jwt`` header.
     """
-    del portal_env, patched_jwks
+    del portal_env
     return AsyncClient(
         transport=ASGITransport(app=_load_app()),
         base_url="http://test",

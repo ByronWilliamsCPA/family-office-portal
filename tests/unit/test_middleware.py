@@ -6,36 +6,36 @@ Contract (``CLAUDE.md`` "Authentication rules", ADR-005, tech-spec section 6):
 
 1. Identity comes only from the signed ``X-authentik-jwt`` header; the plain
    ``X-authentik-*`` identity headers are ignored.
-2. The token must be RS256, signed by a key in the provider JWKS, with a
-   matching ``iss`` and ``aud``, an ``exp`` not in the past and no
-   ``nbf``/``iat`` in the future (each within a small clock-skew leeway),
-   and a non-empty identity claim.
+2. The token must be HS256 only, signed with the provider's client secret
+   (``AUTHENTIK_JWT_SECRET``), with a matching ``iss`` and ``aud``, an
+   ``exp`` not in the past and no ``nbf``/``iat`` in the future (each within
+   a small clock-skew leeway), and a non-empty identity claim. Any other
+   algorithm, including a validly signed asymmetric token, is refused.
 3. ``fo-admin`` grants Admin, ``fo-viewer`` grants Viewer, anyone else is 403.
 4. Every failure is 403. ``/health`` and ``/static/`` are public; ``/admin``
    and ``/admin/...`` need Admin. Paths are judged after ``root_path`` is
    stripped.
-5. The JWKS is cached with a TTL; fetch attempts, failed ones included, are
-   rate limited, and last good keys serve for one extra TTL during an outage.
-6. The JWKS fetch ignores proxy env vars and is size- and time-bounded.
+5. The secret is required at startup and refused when it is the stack
+   placeholder, shorter than 32 characters, or padded with whitespace; error
+   messages name the variable and never print the value.
 
 Most tests run the middleware in front of a tiny echo app so the resulting
 principal can be asserted; a few run against the real ``app.main`` app.
+Secrets are generated at runtime; no secret literal is committed.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import hashlib
-import hmac
 import importlib
 import json
+import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import jwt
 import pytest
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from freezegun import freeze_time
 from httpx import ASGITransport, AsyncClient
@@ -44,54 +44,36 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 from structlog.testing import capture_logs
 
-from app.middleware import authentik
 from app.middleware.authentik import (
+    ALLOWED_ALGORITHMS,
     JWT_LEEWAY_SECONDS,
+    MIN_JWT_SECRET_LENGTH,
+    STACK_PLACEHOLDER_VALUE,
     AuthConfigError,
     AuthentikAuthMiddleware,
     AuthentikSettings,
     AuthError,
-    JwksCache,
     Principal,
     Role,
-    fetch_authentik_jwks,
-    parse_jwks,
     principal_from_claims,
     role_from_groups,
     validate_authentik_jwt,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
 
-    from cryptography.hazmat.primitives.asymmetric.rsa import (
-        RSAPrivateKey,
-        RSAPublicKey,
-    )
     from starlette.requests import Request
     from starlette.types import Message, Receive, Scope, Send
 
-    MakeJwks = Callable[[Sequence[tuple[RSAPublicKey, str]]], dict[str, Any]]
-
 TEST_ISSUER = "https://auth.test/application/o/family-office-portal/"
 TEST_AUDIENCE = "test-client-id"
-TEST_KID = "test-key-id"
 JWT_HEADER = "X-authentik-jwt"
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-
-
-class FakeClock:
-    """Manually advanced monotonic clock for JWKS cache tests."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 async def _whoami(request: Request) -> JSONResponse:
@@ -125,10 +107,9 @@ def _echo_app() -> Starlette:
 def _client(
     settings: AuthentikSettings,
     *,
-    cache: JwksCache | None = None,
     root_path: str = "",
 ) -> AsyncClient:
-    wrapped = AuthentikAuthMiddleware(_echo_app(), settings=settings, jwks_cache=cache)
+    wrapped = AuthentikAuthMiddleware(_echo_app(), settings=settings)
     transport = ASGITransport(app=wrapped, root_path=root_path)
     return AsyncClient(transport=transport, base_url="http://test")
 
@@ -159,10 +140,9 @@ def _unsigned_parts(header: dict[str, Any], payload: dict[str, Any]) -> str:
     )
 
 
-def _public_pem(public_key: RSAPublicKey) -> bytes:
-    return public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+def _validate(token: str, secret: str) -> dict[str, Any]:
+    return validate_authentik_jwt(
+        token, key=secret, issuer=TEST_ISSUER, audience=TEST_AUDIENCE
     )
 
 
@@ -170,9 +150,8 @@ async def _get(
     settings: AuthentikSettings,
     path: str = "/whoami",
     headers: dict[str, str] | None = None,
-    cache: JwksCache | None = None,
 ) -> httpx.Response:
-    async with _client(settings, cache=cache) as ac:
+    async with _client(settings) as ac:
         return await ac.get(path, headers=headers)
 
 
@@ -181,7 +160,6 @@ async def _get(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_valid_viewer_token_is_accepted(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -197,7 +175,6 @@ async def test_valid_viewer_token_is_accepted(
     }
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_valid_admin_token_is_accepted_on_admin_path(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -209,7 +186,6 @@ async def test_valid_admin_token_is_accepted_on_admin_path(
     assert response.json()["role"] == "Admin"
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_admin_wins_when_user_is_in_both_groups(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -220,7 +196,6 @@ async def test_admin_wins_when_user_is_in_both_groups(
     assert response.json()["role"] == "Admin"
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_audience_list_containing_client_id_is_accepted(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -231,7 +206,6 @@ async def test_audience_list_containing_client_id_is_accepted(
     assert response.status_code == 200
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_sub_is_used_when_preferred_username_is_absent(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -248,13 +222,13 @@ async def test_sub_is_used_when_preferred_username_is_absent(
     }
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_configured_group_names_are_honoured(
+    jwt_secret: str,
     jwt_factory: Callable[..., str],
 ) -> None:
     """``FO_ADMIN_GROUP`` / ``FO_VIEWER_GROUP`` replace the default names."""
     settings = AuthentikSettings(
-        jwks_url="https://auth.test/application/o/family-office-portal/jwks/",
+        jwt_secret=jwt_secret,
         issuer=TEST_ISSUER,
         audience=TEST_AUDIENCE,
         admin_group="estate-admins",
@@ -271,7 +245,6 @@ async def test_configured_group_names_are_honoured(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_missing_header_is_rejected(auth_settings: AuthentikSettings) -> None:
     """No ``X-authentik-jwt`` header means no access."""
     response = await _get(auth_settings)
@@ -279,7 +252,6 @@ async def test_missing_header_is_rejected(auth_settings: AuthentikSettings) -> N
     assert response.text == "Access denied"
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_empty_header_is_rejected(auth_settings: AuthentikSettings) -> None:
     """An empty header value is treated as missing."""
     response = await _get(auth_settings, headers={JWT_HEADER: ""})
@@ -292,13 +264,11 @@ async def test_empty_header_is_rejected(auth_settings: AuthentikSettings) -> Non
 )
 async def test_garbage_token_is_rejected(
     auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
     garbage: str,
 ) -> None:
-    """Malformed tokens are rejected without fetching the JWKS."""
+    """Malformed tokens are rejected."""
     response = await _get(auth_settings, headers={JWT_HEADER: garbage})
     assert response.status_code == 403
-    assert patched_jwks["calls"] == 0
 
 
 @pytest.mark.parametrize(
@@ -326,7 +296,6 @@ async def test_garbage_token_is_rejected(
         ),
     ],
 )
-@pytest.mark.usefixtures("patched_jwks")
 async def test_invalid_claims_are_rejected(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -361,7 +330,7 @@ _LEEWAY = JWT_LEEWAY_SECONDS
     ],
 )
 def test_time_claims_allow_only_the_clock_skew_leeway(
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
+    jwt_secret: str,
     jwt_factory: Callable[..., str],
     offsets: dict[str, int],
     reason: str | None,
@@ -377,15 +346,11 @@ def test_time_claims_allow_only_the_clock_skew_leeway(
         claims.update({name: now + delta for name, delta in offsets.items()})
         token = jwt_factory(claims=claims)
         if reason is None:
-            verified = validate_authentik_jwt(
-                token, key=rsa_key_pair[1], issuer=TEST_ISSUER, audience=TEST_AUDIENCE
-            )
+            verified = _validate(token, jwt_secret)
             assert verified["preferred_username"] == "viewer"
             return
         with pytest.raises(AuthError) as exc_info:
-            validate_authentik_jwt(
-                token, key=rsa_key_pair[1], issuer=TEST_ISSUER, audience=TEST_AUDIENCE
-            )
+            _validate(token, jwt_secret)
     assert exc_info.value.reason == reason
 
 
@@ -404,7 +369,7 @@ def test_time_claims_allow_only_the_clock_skew_leeway(
     ],
 )
 def test_validation_failures_carry_a_reason_category(
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
+    jwt_secret: str,
     jwt_factory: Callable[..., str],
     overrides: dict[str, Any],
     omit: tuple[str, ...],
@@ -413,25 +378,28 @@ def test_validation_failures_carry_a_reason_category(
     """Each pyjwt failure maps to a loggable reason category."""
     token = jwt_factory(claims=overrides, omit=omit)
     with pytest.raises(AuthError) as exc_info:
-        validate_authentik_jwt(
-            token, key=rsa_key_pair[1], issuer=TEST_ISSUER, audience=TEST_AUDIENCE
-        )
+        _validate(token, jwt_secret)
     assert exc_info.value.reason == reason
 
 
-@pytest.mark.usefixtures("patched_jwks")
-async def test_token_signed_by_wrong_key_is_rejected(
+async def test_token_signed_with_a_different_secret_is_rejected(
     auth_settings: AuthentikSettings,
+    jwt_secret: str,
     jwt_factory: Callable[..., str],
 ) -> None:
-    """A token signed by a key outside the JWKS, under a known kid, is 403."""
-    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    token = jwt_factory(private_key=other)
-    response = await _get(auth_settings, headers={JWT_HEADER: token})
+    """An HS256 token signed with any other secret is 403 (``bad_signature``)."""
+    other_secret = secrets.token_urlsafe(64)
+    assert other_secret != jwt_secret
+    token = jwt_factory(
+        username="admin", secret=other_secret, claims={"groups": ["fo-admin"]}
+    )
+    response = await _get(auth_settings, "/admin/thing", {JWT_HEADER: token})
     assert response.status_code == 403
+    with pytest.raises(AuthError) as exc_info:
+        _validate(token, jwt_secret)
+    assert exc_info.value.reason == "bad_signature"
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_tampered_signature_is_rejected(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -446,7 +414,6 @@ async def test_tampered_signature_is_rejected(
     assert response.status_code == 403
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_tampered_payload_is_rejected(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -459,62 +426,50 @@ async def test_tampered_payload_is_rejected(
     assert response.status_code == 403
 
 
+def test_only_hs256_is_allowed() -> None:
+    """The algorithm pin is a single symmetric algorithm, nothing else."""
+    assert ALLOWED_ALGORITHMS == ("HS256",)
+
+
 async def test_alg_none_is_rejected(
     auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
+    jwt_secret: str,
 ) -> None:
-    """An unsigned ``alg=none`` token is refused before any key lookup."""
-    token = (
-        _unsigned_parts({"alg": "none", "typ": "JWT", "kid": TEST_KID}, _claims()) + "."
-    )
+    """An unsigned ``alg=none`` token is 403 (``disallowed_algorithm``)."""
+    token = _unsigned_parts({"alg": "none", "typ": "JWT"}, _claims()) + "."
     response = await _get(auth_settings, "/admin/thing", {JWT_HEADER: token})
     assert response.status_code == 403
-    assert patched_jwks["calls"] == 0
-
-
-async def test_hs256_signed_with_public_key_is_rejected(
-    auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
-) -> None:
-    """Algorithm confusion: HS256 keyed with the RSA public key PEM is refused."""
-    public_pem = _public_pem(rsa_key_pair[1])
-    signing_input = _unsigned_parts(
-        {"alg": "HS256", "typ": "JWT", "kid": TEST_KID}, _claims()
-    )
-    mac = hmac.new(public_pem, signing_input.encode(), hashlib.sha256).digest()
-    token = f"{signing_input}.{_b64url(mac)}"
-
-    response = await _get(auth_settings, "/admin/thing", {JWT_HEADER: token})
-    assert response.status_code == 403
-    assert patched_jwks["calls"] == 0
-
-    # jwt.decode enforces RS256 again, independent of the header pre-check.
     with pytest.raises(AuthError) as exc_info:
-        validate_authentik_jwt(
-            token, key=rsa_key_pair[1], issuer=TEST_ISSUER, audience=TEST_AUDIENCE
-        )
+        _validate(token, jwt_secret)
     assert exc_info.value.reason == "disallowed_algorithm"
 
 
-@pytest.mark.parametrize(
-    "header",
-    [
-        pytest.param({"alg": "RS256", "typ": "JWT"}, id="no-kid"),
-        pytest.param({"alg": "RS256", "typ": "JWT", "kid": ""}, id="empty-kid"),
-        pytest.param({"alg": "RS256", "typ": "JWT", "kid": 7}, id="int-kid"),
-    ],
-)
-async def test_missing_key_id_is_rejected(
+async def test_validly_signed_rs256_token_is_rejected(
     auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
-    header: dict[str, Any],
+    jwt_secret: str,
 ) -> None:
-    """A token without a usable ``kid`` header is refused without a fetch."""
-    token = _unsigned_parts(header, _claims()) + ".c2ln"
-    response = await _get(auth_settings, headers={JWT_HEADER: token})
+    """A genuine RS256 signature with perfect claims is still refused.
+
+    The token verifies under its own RSA public key, so the refusal comes
+    from the HS256 pin alone. Accepting an asymmetric algorithm next to a
+    symmetric one is what makes algorithm confusion possible.
+    """
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode(_claims(), private_key, algorithm="RS256")
+    verified = jwt.decode(
+        token,
+        private_key.public_key(),
+        algorithms=["RS256"],
+        issuer=TEST_ISSUER,
+        audience=TEST_AUDIENCE,
+    )
+    assert verified["groups"] == ["fo-admin"]
+
+    response = await _get(auth_settings, "/admin/thing", {JWT_HEADER: token})
     assert response.status_code == 403
-    assert patched_jwks["calls"] == 0
+    with pytest.raises(AuthError) as exc_info:
+        _validate(token, jwt_secret)
+    assert exc_info.value.reason == "disallowed_algorithm"
 
 
 # --------------------------------------------------------------------------- #
@@ -529,7 +484,6 @@ _PLAIN_ADMIN_HEADERS = {
 }
 
 
-@pytest.mark.usefixtures("patched_jwks")
 @pytest.mark.parametrize("path", ["/whoami", "/admin/thing"])
 async def test_plain_identity_headers_without_jwt_are_rejected(
     auth_settings: AuthentikSettings,
@@ -540,7 +494,6 @@ async def test_plain_identity_headers_without_jwt_are_rejected(
     assert response.status_code == 403
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_plain_headers_do_not_override_jwt_identity(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -564,7 +517,6 @@ async def test_plain_headers_do_not_override_jwt_identity(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.usefixtures("patched_jwks")
 @pytest.mark.parametrize("path", ["/health", "/static/css/output.css"])
 async def test_public_paths_need_no_token(
     auth_settings: AuthentikSettings,
@@ -575,7 +527,6 @@ async def test_public_paths_need_no_token(
     assert response.status_code == 200
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_public_match_is_exact_for_health(
     auth_settings: AuthentikSettings,
 ) -> None:
@@ -584,7 +535,6 @@ async def test_public_match_is_exact_for_health(
     assert response.status_code == 403
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_viewer_is_denied_admin_paths(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -594,7 +544,6 @@ async def test_viewer_is_denied_admin_paths(
     assert response.status_code == 403
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_root_path_does_not_hide_admin_paths_from_the_role_check(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -621,7 +570,6 @@ async def test_root_path_does_not_hide_admin_paths_from_the_role_check(
     assert viewer_section.status_code == 200
 
 
-@pytest.mark.usefixtures("patched_jwks")
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
@@ -644,7 +592,6 @@ async def test_root_path_public_paths_without_token(
     assert response.status_code == expected
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_admin_match_is_on_a_segment_boundary(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -659,7 +606,7 @@ async def test_admin_match_is_on_a_segment_boundary(
     assert viewer_bare_admin.status_code == 403
 
 
-@pytest.mark.usefixtures("portal_env", "patched_jwks")
+@pytest.mark.usefixtures("portal_env")
 async def test_real_app_under_root_path_enforces_admin_role(
     viewer_headers: dict[str, str],
     admin_headers: dict[str, str],
@@ -724,419 +671,6 @@ async def test_real_app_viewer_reaches_sections(
 
 
 # --------------------------------------------------------------------------- #
-# JWKS fetching and caching
-# --------------------------------------------------------------------------- #
-
-
-async def test_jwks_fetch_failure_denies_access(
-    auth_settings: AuthentikSettings,
-    jwt_factory: Callable[..., str],
-) -> None:
-    """An unreachable JWKS endpoint fails closed with 403."""
-
-    def _refuse(request: httpx.Request) -> httpx.Response:
-        msg = "connection refused"
-        raise httpx.ConnectError(msg, request=request)
-
-    cache = JwksCache(
-        auth_settings.jwks_url,
-        ttl_seconds=600,
-        transport=httpx.MockTransport(_refuse),
-    )
-    response = await _get(
-        auth_settings, headers={JWT_HEADER: jwt_factory()}, cache=cache
-    )
-    assert response.status_code == 403
-
-
-async def test_jwks_is_cached_between_requests(
-    auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
-    jwt_factory: Callable[..., str],
-) -> None:
-    """Keys are fetched once and reused for later requests."""
-    async with _client(auth_settings) as ac:
-        first = await ac.get("/whoami", headers={JWT_HEADER: jwt_factory()})
-        second = await ac.get("/whoami", headers={JWT_HEADER: jwt_factory()})
-    assert (first.status_code, second.status_code) == (200, 200)
-    assert patched_jwks["calls"] == 1
-
-
-async def test_concurrent_cold_requests_share_one_fetch(
-    auth_settings: AuthentikSettings,
-    monkeypatch: pytest.MonkeyPatch,
-    jwks_document: dict[str, Any],
-    jwt_factory: Callable[..., str],
-) -> None:
-    """The cache lock collapses a burst of cold-cache requests into one fetch."""
-    calls = 0
-
-    async def _slow_fetch(url: str, **_kwargs: object) -> dict[str, Any]:
-        nonlocal calls
-        del url
-        calls += 1
-        await asyncio.sleep(0.01)
-        return jwks_document
-
-    monkeypatch.setattr(authentik, "fetch_authentik_jwks", _slow_fetch)
-    token = jwt_factory()
-    async with _client(auth_settings) as ac:
-        responses = await asyncio.gather(
-            *(ac.get("/whoami", headers={JWT_HEADER: token}) for _ in range(5))
-        )
-    assert [r.status_code for r in responses] == [200] * 5
-    assert calls == 1
-
-
-async def test_jwks_is_refetched_after_ttl(
-    auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
-) -> None:
-    """Once the TTL passes, the next lookup refetches the key set."""
-    clock = FakeClock()
-    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
-    await cache.get_key(TEST_KID)
-    clock.now += 599
-    await cache.get_key(TEST_KID)
-    assert patched_jwks["calls"] == 1
-    clock.now += 1
-    await cache.get_key(TEST_KID)
-    assert patched_jwks["calls"] == 2
-
-
-async def test_unknown_kid_triggers_one_rate_limited_refetch(
-    auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
-    make_jwks: MakeJwks,
-    jwt_factory: Callable[..., str],
-) -> None:
-    """Key rotation: an unknown kid refetches once, then waits out the window."""
-    clock = FakeClock()
-    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
-    rotated = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    rotated_token = jwt_factory(kid="rotated-kid", private_key=rotated)
-
-    async with _client(auth_settings, cache=cache) as ac:
-        # Prime the cache with the original key set.
-        assert (
-            await ac.get("/whoami", headers={JWT_HEADER: jwt_factory()})
-        ).status_code == 200
-        # Authentik rotates its key; the portal has not seen it yet.
-        patched_jwks["document"] = make_jwks(
-            [(rsa_key_pair[1], TEST_KID), (rotated.public_key(), "rotated-kid")]
-        )
-        # Inside the rate-limit window the unknown kid is refused, no fetch.
-        clock.now += 10
-        early = await ac.get("/whoami", headers={JWT_HEADER: rotated_token})
-        assert early.status_code == 403
-        assert patched_jwks["calls"] == 1
-        # After the window, one refetch picks up the rotated key.
-        clock.now += 30
-        late = await ac.get("/whoami", headers={JWT_HEADER: rotated_token})
-        assert late.status_code == 200
-        assert patched_jwks["calls"] == 2
-        # A second unknown kid right away does not trigger another fetch.
-        bogus = jwt_factory(kid="never-published", private_key=rotated)
-        denied = await ac.get("/whoami", headers={JWT_HEADER: bogus})
-        assert denied.status_code == 403
-        assert patched_jwks["calls"] == 2
-
-
-async def test_empty_jwks_is_cached_not_refetched_every_request(
-    auth_settings: AuthentikSettings,
-    patched_jwks: dict[str, Any],
-) -> None:
-    """A JWKS with no usable keys still counts as a fetch for rate limiting."""
-    patched_jwks["document"] = {"keys": []}
-    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=FakeClock())
-    for _ in range(3):
-        with pytest.raises(AuthError) as exc_info:
-            await cache.get_key(TEST_KID)
-        assert exc_info.value.reason == "unknown_key"
-    assert patched_jwks["calls"] == 1
-
-
-class _SwitchableJwks:
-    """Fetch stub whose JWKS endpoint can be switched between up and down."""
-
-    def __init__(self, document: dict[str, Any]) -> None:
-        self.document = document
-        self.up = True
-        self.calls = 0
-
-    async def __call__(self, url: str, **_kwargs: object) -> dict[str, Any]:
-        del url
-        self.calls += 1
-        if not self.up:
-            msg = "jwks_unavailable"
-            raise AuthError(msg)
-        return self.document
-
-
-@pytest.fixture
-def switchable_jwks(
-    monkeypatch: pytest.MonkeyPatch,
-    jwks_document: dict[str, Any],
-) -> _SwitchableJwks:
-    """Replace the JWKS fetch with a stub that can simulate an outage.
-
-    Args:
-        monkeypatch: Pytest monkeypatch fixture.
-        jwks_document: JWKS served while the stub is up.
-
-    Returns:
-        _SwitchableJwks: The installed stub.
-    """
-    stub = _SwitchableJwks(jwks_document)
-    monkeypatch.setattr(authentik, "fetch_authentik_jwks", stub)
-    return stub
-
-
-async def test_failing_jwks_rate_limits_random_kid_requests(
-    auth_settings: AuthentikSettings,
-    switchable_jwks: _SwitchableJwks,
-    jwt_factory: Callable[..., str],
-) -> None:
-    """During an outage, random kids cause at most one fetch per interval (M1)."""
-    clock = FakeClock()
-    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
-    async with _client(auth_settings, cache=cache) as ac:
-        assert (
-            await ac.get("/whoami", headers={JWT_HEADER: jwt_factory()})
-        ).status_code == 200
-        switchable_jwks.up = False
-        clock.now += 60
-        for i in range(50):
-            token = jwt_factory(kid=f"random-{i}")
-            response = await ac.get("/whoami", headers={JWT_HEADER: token})
-            assert response.status_code == 403
-        assert switchable_jwks.calls == 2
-        clock.now += 30
-        await ac.get("/whoami", headers={JWT_HEADER: jwt_factory(kid="random-x")})
-        assert switchable_jwks.calls == 3
-
-
-async def test_cold_cache_with_failing_jwks_is_rate_limited(
-    auth_settings: AuthentikSettings,
-    switchable_jwks: _SwitchableJwks,
-) -> None:
-    """A cold cache whose first fetch fails does not refetch on every request."""
-    switchable_jwks.up = False
-    clock = FakeClock()
-    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
-    for _ in range(20):
-        with pytest.raises(AuthError) as exc_info:
-            await cache.get_key(TEST_KID)
-        assert exc_info.value.reason == "jwks_unavailable"
-    assert switchable_jwks.calls == 1
-    # Once the window passes and the endpoint recovers, keys load normally.
-    switchable_jwks.up = True
-    clock.now += 30
-    assert await cache.get_key(TEST_KID) is not None
-    assert switchable_jwks.calls == 2
-
-
-async def test_last_good_keys_serve_through_grace_period_only(
-    auth_settings: AuthentikSettings,
-    switchable_jwks: _SwitchableJwks,
-    jwt_factory: Callable[..., str],
-) -> None:
-    """Last good keys validate real tokens for one extra TTL, then fail closed."""
-    clock = FakeClock()
-    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=600, clock=clock)
-    token = jwt_factory()
-    async with _client(auth_settings, cache=cache) as ac:
-        assert (await ac.get("/whoami", headers={JWT_HEADER: token})).status_code == 200
-        switchable_jwks.up = False
-        # Expired, refetch fails, last good keys still accepted.
-        clock.now += 601
-        in_grace = await ac.get("/whoami", headers={JWT_HEADER: token})
-        assert in_grace.status_code == 200
-        assert switchable_jwks.calls == 2
-        # Near the end of the grace period: still served.
-        clock.now += 598
-        assert (await ac.get("/whoami", headers={JWT_HEADER: token})).status_code == 200
-        # Two full TTLs after the last good fetch: fail closed.
-        clock.now += 1
-        with capture_logs() as logs:
-            after = await ac.get("/whoami", headers={JWT_HEADER: token})
-        assert after.status_code == 403
-        assert logs[-1]["reason"] == "jwks_unavailable"
-        # Recovery restores access.
-        switchable_jwks.up = True
-        clock.now += 30
-        assert (await ac.get("/whoami", headers={JWT_HEADER: token})).status_code == 200
-
-
-async def test_short_ttl_refetch_interval_follows_ttl(
-    auth_settings: AuthentikSettings,
-    switchable_jwks: _SwitchableJwks,
-) -> None:
-    """With a TTL under the rate-limit window, expiry still triggers a refetch."""
-    clock = FakeClock()
-    cache = JwksCache(auth_settings.jwks_url, ttl_seconds=10, clock=clock)
-    await cache.get_key(TEST_KID)
-    clock.now += 10
-    await cache.get_key(TEST_KID)
-    assert switchable_jwks.calls == 2
-
-
-async def test_fetch_returns_json_document() -> None:
-    """The real fetcher returns the parsed JWKS object."""
-
-    def _serve(request: httpx.Request) -> httpx.Response:
-        assert request.url.scheme == "https"
-        return httpx.Response(200, json={"keys": []})
-
-    document = await fetch_authentik_jwks(
-        "https://auth.test/jwks/", transport=httpx.MockTransport(_serve)
-    )
-    assert document == {"keys": []}
-
-
-@pytest.mark.parametrize(
-    "response",
-    [
-        pytest.param(httpx.Response(500, json={"keys": []}), id="server-error"),
-        pytest.param(
-            httpx.Response(302, headers={"Location": "http://evil.test/"}),
-            id="redirect-not-followed",
-        ),
-        pytest.param(httpx.Response(200, text="<html>"), id="not-json"),
-        pytest.param(httpx.Response(200, json=["keys"]), id="not-an-object"),
-    ],
-)
-async def test_fetch_failures_raise_jwks_unavailable(response: httpx.Response) -> None:
-    """Bad JWKS responses raise ``AuthError('jwks_unavailable')``."""
-    transport = httpx.MockTransport(lambda _request: response)
-    with pytest.raises(AuthError) as exc_info:
-        await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
-    assert exc_info.value.reason == "jwks_unavailable"
-
-
-async def test_fetch_rejects_oversized_body() -> None:
-    """A JWKS body over the size cap is refused (L2)."""
-    body = b'{"keys": [], "pad": "' + b"x" * authentik.JWKS_MAX_BYTES + b'"}'
-    transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=body))
-    with pytest.raises(AuthError) as exc_info:
-        await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
-    assert exc_info.value.reason == "jwks_unavailable"
-
-
-async def test_fetch_accepts_body_at_the_size_cap() -> None:
-    """A body exactly at the cap is still read."""
-    prefix = b'{"keys": [], "pad": "'
-    suffix = b'"}'
-    pad = b"x" * (authentik.JWKS_MAX_BYTES - len(prefix) - len(suffix))
-    body = prefix + pad + suffix
-    transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=body))
-    document = await fetch_authentik_jwks(
-        "https://auth.test/jwks/", transport=transport
-    )
-    assert document["keys"] == []
-
-
-async def test_fetch_enforces_total_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fetch slower than the total deadline is abandoned (L2)."""
-    monkeypatch.setattr(authentik, "JWKS_FETCH_DEADLINE_SECONDS", 0.05)
-
-    async def _stall(_request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(5)
-        return httpx.Response(200, json={"keys": []})
-
-    transport = httpx.MockTransport(_stall)
-    with pytest.raises(AuthError) as exc_info:
-        await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
-    assert exc_info.value.reason == "jwks_unavailable"
-
-
-@pytest.mark.parametrize("failure", ["oversize", "deadline"])
-async def test_fetch_hardening_failures_deny_access(
-    auth_settings: AuthentikSettings,
-    jwt_factory: Callable[..., str],
-    monkeypatch: pytest.MonkeyPatch,
-    failure: str,
-) -> None:
-    """An oversized or stalled JWKS response ends in a 403, not a hang."""
-    monkeypatch.setattr(authentik, "JWKS_FETCH_DEADLINE_SECONDS", 0.05)
-
-    async def _serve(_request: httpx.Request) -> httpx.Response:
-        if failure == "deadline":
-            await asyncio.sleep(5)
-        return httpx.Response(200, content=b"x" * (authentik.JWKS_MAX_BYTES + 1))
-
-    cache = JwksCache(
-        auth_settings.jwks_url,
-        ttl_seconds=600,
-        transport=httpx.MockTransport(_serve),
-    )
-    response = await _get(
-        auth_settings, headers={JWT_HEADER: jwt_factory()}, cache=cache
-    )
-    assert response.status_code == 403
-
-
-async def test_fetch_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The JWKS client is built with ``trust_env=False`` (L2)."""
-    seen: dict[str, object] = {}
-    real_client = httpx.AsyncClient
-
-    def _spy(
-        *,
-        timeout: float,
-        follow_redirects: bool,
-        trust_env: bool,
-        transport: httpx.AsyncBaseTransport | None,
-    ) -> httpx.AsyncClient:
-        seen.update(trust_env=trust_env, follow_redirects=follow_redirects)
-        return real_client(
-            timeout=timeout,
-            follow_redirects=follow_redirects,
-            trust_env=trust_env,
-            transport=transport,
-        )
-
-    monkeypatch.setattr(authentik.httpx, "AsyncClient", _spy)
-    transport = httpx.MockTransport(lambda _r: httpx.Response(200, json={"keys": []}))
-    await fetch_authentik_jwks("https://auth.test/jwks/", transport=transport)
-    assert seen["trust_env"] is False
-    assert seen["follow_redirects"] is False
-
-
-def test_parse_jwks_keeps_only_usable_rs256_keys(
-    rsa_key_pair: tuple[RSAPrivateKey, RSAPublicKey],
-    make_jwks: MakeJwks,
-) -> None:
-    """Non-RSA, encryption, other-alg, kid-less, weak, and malformed keys drop."""
-    public = rsa_key_pair[1]
-    good = make_jwks([(public, "good")])["keys"][0]
-    weak = rsa.generate_private_key(public_exponent=65537, key_size=1024)
-    document = {
-        "keys": [
-            good,
-            {**good, "kid": "enc", "use": "enc"},
-            {**good, "kid": "ps256", "alg": "PS256"},
-            {**good, "kid": ""},
-            {k: v for k, v in good.items() if k != "kid"},
-            {"kty": "EC", "kid": "ec", "crv": "P-256", "x": "AA", "y": "AA"},
-            {**good, "kid": "broken", "n": "!!!"},
-            make_jwks([(weak.public_key(), "weak")])["keys"][0],
-            "not-a-dict",
-        ]
-    }
-    keys = parse_jwks(document)
-    assert list(keys) == ["good"]
-    assert keys["good"].public_numbers() == public.public_numbers()
-
-
-@pytest.mark.parametrize("document", [{}, {"keys": "nope"}, {"keys": None}])
-def test_parse_jwks_tolerates_missing_key_list(document: dict[str, Any]) -> None:
-    """A JWKS without a key list yields no keys rather than an exception."""
-    assert parse_jwks(document) == {}
-
-
-# --------------------------------------------------------------------------- #
 # Role mapping and principal
 # --------------------------------------------------------------------------- #
 
@@ -1167,7 +701,6 @@ def test_principal_from_claims_ignores_non_string_groups(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.usefixtures("patched_jwks")
 async def test_denial_logs_reason_but_never_the_token(
     auth_settings: AuthentikSettings,
     jwt_factory: Callable[..., str],
@@ -1241,39 +774,96 @@ async def test_lifespan_scope_passes_through(
 # Settings and startup
 # --------------------------------------------------------------------------- #
 
-_BASE_ENV = {
-    "AUTHENTIK_JWKS_URL": "https://auth.test/jwks/",
-    "AUTHENTIK_ISSUER": TEST_ISSUER,
-    "AUTHENTIK_AUDIENCE": TEST_AUDIENCE,
-}
+_JWT_ENV_NAME = "AUTHENTIK_JWT_SECRET"
 
 
-def test_settings_defaults() -> None:
+@pytest.fixture
+def base_env(jwt_secret: str) -> dict[str, str]:
+    """Return the minimal valid Authentik environment.
+
+    Args:
+        jwt_secret: Random per-session HS256 secret.
+
+    Returns:
+        dict[str, str]: Secret, issuer and audience variables.
+    """
+    return {
+        _JWT_ENV_NAME: jwt_secret,
+        "AUTHENTIK_ISSUER": TEST_ISSUER,
+        "AUTHENTIK_AUDIENCE": TEST_AUDIENCE,
+    }
+
+
+def test_settings_defaults(base_env: dict[str, str], jwt_secret: str) -> None:
     """Optional variables fall back to their documented defaults."""
-    settings = AuthentikSettings.from_env(_BASE_ENV)
+    settings = AuthentikSettings.from_env(base_env)
     assert settings == AuthentikSettings(
-        jwks_url="https://auth.test/jwks/",
+        jwt_secret=jwt_secret,
         issuer=TEST_ISSUER,
         audience=TEST_AUDIENCE,
         admin_group="fo-admin",
         viewer_group="fo-viewer",
-        jwks_cache_seconds=600,
     )
 
 
-def test_settings_overrides() -> None:
+def test_settings_overrides(base_env: dict[str, str]) -> None:
     """Optional variables override the defaults; blank values are ignored."""
     env = {
-        **_BASE_ENV,
-        "AUTHENTIK_JWKS_URL": "HTTPS://auth.test/jwks/",
+        **base_env,
         "FO_ADMIN_GROUP": "estate-admins",
         "FO_VIEWER_GROUP": "  ",
-        "AUTHENTIK_JWKS_CACHE_SECONDS": "120",
     }
     settings = AuthentikSettings.from_env(env)
     assert settings.admin_group == "estate-admins"
     assert settings.viewer_group == "fo-viewer"
-    assert settings.jwks_cache_seconds == 120
+
+
+def test_settings_repr_never_shows_the_secret(base_env: dict[str, str]) -> None:
+    """``repr`` (and so any settings dump or assertion diff) omits the secret."""
+    settings = AuthentikSettings.from_env(base_env)
+    assert base_env[_JWT_ENV_NAME] not in repr(settings)
+    assert "jwt_secret" not in repr(settings)
+
+
+def test_secret_of_exactly_the_minimum_length_is_accepted(
+    base_env: dict[str, str],
+) -> None:
+    """A secret of exactly ``MIN_JWT_SECRET_LENGTH`` characters is kept as is."""
+    secret = secrets.token_urlsafe(64)[:MIN_JWT_SECRET_LENGTH]
+    assert len(secret) == 32
+    settings = AuthentikSettings.from_env({**base_env, _JWT_ENV_NAME: secret})
+    assert settings.jwt_secret == secret
+
+
+@pytest.mark.parametrize(
+    "make_secret",
+    [
+        pytest.param(lambda s: s[: MIN_JWT_SECRET_LENGTH - 1], id="31-chars"),
+        pytest.param(lambda s: s[:8], id="short"),
+        pytest.param(lambda _s: STACK_PLACEHOLDER_VALUE, id="placeholder"),
+        pytest.param(lambda s: f" {s}", id="leading-space"),
+        pytest.param(lambda s: f"{s}\n", id="trailing-newline"),
+        pytest.param(lambda _s: "   ", id="whitespace-only"),
+        pytest.param(lambda _s: "", id="empty"),
+    ],
+)
+def test_invalid_secret_is_refused_without_echoing_it(
+    base_env: dict[str, str],
+    make_secret: Callable[[str], str],
+) -> None:
+    """Short, placeholder and padded secrets raise, naming only the variable."""
+    secret = make_secret(secrets.token_urlsafe(64))
+    with pytest.raises(AuthConfigError, match=_JWT_ENV_NAME) as exc_info:
+        AuthentikSettings.from_env({**base_env, _JWT_ENV_NAME: secret})
+    if secret.strip():
+        assert secret.strip() not in str(exc_info.value)
+
+
+def test_missing_secret_is_refused(base_env: dict[str, str]) -> None:
+    """An absent ``AUTHENTIK_JWT_SECRET`` raises, naming the variable."""
+    env = {k: v for k, v in base_env.items() if k != _JWT_ENV_NAME}
+    with pytest.raises(AuthConfigError, match=_JWT_ENV_NAME):
+        AuthentikSettings.from_env(env)
 
 
 @pytest.mark.parametrize(
@@ -1282,69 +872,52 @@ def test_settings_overrides() -> None:
         pytest.param({"AUTHENTIK_ISSUER": " "}, "AUTHENTIK_ISSUER", id="blank-iss"),
         pytest.param({"AUTHENTIK_AUDIENCE": ""}, "AUTHENTIK_AUDIENCE", id="no-aud"),
         pytest.param(
-            {"AUTHENTIK_JWKS_URL": "http://auth.test/jwks/"},
-            "AUTHENTIK_JWKS_URL",
-            id="http-jwks",
-        ),
-        pytest.param(
-            {"AUTHENTIK_JWKS_URL": "file:///etc/jwks.json"},
-            "AUTHENTIK_JWKS_URL",
-            id="file-jwks",
-        ),
-        pytest.param(
-            {"AUTHENTIK_JWKS_URL": "https:///jwks/"},
-            "AUTHENTIK_JWKS_URL",
-            id="no-host",
-        ),
-        pytest.param(
             {"FO_ADMIN_GROUP": "family", "FO_VIEWER_GROUP": "family"},
             "FO_ADMIN_GROUP",
             id="same-groups",
         ),
-        pytest.param(
-            {"AUTHENTIK_JWKS_CACHE_SECONDS": "ten"},
-            "AUTHENTIK_JWKS_CACHE_SECONDS",
-            id="ttl-not-int",
-        ),
-        pytest.param(
-            {"AUTHENTIK_JWKS_CACHE_SECONDS": "0"},
-            "AUTHENTIK_JWKS_CACHE_SECONDS",
-            id="ttl-zero",
-        ),
     ],
 )
 def test_settings_reject_invalid_values(
+    base_env: dict[str, str],
     overrides: dict[str, str],
     variable: str,
 ) -> None:
     """Invalid settings raise with the variable name in the message."""
     with pytest.raises(AuthConfigError, match=variable):
-        AuthentikSettings.from_env({**_BASE_ENV, **overrides})
+        AuthentikSettings.from_env({**base_env, **overrides})
 
 
 @pytest.mark.usefixtures("portal_env")
 @pytest.mark.parametrize(
-    "url",
-    ["http://auth.test/jwks/", "file:///etc/jwks.json", "auth.test/jwks/"],
+    "make_secret",
+    [
+        pytest.param(lambda s: s[: MIN_JWT_SECRET_LENGTH - 1], id="31-chars"),
+        pytest.param(lambda _s: STACK_PLACEHOLDER_VALUE, id="placeholder"),
+        pytest.param(lambda s: f"{s} ", id="trailing-space"),
+    ],
 )
-def test_non_https_jwks_url_exits_at_startup(
+def test_invalid_secret_exits_at_startup_without_printing_it(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    url: str,
+    make_secret: Callable[[str], str],
 ) -> None:
-    """``app.main`` exits 1 and names the variable when the JWKS URL is not https."""
+    """``app.main`` exits 1, names the variable and never prints the value."""
     main = importlib.import_module("app.main")
-    monkeypatch.setenv("AUTHENTIK_JWKS_URL", url)
+    secret = make_secret(secrets.token_urlsafe(64))
+    monkeypatch.setenv(_JWT_ENV_NAME, secret)
     with pytest.raises(SystemExit) as exc_info:
         importlib.reload(main)
     assert exc_info.value.code == 1
-    assert "AUTHENTIK_JWKS_URL" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert _JWT_ENV_NAME in err
+    assert secret.strip() not in err
 
 
 @pytest.mark.usefixtures("portal_env")
 @pytest.mark.parametrize(
     "variable",
-    ["AUTHENTIK_JWKS_URL", "AUTHENTIK_ISSUER", "AUTHENTIK_AUDIENCE"],
+    [_JWT_ENV_NAME, "AUTHENTIK_ISSUER", "AUTHENTIK_AUDIENCE"],
 )
 def test_missing_auth_env_var_exits_at_startup(
     monkeypatch: pytest.MonkeyPatch,
@@ -1367,8 +940,9 @@ def test_optional_setting_error_exits_at_startup(
 ) -> None:
     """An invalid optional setting also stops startup with a named message."""
     main = importlib.import_module("app.main")
-    monkeypatch.setenv("AUTHENTIK_JWKS_CACHE_SECONDS", "-5")
+    monkeypatch.setenv("FO_ADMIN_GROUP", "family")
+    monkeypatch.setenv("FO_VIEWER_GROUP", "family")
     with pytest.raises(SystemExit) as exc_info:
         importlib.reload(main)
     assert exc_info.value.code == 1
-    assert "AUTHENTIK_JWKS_CACHE_SECONDS" in capsys.readouterr().err
+    assert "FO_ADMIN_GROUP" in capsys.readouterr().err
