@@ -148,10 +148,10 @@ Phase-1 commitments that future code must honor.
   ADR-005 replaces Cloudflare Access with Authentik forward auth, and
   `app/middleware/authentik.py` implements the equivalent pipeline: (1)
   the signed `X-authentik-jwt` header is present (plain `X-authentik-*`
-  headers are never read); (2) the header `alg` is RS256 and the
-  signature verifies against a key from the https JWKS at
-  `AUTHENTIK_JWKS_URL`, cached with a TTL and refetched at most once per
-  30 seconds for an unknown `kid`; (3) `aud` matches
+  headers are never read); (2) the header `alg` is HS256 and the
+  signature verifies with the proxy provider's client secret in
+  `AUTHENTIK_JWT_SECRET` (an Authentik proxy provider cannot keep a
+  signing key, ADR-005 amendment 2026-09-29); (3) `aud` matches
   `AUTHENTIK_AUDIENCE` and `iss` matches `AUTHENTIK_ISSUER`; (4) `exp` is
   required and checked with 10 s leeway for clock skew, and `nbf` is honoured when
   present; (5) the `groups` claim maps to `Viewer` or `Admin`. Every
@@ -159,8 +159,8 @@ Phase-1 commitments that future code must honor.
   `CF_TEAM_DOMAIN`, `CF_ACCESS_APP_ID`, `VIEWER_EMAILS` and
   `ADMIN_EMAILS` variables are removed. `tests/unit/test_middleware.py`
   covers the module at 100 percent, including foreign `aud`, wrong `iss`,
-  expired, `alg: none`, HS256 key confusion, unknown `kid` and forged
-  plain-header cases.
+  expired, `alg: none`, a validly signed asymmetric token, a token
+  signed with a different secret, and forged plain-header cases.
 
 ### F-07 Transitive urllib3 2.6.3 had two open CVEs | **High**
 

@@ -224,14 +224,15 @@ env vars once the mechanism is decided.
 | `BACKEND_PP_SECURITY_URL` | Base URL for `pp-security-master` HTTP API |
 | `BACKEND_XERO_CRYPTO_URL` | Base URL for `xero_crypto` HTTP API |
 | `BACKEND_FAMILY_OFFICE_URL` | Base URL for `family_office` HTTP API |
-| `AUTHENTIK_JWKS_URL` | JWKS endpoint of the Authentik provider; must be `https://` (e.g. `https://auth.example.com/application/o/family-office-portal/jwks/`) |
+| `AUTHENTIK_JWT_SECRET` | Client secret of the Authentik proxy provider, the HS256 key for `X-authentik-jwt`; injected by the deployment stack, never committed; at least 32 characters, not the stack placeholder, no leading or trailing whitespace |
 | `AUTHENTIK_ISSUER` | Exact expected `iss` claim (e.g. `https://auth.example.com/application/o/family-office-portal/`) |
 | `AUTHENTIK_AUDIENCE` | Expected `aud` claim: the Authentik provider's client ID |
 | `SQLITE_PATH` | Filesystem path to the SQLite cache database (e.g. `/data/portal.db`) |
 
 All variables above are required at startup; the application writes the missing variable's
 name to stderr and exits with status 1 if any is absent, and also exits 1 if
-`AUTHENTIK_JWKS_URL` is not `https://`.
+`AUTHENTIK_JWT_SECRET` is shorter than 32 characters, equals the stack placeholder, or
+has leading or trailing whitespace (the error names the variable, never its value).
 
 Optional variables, each with a documented default:
 
@@ -239,7 +240,6 @@ Optional variables, each with a documented default:
 | --- | --- | --- |
 | `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granted the Admin role |
 | `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granted the Viewer role; must differ from `FO_ADMIN_GROUP` |
-| `AUTHENTIK_JWKS_CACHE_SECONDS` | `600` | JWKS cache lifetime in seconds (positive integer) |
 
 ## 5. Security
 
@@ -255,12 +255,11 @@ except `/health` and `/static/`:
 
 1. The signed `X-authentik-jwt` header is present. The plain `X-authentik-username`,
    `X-authentik-email` and `X-authentik-groups` headers are never read.
-2. The header's `alg` is `RS256` (the only accepted algorithm) and its `kid` names a
-   key in the JWKS at `AUTHENTIK_JWKS_URL`. The JWKS is cached for
-   `AUTHENTIK_JWKS_CACHE_SECONDS` and refetched at most once per 30 seconds when an
-   unknown `kid` appears. Failed fetches count toward that limit, and after a failed
-   refetch the last good keys stay valid for one extra TTL. The fetch ignores proxy
-   environment variables, follows no redirects, and is capped at 64 KiB and 10 seconds.
+2. The header's `alg` is `HS256` (the only accepted algorithm) and the signature is
+   verified with the proxy provider's client secret in `AUTHENTIK_JWT_SECRET`. An
+   Authentik proxy provider cannot keep a signing key, so its token carries no `kid`
+   and there is no key set to fetch; the portal makes no outbound request to
+   authenticate anything.
 3. The signature verifies, and `exp`, `iss` and `aud` are present, with `iss` equal to
    `AUTHENTIK_ISSUER`, `aud` containing `AUTHENTIK_AUDIENCE`, and `exp` in the future
    (10 s leeway for clock skew). The `aud` check prevents accepting tokens minted for other Authentik
@@ -270,8 +269,9 @@ except `/health` and `/static/`:
 Public and admin paths are judged on the routed path (any ASGI `root_path` prefix
 stripped), and `/admin` matches only on a segment boundary. Any failure returns a
 plain 403, and the log records only a reason category, never the token. The portal
-needs its own single-application Authentik provider so that its `aud` is unique
-(ADR-005 contract item 13).
+needs its own single-application Authentik provider so that its `aud` is unique and
+its client secret, which both signs and verifies the token, is never shared (ADR-005
+contract item 13 and the ADR-005 amendment of 2026-09-29).
 
 ### Authorization
 

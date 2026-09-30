@@ -144,8 +144,10 @@ configuration belongs to homelab-infra; ADR-005 records the contract.
 - The Authentik middleware takes identity only from the signed `X-authentik-jwt` header
   on every request except `/health` and `/static/`; plain `X-authentik-*` headers are
   never read. **#CRITICAL**
-- The JWT must be RS256, signed by a key from the https JWKS at `AUTHENTIK_JWKS_URL`
-  (cached with TTL; rate-limited refetch on an unknown `kid`).
+- The JWT must be HS256, signed with the proxy provider's client secret, which the
+  deployment stack injects as `AUTHENTIK_JWT_SECRET` (an Authentik proxy provider
+  cannot keep a signing key; ADR-005 amendment 2026-09-29). No other algorithm is
+  accepted. **#CRITICAL**
 - `exp`, `iss` (`AUTHENTIK_ISSUER`) and `aud` (`AUTHENTIK_AUDIENCE`) are required and
   validated with 10 s leeway for clock skew. Skipping the `aud` check accepts tokens minted for other
   Authentik applications. **#CRITICAL**
@@ -223,15 +225,15 @@ decision record.
 | `BACKEND_PP_SECURITY_URL` | Base URL for `pp-security-master` HTTP API |
 | `BACKEND_XERO_CRYPTO_URL` | Base URL for `xero_crypto` HTTP API |
 | `BACKEND_FAMILY_OFFICE_URL` | Base URL for `family_office` HTTP API |
-| `AUTHENTIK_JWKS_URL` | `https://` JWKS endpoint of the Authentik provider |
+| `AUTHENTIK_JWT_SECRET` | Client secret of the Authentik proxy provider (HS256 key); stack-injected, never committed |
 | `AUTHENTIK_ISSUER` | Expected JWT `iss` claim |
 | `AUTHENTIK_AUDIENCE` | Expected JWT `aud` claim (the provider's client ID) |
 | `SQLITE_PATH` | Filesystem path to the SQLite cache database |
 
 The application must call `sys.exit(1)` if any variable is absent, or if
-`AUTHENTIK_JWKS_URL` is not `https://`. No optional env vars without a documented
-default: `FO_ADMIN_GROUP` defaults to `fo-admin`, `FO_VIEWER_GROUP` to `fo-viewer`, and
-`AUTHENTIK_JWKS_CACHE_SECONDS` to `600`.
+`AUTHENTIK_JWT_SECRET` is shorter than 32 characters, equals the stack placeholder, or
+has leading or trailing whitespace. No optional env vars without a documented
+default: `FO_ADMIN_GROUP` defaults to `fo-admin` and `FO_VIEWER_GROUP` to `fo-viewer`.
 
 ---
 

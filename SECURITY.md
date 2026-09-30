@@ -51,13 +51,13 @@ attack surface, not only how to file a report).
 - **Forged or foreign identity token.** Authentik forward auth behind Traefik
   authenticates users and forwards a signed `X-authentik-jwt` header
   (ADR-005, which supersedes ADR-002). `app/middleware/authentik.py` takes
-  identity only from that header, verifies its RS256 signature against the
-  https JWKS at `AUTHENTIK_JWKS_URL`, and requires `exp`, `iss`
-  (`AUTHENTIK_ISSUER`) and `aud` (`AUTHENTIK_AUDIENCE`) with 10 s leeway for
-  clock skew, so a
+  identity only from that header, verifies its HS256 signature with the
+  proxy provider's client secret in `AUTHENTIK_JWT_SECRET` (HS256 is the
+  only accepted algorithm), and requires `exp`, `iss` (`AUTHENTIK_ISSUER`)
+  and `aud` (`AUTHENTIK_AUDIENCE`) with 10 s leeway for clock skew, so a
   token minted for another Authentik application, an expired token, an
-  `alg: none` or HS256 token, or one signed by an unknown key is refused with
-  403. The plain `X-authentik-username`, `X-authentik-email` and
+  `alg: none` token, a token signed with any asymmetric algorithm, or one
+  signed with a different secret is refused with 403. The plain `X-authentik-username`, `X-authentik-email` and
   `X-authentik-groups` headers are never read, because anything that reaches
   the app could set them. `#CRITICAL`: the middleware must stay the only
   source of identity. `#VERIFY`: `tests/unit/test_middleware.py` covers each
@@ -100,8 +100,8 @@ attack surface, not only how to file a report).
 Authentik forward auth behind Traefik handles sign-in and sessions and
 forwards a signed `X-authentik-jwt` header (ADR-005). The in-app
 `AuthentikAuthMiddleware` validates that token on every request except
-`/health` and `/static/`: RS256 signature against the provider's JWKS, `exp`,
-`iss` and `aud`, and a non-empty identity claim. It maps the `groups` claim
+`/health` and `/static/`: HS256 signature with the provider's client secret,
+`exp`, `iss` and `aud`, and a non-empty identity claim. It maps the `groups` claim
 to `Viewer` or `Admin`, requires `Admin` for `/admin/*`, and returns 403 on
 any failure (fail closed). The Authentik and Traefik configuration belongs to
 homelab-infra; ADR-005 records the contract the portal relies on. No
@@ -135,19 +135,33 @@ reassessment.
 This repository holds no application secrets in source control. Runtime
 secrets (CI tokens such as `CODECOV_TOKEN` and `SONAR_TOKEN`) are stored
 exclusively in GitHub Actions repository secrets, never committed to the
-repository. The portal needs no authentication credential of its own. The
-`AUTHENTIK_JWKS_URL`, `AUTHENTIK_ISSUER` and `AUTHENTIK_AUDIENCE` values are
-public, and the signing key stays inside Authentik, managed by homelab-infra.
+repository. The portal holds one authentication credential:
+`AUTHENTIK_JWT_SECRET`, the client secret of the portal's Authentik proxy
+provider. It is injected into the portal's environment by the deployment
+stack (homelab-infra), never committed, and it both signs and verifies the
+`X-authentik-jwt` header, so anyone who holds it can mint a token the portal
+accepts. Startup refuses a missing value, the stack's placeholder, a value
+shorter than 32 characters, or one with leading or trailing whitespace, and
+the error never echoes the value. `#CRITICAL`: the proxy provider must stay
+single-application and its secret must never be shared with another
+application or provider (ADR-005 amendment 2026-09-29). `#VERIFY`: in
+Authentik, confirm no other application is bound to the portal's provider.
+The `AUTHENTIK_ISSUER` and `AUTHENTIK_AUDIENCE` values are not secret.
 
 Rotation cadence:
 
 - CI/CD tokens (Codecov, SonarCloud, any future backend API keys): reviewed
   and rotated quarterly, aligned with the same quarterly cadence used for
   unfixed-CVE reassessment above.
-- Authentik token signing key: rotated in Authentik by homelab-infra, or
-  immediately upon suspected compromise. The portal picks up the new key from
-  the JWKS on its next refetch (an unknown `kid` triggers one, rate-limited to
-  once per 30 seconds), so rotation needs no portal change or restart.
+- Authentik proxy provider client secret (`AUTHENTIK_JWT_SECRET`): rotated
+  in Authentik by homelab-infra, or immediately upon suspected compromise.
+  There is no key-set pickup and no hot reload: the portal verifies with the
+  value it read at startup, so rotation is two-phase. First the secret is
+  changed in Authentik, which signs with the new value at once; then the
+  portal is restarted with the new secret in its environment. Between those
+  two steps every request gets 403 (fail closed), so do both in one
+  maintenance window. Recreating the provider also issues a new client ID,
+  so `AUTHENTIK_AUDIENCE` must be updated at the same time.
 - Any secret is rotated immediately, outside the regular cadence, if exposure
   is suspected (e.g., accidental commit, leaked CI log, compromised
   contributor account).

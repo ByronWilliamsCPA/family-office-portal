@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Authentik forward-auth JWT middleware (`app/middleware/authentik.py`, ADR-005): identity comes only from the signed `X-authentik-jwt` header, verified with RS256 against the https JWKS at `AUTHENTIK_JWKS_URL` (TTL cache, rate-limited refetch on an unknown `kid`) and checked for `exp`, `iss` and `aud` with a 10 s leeway for clock skew; fetch attempts (failed ones included) are rate limited, the last good keys serve for one extra TTL during a JWKS outage, and the fetch runs with `trust_env=False`, no redirects, a 64 KiB body cap and a 10-second deadline; the `fo-admin` / `fo-viewer` groups map to Admin / Viewer, `/admin` and `/admin/*` require Admin, only `/health` and `/static/` are public (both judged on the routed path with any `root_path` stripped), and every failure returns 403 with a reason-only log line
-- Required env vars `AUTHENTIK_JWKS_URL` (must be `https://`), `AUTHENTIK_ISSUER` and `AUTHENTIK_AUDIENCE`; optional `FO_ADMIN_GROUP` (default `fo-admin`), `FO_VIEWER_GROUP` (default `fo-viewer`) and `AUTHENTIK_JWKS_CACHE_SECONDS` (default `600`)
+- Authentik forward-auth JWT middleware (`app/middleware/authentik.py`, ADR-005): identity comes only from the signed `X-authentik-jwt` header, verified with HS256 (the only accepted algorithm) keyed by the proxy provider's client secret in `AUTHENTIK_JWT_SECRET`, and checked for `exp`, `iss` and `aud` with a 10 s leeway for clock skew; the portal makes no outbound request to authenticate; the `fo-admin` / `fo-viewer` groups map to Admin / Viewer, `/admin` and `/admin/*` require Admin, only `/health` and `/static/` are public (both judged on the routed path with any `root_path` stripped), and every failure returns 403 with a reason-only log line
+- Required env vars `AUTHENTIK_JWT_SECRET` (at least 32 characters, not the stack placeholder, no leading or trailing whitespace; never echoed in errors or settings `repr`), `AUTHENTIK_ISSUER` and `AUTHENTIK_AUDIENCE`; optional `FO_ADMIN_GROUP` (default `fo-admin`) and `FO_VIEWER_GROUP` (default `fo-viewer`)
 - ADR-005 (Authentik forward auth), including the contract the portal expects from homelab-infra and the uvicorn `--proxy-headers --forwarded-allow-ips` guidance
-- Middleware test suite (`tests/unit/test_middleware.py`) with RS256 token and JWKS fixtures in `tests/conftest.py`, covering the module at 100%
+- Middleware test suite (`tests/unit/test_middleware.py`) with HS256 token fixtures and a secret generated at test time in `tests/conftest.py`, covering the module at 100%
 - CI: Claude Tier 0 baseline PR review caller (`.github/workflows/claude-baseline-review.yml`), a thin caller of the org reusable in `ByronWilliamsCPA/.github`. Part of the org-wide tiered-pr-review rollout.
 - Phase 0 FastAPI application skeleton in `app/main.py`: title, description, version, contact, `CloudflareAccessMiddleware` registration, and a `GET /health` liveness probe returning `{"status": "ok"}`
 - Cloudflare Access middleware pass-through stub in `app/middleware/cloudflare_access.py` per ADR-002; full JWT validation deferred to Phase 1
@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: forward-auth token validation switches from an asymmetric signature checked against a fetched key set to HS256 keyed by the proxy provider's client secret, because an Authentik proxy provider cannot keep a signing key and signs `X-authentik-jwt` with its client secret (ADR-005 amendment 2026-09-29). The required env var `AUTHENTIK_JWT_SECRET` replaces `AUTHENTIK_JWKS_URL`, and `AUTHENTIK_JWKS_CACHE_SECONDS` is removed; a deployment that still sets only `AUTHENTIK_JWKS_URL` exits 1 at startup. Rotating the secret now needs a portal restart with the new value, and requests get 403 between the Authentik change and that restart
+- CI: the Newman contract-test job generates `AUTHENTIK_JWT_SECRET` at runtime (or uses the Actions secret of that name), so no secret literal is committed
 - Authentication moves from Cloudflare Zero Trust Access to Authentik forward auth behind Traefik; ADR-002 is marked superseded by ADR-005 and kept as history
 - Startup now writes the name of a missing required env var to stderr before exiting 1, and exits 1 on an invalid Authentik configuration
 - Test fixtures: `cf_env` is renamed `portal_env`, and the shared `client` fixture sends an Admin token (`anon_client` sends none)

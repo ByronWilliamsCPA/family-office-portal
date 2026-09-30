@@ -93,7 +93,7 @@ Component-to-file mapping from `docs/planning/tech-spec.md`:
 
 | Component | Location | Status | Notes |
 | --- | --- | --- | --- |
-| Authentik JWT Middleware | `app/middleware/authentik.py` | Exists (Phase 0) | Validates the signed `X-authentik-jwt` header (RS256 signature via JWKS, `iss`, `aud`, `exp`), maps groups to a role, fails closed with 403 (ADR-005) |
+| Authentik JWT Middleware | `app/middleware/authentik.py` | Exists (Phase 0) | Validates the signed `X-authentik-jwt` header (HS256 signature keyed by `AUTHENTIK_JWT_SECRET`, `iss`, `aud`, `exp`), maps groups to a role, fails closed with 403 (ADR-005) |
 | Route Handlers | `app/routes/` | Exists (Phase 0 placeholders) | Return placeholder `HTMLResponse`/JSON today; Phase 1 wires them to return `TemplateResponse` and read SQLite via the cache reader, once `app/cache.py` and `templates/` exist |
 | Cache Reader | `app/cache.py` | Planned, Phase 1 | Async `aiosqlite` reads; called by routes |
 | Refresh Scheduler | `app/scheduler.py` | Planned, Phase 1 | Sync writes; calls backend services via `httpx` |
@@ -167,9 +167,12 @@ The Authentik middleware must:
 1. Take identity only from the signed `X-authentik-jwt` header. Never read the
    plain `X-authentik-username`, `X-authentik-email` or `X-authentik-groups`
    headers; anything that reaches the app could forge them. #CRITICAL
-2. Verify the signature with `algorithms=["RS256"]` only, against keys from the
-   https JWKS at `AUTHENTIK_JWKS_URL`, cached with a TTL and refetched at most
-   once per 30 seconds for an unknown `kid`.
+2. Verify the signature with `ALLOWED_ALGORITHMS = ("HS256",)` only, keyed by
+   the proxy provider's client secret in `AUTHENTIK_JWT_SECRET` (an Authentik
+   proxy provider cannot keep a signing key; ADR-005 amendment 2026-09-29).
+   Never add an asymmetric algorithm next to it (algorithm confusion). The
+   secret both signs and verifies, so the provider must stay
+   single-application and the secret must never be logged or shared. #CRITICAL
 3. Require and validate `exp`, `iss` (`AUTHENTIK_ISSUER`) and `aud`
    (`AUTHENTIK_AUDIENCE`) with 10 s leeway for clock skew, plus a non-empty `preferred_username`
    or `sub`. Skipping the `aud` check accepts tokens minted for other Authentik
@@ -205,11 +208,12 @@ startup. The application must call `sys.exit(1)` if any are absent. Do not add
 optional env vars without a documented default.
 
 Required: `BACKEND_LLC_MANAGER_URL`, `BACKEND_PP_SECURITY_URL`,
-`BACKEND_XERO_CRYPTO_URL`, `BACKEND_FAMILY_OFFICE_URL`, `AUTHENTIK_JWKS_URL`
-(must be `https://`), `AUTHENTIK_ISSUER`, `AUTHENTIK_AUDIENCE`, `SQLITE_PATH`.
+`BACKEND_XERO_CRYPTO_URL`, `BACKEND_FAMILY_OFFICE_URL`, `AUTHENTIK_JWT_SECRET`
+(at least 32 characters, not the stack placeholder, no leading or trailing
+whitespace), `AUTHENTIK_ISSUER`, `AUTHENTIK_AUDIENCE`, `SQLITE_PATH`.
 
 Optional, with documented defaults: `FO_ADMIN_GROUP` (`fo-admin`),
-`FO_VIEWER_GROUP` (`fo-viewer`), `AUTHENTIK_JWKS_CACHE_SECONDS` (`600`).
+`FO_VIEWER_GROUP` (`fo-viewer`).
 
 ## Frontend conventions
 
