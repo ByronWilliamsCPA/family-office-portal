@@ -2,6 +2,7 @@
 
 > **Status**: Accepted
 > **Date**: 2026-05-06
+> **Amended**: 2026-09-30 (optional, keyed backend connections; see "Amendment 2026-09-30" below)
 
 ## TL;DR
 
@@ -186,3 +187,61 @@ These endpoint contracts must be validated with each backend team before Phase 1
 - [Project Vision](../../planning/project-vision.md): Resilience
   requirement driving this decision
 - [Roadmap](../../planning/roadmap.md): Phase-by-phase backend integration order
+
+## Amendment 2026-09-30: optional, keyed backend connections
+
+> **Status**: Accepted
+> **Amends**: the original text above, which is left intact for the record.
+> Where the two differ, this amendment takes precedence.
+
+### What changed
+
+The original text assumed four backends that are all required at startup, and
+named `family_office` as the fourth. Neither holds now:
+
+- `family_office` is not a backend of the portal. Document metadata comes from
+  `llc-manager` (`GET /api/v1/documents`), and no portal code ever read
+  `BACKEND_FAMILY_OFFICE_URL`, so the variable is removed. The `family_office`
+  row in the tables above, its refresh cadence, and its `GET /api/v1/documents`
+  contract no longer apply.
+- Backends are connected one at a time as they ship, so none is required to
+  start the portal.
+
+### Decision
+
+Each backend is an optional pair of environment variables,
+`BACKEND_<NAME>_URL` and `BACKEND_<NAME>_API_KEY`, for `LLC_MANAGER`,
+`PP_SECURITY`, `XERO_CRYPTO` and `DATA_INGESTOR`. The `DATA_INGESTOR` pair is
+configuration only for now: the portal validates it at startup, but no client
+calls that service yet.
+
+| Situation | Behavior |
+| --- | --- |
+| URL set, key unset, empty or whitespace | Startup fails; the error names the key variable |
+| URL set, key set | Backend is connected |
+| URL unset, key set | Backend is not connected; startup logs one info line |
+| URL unset, key unset | Backend is not connected |
+
+A backend that is not connected has no outbound traffic and no error state:
+
+- Its scheduled refresh jobs log one line (`refresh_skipped_not_connected`),
+  make no outbound call, and write nothing to `refresh_log`.
+- Pages that show its data render a plain "Not connected yet" note instead of
+  an error or an empty list.
+- Cached rows from an earlier connection are not shown as current.
+
+The refresh client can no longer send a request without its key. The jobs take
+a `BackendConnection` (URL and key), which cannot be built with a blank value;
+the `X-API-Key` header is always set from it. The earlier behavior of sending
+the request with no key header when the key was unset is removed.
+
+### Consequences of the amendment
+
+- A deployment must set both variables of a pair, or neither. Configuration
+  that sets only a URL, which used to start and send unauthenticated requests,
+  now fails at startup.
+- `BACKEND_FAMILY_OFFICE_URL` is ignored if still set; remove it from the
+  deployment.
+- Local template work needs no backend variables at all.
+- #ASSUME each backend checks `X-API-Key`. #VERIFY with each backend before
+  its URL and key are set in the deployment.
