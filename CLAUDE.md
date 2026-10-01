@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Status**: Active | **Version**: 1.2.1 | **Updated**: 2026-09-29
+> **Status**: Active | **Version**: 1.3.0 | **Updated**: 2026-09-29
 >
 > Project-specific rules for the family-office-portal FastAPI application.
 > Global standards are in `~/.claude/CLAUDE.md` and apply everywhere.
@@ -62,42 +62,39 @@ tailwindcss -i static/css/input.css -o static/css/output.css --minify
 The Python package is `app/`. All source files live under it; do not create top-level
 `.py` files outside `app/`.
 
-Exists today (Phase 0):
-
 ```text
 app/
   main.py              # FastAPI app instantiation, lifespan, middleware registration
+  config.py            # Pydantic settings read by cache, scheduler, templates
   models.py            # Pydantic request/response models
-  middleware/          # Authentik forward-auth JWT validation middleware
+  middleware/          # Authentik forward-auth JWT validation middleware (ADR-005)
   routes/              # One module per section: home, documents, finances,
                        # portfolio, entities, health, admin
+  templating.py        # Jinja2 environment, plain-English filters, render helper
+  cache.py             # Async SQLite readers called by route handlers
+  scheduler.py         # APScheduler setup; refresh job definitions
+  db.py                # SQLite connection factory, schema init (WAL + busy_timeout)
+templates/
+  base.html            # Shared layout and five-section navigation
+  pages/               # Full-page Jinja2 templates (browser-navigable URLs)
+  partials/            # HTMX fragment templates and macros (not navigable directly)
 static/
-  .gitkeep             # placeholder; no vendored assets yet
+  htmx.min.js          # Vendored HTMX 2.0.4 (0BSD); do not load from CDN
+  chart.umd.min.js     # Vendored Chart.js v4 (added with the first chart)
+  css/input.css        # Tailwind source; output.css is built in the Docker image
 tests/
   conftest.py          # SQLite fixture DB, httpx AsyncClient
 ```
 
-Planned for Phase 1 (not created yet; do not assume these paths exist until the
-Phase 1 gate closes, see `docs/planning/roadmap.md`):
-
-- `app/cache.py`: async SQLite readers called by route handlers
-- `app/scheduler.py`: APScheduler setup; refresh job definitions
-- `app/db.py`: SQLite connection factory, schema init (WAL + busy_timeout)
-- `templates/pages/`: full-page Jinja2 templates (browser-navigable URLs)
-- `templates/partials/`: HTMX fragment templates (not navigable directly)
-- `static/htmx.min.js`: vendored HTMX; do not load from CDN
-- `static/chart.umd.min.js`: vendored Chart.js v4
-- `static/css/`: Tailwind output
-
 Component-to-file mapping from `docs/planning/tech-spec.md`:
 
-| Component | Location | Status | Notes |
-| --- | --- | --- | --- |
-| Authentik JWT Middleware | `app/middleware/authentik.py` | Exists (Phase 0) | Validates the signed `X-authentik-jwt` header (HS256 signature keyed by `AUTHENTIK_JWT_SECRET`, `iss`, `aud`, `exp`), maps groups to a role, fails closed with 403 (ADR-005) |
-| Route Handlers | `app/routes/` | Exists (Phase 0 placeholders) | Return placeholder `HTMLResponse`/JSON today; Phase 1 wires them to return `TemplateResponse` and read SQLite via the cache reader, once `app/cache.py` and `templates/` exist |
-| Cache Reader | `app/cache.py` | Planned, Phase 1 | Async `aiosqlite` reads; called by routes |
-| Refresh Scheduler | `app/scheduler.py` | Planned, Phase 1 | Sync writes; calls backend services via `httpx` |
-| Staleness Checker | `app/cache.py` | Planned, Phase 1 | `is_stale(dataset, threshold_hours)` |
+| Component | Location | Notes |
+| --- | --- | --- |
+| Authentik JWT Middleware | `app/middleware/authentik.py` | Validates the signed `X-authentik-jwt` header (HS256 signature keyed by `AUTHENTIK_JWT_SECRET`, `iss`, `aud`, `exp`), maps groups to a role, fails closed with 403 (ADR-005) |
+| Route Handlers | `app/routes/` | Return `TemplateResponse`; read SQLite via `cache.py` |
+| Cache Reader | `app/cache.py` | Async `aiosqlite` reads; called by routes |
+| Refresh Scheduler | `app/scheduler.py` | Sync writes; calls backend services via `httpx` |
+| Staleness Checker | `app/cache.py` | `is_stale(dataset, threshold_hours)` |
 
 ## Project context
 
@@ -106,9 +103,8 @@ users view it on tablets. Reliability and plain-English presentation are the top
 priorities. The portal is a read-only consumer of four backend services; it never
 writes to or contacts upstream commercial systems directly.
 
-**Current phase**: Phase 0 (Foundation) scaffold code exists under `app/` and `tests/`;
-Phase 0 has not yet passed a phase gate.
-Phase 0 goal: scaffold, auth middleware, CI pipeline, and five empty section shells.
+**Current phase**: the portal foundation is built: settings, SQLite schema, cache
+readers, refresh scheduler, Authentik auth, five section templates, Docker image.
 
 Key documents to read before making architectural or data-model decisions:
 
@@ -130,27 +126,35 @@ Key documents to read before making architectural or data-model decisions:
 - **Web framework**: FastAPI with Starlette's `Jinja2Templates`. Route handlers
   return `TemplateResponse`; they do not return JSON unless the route is an HTMX
   partial returning an HTML fragment.
-- **Templates**: Jinja2, planned for Phase 1. Full-page templates will live in
-  `templates/pages/`; HTMX partial fragments will live in `templates/partials/`
-  (neither directory exists yet in Phase 0). Never return a partial from a route
-  that a browser may navigate to directly.
+- **Templates**: Jinja2 in `templates/`. Full-page templates in `templates/pages/`;
+  HTMX partial fragments in `templates/partials/`. Never return a partial from a
+  route that a browser may navigate to directly.
 - **Tailwind**: Compiled at build time via the `tailwindcss` CLI binary. No Node.js
   runtime; no `npm run`. Do not add PostCSS plugins or Node dependencies.
-- **HTMX**: Loaded as a static asset, to be vendored at `static/htmx.min.js` in
-  Phase 1 (not present yet; `static/` currently holds only a `.gitkeep`
-  placeholder). Do not load HTMX from a CDN in production templates.
-- **Charts**: Chart.js v4, to be vendored at `static/chart.umd.min.js` in Phase 1
-  (not present yet). Do not add other chart libraries.
-- **Scheduler**: APScheduler v3 configured in-process at FastAPI startup. All four
-  refresh jobs (`refresh_entities`, `refresh_holdings`, `refresh_positions`,
-  `refresh_documents`) run on independent cadences.
+- **HTMX**: Loaded as a static asset (`static/htmx.min.js`). Do not load HTMX from
+  a CDN in production templates.
+- **Charts**: Chart.js v4 vendored in `static/`. Do not add other chart libraries.
+- **Scheduler**: APScheduler v3 configured in-process at FastAPI startup. Four
+  refresh functions exist (`refresh_entities`, `refresh_holdings`,
+  `refresh_positions`, `refresh_documents`); only entities and documents are
+  scheduled until the holdings and positions backends ship their endpoints.
+  Admins can still trigger any of them. Each service runs at most once at a
+  time, and every SQLite write goes through `app.scheduler._WRITE_LOCK`.
+- **Paging**: refresh jobs read `{items, total}` pages until `total` rows arrive.
+  A short or runaway page set fails the refresh and keeps the old cache; never
+  replace cached rows with a partial set.
 - **Database**: SQLite via `aiosqlite` for async reads in route handlers; synchronous
   writes in APScheduler refresh jobs. Initialize with `PRAGMA journal_mode=WAL` and
   `PRAGMA busy_timeout=5000`. No ORM; use raw SQL with parameterized queries.
+  Schema changes go in `app.db.MIGRATIONS`, tracked by `PRAGMA user_version`.
+- **Money**: totals are USD only; other currencies are counted and
+  shown as left out. Format with `Decimal`, never float arithmetic.
 - **HTTP client**: `httpx` for outbound calls in APScheduler refresh jobs. Use
   `httpx.Client` (synchronous) inside scheduler jobs; `httpx.AsyncClient` in tests.
-  Backend auth mechanism (API key vs private network) is unconfirmed; confirm with
-  each backend team before Phase 1. #ASSUME
+  Backends are reached on a private Docker network; each refresh job sends its
+  optional per-service API key as `X-API-Key` when one is set, and no key header
+  when it is unset. #ASSUME backends implement the key check.
+  #VERIFY with each backend before its refresh job is enabled.
 - **Logging**: `structlog` in structured JSON format. Never log financial values,
   document contents, or email addresses beyond INFO-level auth events.
 
@@ -183,6 +187,9 @@ The Authentik middleware must:
 5. Fail closed with 403. Only `/health` and `/static/` are public; `/admin/*`
    requires Admin. Log the reason category only, never the token.
 
+The document routes, not the middleware, hide documents marked confidential
+from Viewers; only Admins see them.
+
 Never implement password-based auth, OAuth flows, or session cookies.
 
 ## Data layer rules
@@ -195,7 +202,8 @@ Never implement password-based auth, OAuth flows, or session cookies.
   - `entities` (llc-manager): 8 hours
   - `holdings` / `performance` (pp-security-master): 4 hours
   - `positions` (xero_crypto): 4 hours
-  - `documents` (family_office): 24 hours
+  - `balances` (account balance snapshots, MVP): 24 hours
+  - `documents` (llc-manager documents endpoint): 24 hours
 - A stale section must show the last cached value plus a "last updated [time]" label.
   Never show a blank section or an unhandled error to a primary user.
 - `pp-security-master` is alpha-status. Treat its 500 responses as expected; surface
@@ -213,7 +221,10 @@ Required: `BACKEND_LLC_MANAGER_URL`, `BACKEND_PP_SECURITY_URL`,
 whitespace), `AUTHENTIK_ISSUER`, `AUTHENTIK_AUDIENCE`, `SQLITE_PATH`.
 
 Optional, with documented defaults: `FO_ADMIN_GROUP` (`fo-admin`),
-`FO_VIEWER_GROUP` (`fo-viewer`).
+`FO_VIEWER_GROUP` (`fo-viewer`), `BACKEND_LLC_MANAGER_API_KEY`,
+`BACKEND_PP_SECURITY_API_KEY` and `BACKEND_XERO_CRYPTO_API_KEY` (empty; unset
+sends no key header), `BACKEND_TIMEOUT_SECONDS` (10), `DISPLAY_TIMEZONE`
+(`UTC`), `SCHEDULER_ENABLED` (`true`).
 
 ## Frontend conventions
 

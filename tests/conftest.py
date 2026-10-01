@@ -10,6 +10,10 @@ committed.
 ``app.main`` exits at import when a required env var is missing, so it is
 imported inside fixture bodies after ``portal_env`` has populated the
 environment, never at module level.
+
+``httpx.ASGITransport`` does not run the app lifespan, so ``portal_env``
+creates the SQLite schema at ``SQLITE_PATH`` itself (as the lifespan would in
+production) and the refresh scheduler never starts.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import jwt as pyjwt
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.db import init_schema
 from app.middleware.authentik import AuthentikSettings
 
 if TYPE_CHECKING:
@@ -39,6 +44,17 @@ TEST_AUDIENCE = "test-client-id"
 _OPTIONAL_AUTH_ENV_VARS = (
     "FO_ADMIN_GROUP",
     "FO_VIEWER_GROUP",
+)
+
+# Optional backend and display settings (``app.config``) cleared by
+# ``portal_env`` for the same reason; tests that need one set it themselves.
+_OPTIONAL_PORTAL_ENV_VARS = (
+    "BACKEND_LLC_MANAGER_API_KEY",
+    "BACKEND_PP_SECURITY_API_KEY",
+    "BACKEND_XERO_CRYPTO_API_KEY",
+    "BACKEND_TIMEOUT_SECONDS",
+    "DISPLAY_TIMEZONE",
+    "SCHEDULER_ENABLED",
 )
 
 
@@ -73,6 +89,9 @@ def portal_env(
 ) -> Iterator[dict[str, str]]:
     """Set every environment variable ``app.main`` requires at startup.
 
+    Also creates the cache schema at ``SQLITE_PATH``, because the ASGI test
+    transport never runs the lifespan that does this in production.
+
     Args:
         monkeypatch: Pytest monkeypatch fixture.
         tmp_db_path: Temp SQLite path used for ``SQLITE_PATH``.
@@ -93,8 +112,9 @@ def portal_env(
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    for key in _OPTIONAL_AUTH_ENV_VARS:
+    for key in (*_OPTIONAL_AUTH_ENV_VARS, *_OPTIONAL_PORTAL_ENV_VARS):
         monkeypatch.delenv(key, raising=False)
+    init_schema(str(tmp_db_path))
     yield env
 
 
@@ -246,8 +266,10 @@ def client(
     """Return an unopened client for the real app, authenticated as an Admin.
 
     Route tests use this client so they exercise handlers rather than auth;
-    an Admin token reaches every route, including ``/admin/*``. Auth
-    behaviour itself is covered in ``tests/unit/test_middleware.py``.
+    an Admin token reaches every route, including ``/admin/*``. A test that
+    needs another identity passes its own ``X-authentik-jwt`` header, which
+    replaces this default for that request. Auth behaviour itself is covered
+    in ``tests/unit/test_middleware.py``.
 
     Args:
         portal_env: Populates the required env vars before the app loads.

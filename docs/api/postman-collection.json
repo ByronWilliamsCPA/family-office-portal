@@ -12,7 +12,7 @@
   ],
   "info": {
     "_postman_id": "family-office-portal-collection",
-    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from four internal backend services behind a SQLite read-through cache. Runs behind Authentik forward auth. Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the full contract.",
+    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from internal backend services behind a SQLite read-through cache. Runs behind Authentik forward auth. Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the full contract.",
     "name": "Family Office Portal",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
@@ -42,7 +42,7 @@
           ],
           "name": "Per-service refresh log",
           "request": {
-            "description": "Return the most recent refresh outcome per backend service.\n\nAuthentication: Admin role only. The Authentik middleware returns 403 for\nany ``/admin`` path unless the verified token's ``groups`` claim holds the\nadmin group (``FO_ADMIN_GROUP``, default ``fo-admin``). Reads the\n``refresh_log`` table populated by the APScheduler jobs.\n\nReturns:\n    RefreshStatusResponse: One entry per tracked backend.",
+            "description": "Return the latest success and failure per backend service.\n\nAuthentication: Admin only (ADR-005). Services that have never run are\nomitted.\n\nReturns:\n    RefreshStatusResponse: One entry per service that has run.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -96,7 +96,7 @@
               },
               "raw": "{\n  \"force\": true\n}"
             },
-            "description": "Enqueue an out-of-band refresh for the named backend service.\n\nAuthentication: Admin role only, enforced by the Authentik middleware\n(see ``refresh_status``). Phase 0 returns a stub response; Phase 1 will\ndispatch to the APScheduler job for the matching service (``entities``,\n``holdings``, ``positions``, ``documents``).\n\nArgs:\n    service (Literal[\"entities\", \"holdings\", \"positions\", \"documents\"]):\n        Backend service identifier to refresh.\n    body (RefreshTriggerRequest): Trigger options; set ``force`` to\n        bypass the staleness check.\n\nReturns:\n    RefreshTriggerResponse: Confirmation of the scheduling decision.",
+            "description": "Run the named refresh job after the response is sent.\n\nAuthentication: Admin only (ADR-005).\n\nArgs:\n    service (Literal[\"entities\", \"holdings\", \"positions\", \"documents\"]):\n        Dataset to refresh.\n    body (RefreshTriggerRequest): Trigger options. Refreshes always run\n        now; ``force`` is echoed for compatibility.\n    background (BackgroundTasks): FastAPI background task queue.\n\nReturns:\n    RefreshTriggerResponse: Confirmation that the job was queued.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -143,7 +143,7 @@
                 "exec": [
                   "const authed = Boolean(pm.variables.get('authentikJwt'));",
                   "pm.test('status is in the expected range', function () {",
-                  "    const expected = authed ? [200] : [403];",
+                  "    const expected = authed ? [200, 422] : [403];",
                   "    pm.expect(expected).to.include(pm.response.code);",
                   "});"
                 ],
@@ -151,9 +151,9 @@
               }
             }
           ],
-          "name": "List document folders",
+          "name": "Document folders",
           "request": {
-            "description": "Render the document folder view.\n\nAuthentication: Viewer or Admin via Authentik. Data is read from\nthe SQLite cache populated by the ``refresh_documents`` job; the route\nnever calls the upstream ``family_office`` service directly (ADR-003).\n\nReturns:\n    HTMLResponse: Placeholder folder listing page.",
+            "description": "Render documents grouped by category, with optional name search.\n\nWorks without JavaScript: the search form submits here with ``q``.\nAuthentication: Viewer or Admin (ADR-005). Viewers never see\nconfidential documents.\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n\nReturns:\n    Response: Rendered documents page.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -169,7 +169,63 @@
               "path": [
                 "documents"
               ],
+              "query": [
+                {
+                  "description": "Optional name search.",
+                  "disabled": true,
+                  "key": "q",
+                  "value": ""
+                }
+              ],
               "raw": "{{baseUrl}}/documents"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const authed = Boolean(pm.variables.get('authentikJwt'));",
+                  "pm.test('status is in the expected range', function () {",
+                  "    const expected = authed ? [200, 422] : [403];",
+                  "    pm.expect(expected).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Search documents by name (HTMX partial)",
+          "request": {
+            "description": "Return the search results fragment used by the Documents page.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
+            "header": [
+              {
+                "key": "X-authentik-jwt",
+                "type": "text",
+                "value": "{{authentikJwt}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                "search"
+              ],
+              "query": [
+                {
+                  "description": "Text to find in names.",
+                  "disabled": false,
+                  "key": "q",
+                  "value": "example"
+                }
+              ],
+              "raw": "{{baseUrl}}/documents/search"
             }
           },
           "response": []
@@ -195,57 +251,9 @@
               }
             }
           ],
-          "name": "Search documents by name",
+          "name": "Download a document",
           "request": {
-            "description": "Return documents whose name matches ``q``.\n\nAuthentication: Viewer or Admin via Authentik. Designed as an HTMX\npartial in Phase 1; the JSON shape is returned at Phase 0 so the contract\nis OpenAPI-described from the start.\n\nArgs:\n    q (Annotated[str, Query(min_length=1, description=\"Free-text search query.\")]):\n        Free-text query string; must be at least one character.\n\nReturns:\n    DocumentSearchResponse: Matching documents in ranked order.",
-            "header": [
-              {
-                "key": "X-authentik-jwt",
-                "type": "text",
-                "value": "{{authentikJwt}}"
-              }
-            ],
-            "method": "GET",
-            "url": {
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "documents",
-                "search"
-              ],
-              "query": [
-                {
-                  "description": "Free-text search query.",
-                  "disabled": false,
-                  "key": "q",
-                  "value": "example"
-                }
-              ],
-              "raw": "{{baseUrl}}/documents/search"
-            }
-          },
-          "response": []
-        },
-        {
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "const authed = Boolean(pm.variables.get('authentikJwt'));",
-                  "pm.test('status is in the expected range', function () {",
-                  "    const expected = authed ? [200, 422] : [403];",
-                  "    pm.expect(expected).to.include(pm.response.code);",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "name": "Download original document",
-          "request": {
-            "description": "Stream the original document as a file download.\n\nAuthentication: Viewer or Admin via Authentik. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content with a\n``Content-Disposition: attachment`` header.\n\nArgs:\n    document_id (str): Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder binary response.",
+            "description": "Download a document.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -284,7 +292,12 @@
                   "pm.test('status is in the expected range', function () {",
                   "    const expected = authed ? [200, 422] : [403];",
                   "    pm.expect(expected).to.include(pm.response.code);",
-                  "});"
+                  "});",
+                  "if (authed) {",
+                  "    pm.test('response body is valid JSON', function () {",
+                  "        pm.response.to.have.jsonBody();",
+                  "    });",
+                  "}"
                 ],
                 "type": "text/javascript"
               }
@@ -292,7 +305,7 @@
           ],
           "name": "Inline document preview",
           "request": {
-            "description": "Stream a PDF preview proxied from the ``family_office`` backend.\n\nAuthentication: Viewer or Admin via Authentik. Phase 0 returns an\nempty placeholder; Phase 1 will stream upstream content.\n\nArgs:\n    document_id (str): Opaque document identifier sourced from the cache.\n\nReturns:\n    Response: Placeholder PDF response.",
+            "description": "Show a document inline.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -342,9 +355,9 @@
               }
             }
           ],
-          "name": "List entities",
+          "name": "Entity list",
           "request": {
-            "description": "Render the entity list with compliance status.\n\nAuthentication: Viewer or Admin via Authentik. Reads the cached\n``entities`` dataset sourced from the ``llc-manager`` backend.\n\nReturns:\n    HTMLResponse: Placeholder entity list page.",
+            "description": "Render every cached LLC and trust.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered entity list.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -383,7 +396,7 @@
           ],
           "name": "Entity detail",
           "request": {
-            "description": "Render a single entity detail view.\n\nAuthentication: Viewer or Admin via Authentik. Raw identifiers\nare not surfaced to primary users (see CLAUDE.md frontend conventions);\nPhase 1 will render a plain-English summary backed by the cache.\n\nArgs:\n    entity_id (str): Opaque entity identifier sourced from the cache.\n\nReturns:\n    HTMLResponse: Placeholder entity detail page.",
+            "description": "Render one entity with its documents.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n    entity_id (str): Entity identifier.\n\nReturns:\n    Response: Rendered entity page.\n\nRaises:\n    HTTPException: 404 when the entity is not cached.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -432,9 +445,9 @@
               }
             }
           ],
-          "name": "Net worth and asset allocation",
+          "name": "Account totals and digital currency",
           "request": {
-            "description": "Render the finances dashboard.\n\nAuthentication: Viewer or Admin via Authentik. Aggregates the\n``holdings`` dataset (``pp-security-master``) with the ``positions``\ndataset (``xero_crypto``) from the SQLite cache.\n\nReturns:\n    HTMLResponse: Placeholder finances page.",
+            "description": "Render account totals and crypto positions from the cache.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered finances page.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -517,7 +530,7 @@
           ],
           "name": "Home dashboard",
           "request": {
-            "description": "Render the landing dashboard.\n\nAuthentication: Viewer or Admin via Authentik (see ADR-005). Phase 0\nreturns a static HTML placeholder; Phase 1 will swap in a Jinja2 template\nthat aggregates the five sections.\n\nReturns:\n    HTMLResponse: Placeholder dashboard page.",
+            "description": "Render the landing dashboard: totals, upcoming dates, recent documents.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered dashboard page.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -557,9 +570,9 @@
               }
             }
           ],
-          "name": "Holdings and performance",
+          "name": "Holdings",
           "request": {
-            "description": "Render the portfolio page.\n\nAuthentication: Viewer or Admin via Authentik. Reads the cached\n``holdings`` and ``performance`` datasets sourced from the\n``pp-security-master`` backend.\n\nReturns:\n    HTMLResponse: Placeholder portfolio page.",
+            "description": "Render cached holdings from pp-security-master.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered portfolio page.",
             "header": [
               {
                 "key": "X-authentik-jwt",

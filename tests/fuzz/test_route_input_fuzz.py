@@ -9,13 +9,13 @@ diverse inputs beyond mutation testing); see the organization's standards
 manifest, checks OSSF-011 / OSSF-013 (no copy of the manifest lives in this
 repository).
 
-The routes exercised here are Phase 0 placeholders that discard their inputs
-after FastAPI/Pydantic validation runs (``_ = document_id`` etc.). These
-tests assert the contract that must hold in every phase regardless of what
-the handler body eventually does: validated input never produces an
-unhandled exception (HTTP 5xx) reaching the ASGI boundary, and the
-validation boundary itself (``min_length``, ``Literal`` membership, JSON body
-shape) rejects invalid input with 422 rather than silently accepting it.
+The routes exercised here read the SQLite cache, which the fixture leaves
+empty. These tests assert the contract that must hold in every phase
+regardless of what the handler body eventually does: validated input never
+produces an unhandled exception (HTTP 5xx) reaching the ASGI boundary, and
+the validation boundary itself (``min_length``, ``max_length``, ``Literal``
+membership, JSON body shape) rejects invalid input with 422 rather than
+silently accepting it.
 
 The shared ``client`` fixture sends a valid Admin ``X-authentik-jwt`` token
 (see ``tests/conftest.py``), so every request passes the Authentik middleware
@@ -55,6 +55,8 @@ settings.load_profile("ci" if os.environ.get("CI") else "dev")
 # dependency the fixture-reuse health check is designed to catch).
 _SUPPRESS = (HealthCheck.function_scoped_fixture,)
 _MAX_EXAMPLES = 100
+# ``max_length`` of the ``q`` query parameter on ``/documents/search``.
+_SEARCH_MAX_LENGTH = 200
 
 # Adversarial payloads known to break naive input handling: path traversal,
 # null-byte truncation, injection markers, oversized input, and non-ASCII
@@ -126,13 +128,13 @@ def _path_segment_text() -> st.SearchStrategy[str]:
 async def test_document_preview_path_param_never_crashes(
     client: AsyncClient, document_id: str
 ) -> None:
-    """Any opaque ``document_id`` must route and return 200.
+    """Any opaque ``document_id`` must route and return 404, never a 5xx.
 
-    The Phase 0 handler (``app/routes/documents.py::document_preview``)
-    accepts any single path segment and discards it (``_ = document_id``)
-    without an existence check, so every routable identifier returns 200;
-    there is no code path that legitimately 404s here yet. Phase 1 may
-    introduce a real existence check once ``app/cache.py`` exists.
+    The handler (``app/routes/documents.py::document_preview``) looks the
+    identifier up in the SQLite cache before anything else. The fixture
+    cache is empty, so every routable identifier is unknown and must get
+    the 404 page; the 503 "not yet available" answer is reserved for a
+    document that exists, which none does here.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
@@ -140,7 +142,7 @@ async def test_document_preview_path_param_never_crashes(
     """
     encoded = quote(document_id, safe="")
     response = await client.get(f"/documents/{encoded}/preview")
-    assert response.status_code == status.HTTP_200_OK
+    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 @given(document_id=_path_segment_text())
@@ -148,13 +150,13 @@ async def test_document_preview_path_param_never_crashes(
 async def test_document_download_path_param_never_crashes(
     client: AsyncClient, document_id: str
 ) -> None:
-    """Any opaque ``document_id`` must route and return 200.
+    """Any opaque ``document_id`` must route and return 404, never a 5xx.
 
-    The Phase 0 handler (``app/routes/documents.py::document_download``)
-    accepts any single path segment and discards it (``_ = document_id``)
-    without an existence check, so every routable identifier returns 200;
-    there is no code path that legitimately 404s here yet. Phase 1 may
-    introduce a real existence check once ``app/cache.py`` exists.
+    The handler (``app/routes/documents.py::document_download``) looks the
+    identifier up in the SQLite cache before anything else. The fixture
+    cache is empty, so every routable identifier is unknown and must get
+    the 404 page; the 503 "not yet available" answer is reserved for a
+    document that exists, which none does here.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
@@ -162,7 +164,7 @@ async def test_document_download_path_param_never_crashes(
     """
     encoded = quote(document_id, safe="")
     response = await client.get(f"/documents/{encoded}/download")
-    assert response.status_code == status.HTTP_200_OK
+    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 @given(entity_id=_path_segment_text())
@@ -170,13 +172,11 @@ async def test_document_download_path_param_never_crashes(
 async def test_entity_detail_path_param_never_crashes(
     client: AsyncClient, entity_id: str
 ) -> None:
-    """Any opaque ``entity_id`` must route and return 200.
+    """Any opaque ``entity_id`` must route and return 404, never a 5xx.
 
-    The Phase 0 handler (``app/routes/entities.py::entity_detail``) accepts
-    any single path segment and discards it (``_ = entity_id``) without an
-    existence check, so every routable identifier returns 200; there is no
-    code path that legitimately 404s here yet. Phase 1 may introduce a real
-    existence check once ``app/cache.py`` exists.
+    The handler (``app/routes/entities.py::entity_detail``) looks the
+    identifier up in the SQLite cache. The fixture cache is empty, so every
+    routable identifier is unknown and must get the 404 page.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
@@ -184,7 +184,7 @@ async def test_entity_detail_path_param_never_crashes(
     """
     encoded = quote(entity_id, safe="")
     response = await client.get(f"/entities/{encoded}")
-    assert response.status_code == status.HTTP_200_OK
+    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 @given(query=_adversarial_text(max_size=500))
@@ -192,22 +192,22 @@ async def test_entity_detail_path_param_never_crashes(
 async def test_document_search_query_validation_boundary(
     client: AsyncClient, query: str
 ) -> None:
-    """``q`` enforces ``min_length=1``: empty always 422, non-empty always 200.
+    """``q`` enforces ``min_length=1`` and ``max_length=200``.
 
-    This asserts the validation boundary itself, not just the absence of a
-    crash: the purpose of ``Query(min_length=1)`` is to reject empty input,
-    and a fuzz test that only checked "no 500" would miss a regression that
-    silently disabled the constraint.
+    Empty or over-long input is always 422; anything in between is always
+    200. This asserts the validation boundary itself, not just the absence
+    of a crash: a fuzz test that only checked "no 500" would miss a
+    regression that silently disabled either constraint.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
         query (str): Hypothesis-generated free-text search query.
     """
     response = await client.get("/documents/search", params={"q": query})
-    if len(query) == 0:
-        assert response.status_code == 422
-    else:
+    if 1 <= len(query) <= _SEARCH_MAX_LENGTH:
         assert response.status_code == 200
+    else:
+        assert response.status_code == 422
 
 
 @given(service=_path_segment_text())

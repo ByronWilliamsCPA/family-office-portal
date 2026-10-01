@@ -1,29 +1,46 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""Finances section route (net worth and asset allocation)."""
+"""Finances section route."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse
+from starlette.responses import (
+    Response,  # noqa: TC002  # FastAPI reads return annotations at runtime
+)
+
+from app import cache
+from app.routes._context import balances_summary, freshness
+from app.templating import render
 
 router = APIRouter(tags=["finances"])
 
 
 @router.get(
     "/finances",
-    summary="Net worth and asset allocation",
+    summary="Account totals and digital currency",
     response_class=HTMLResponse,
     status_code=status.HTTP_200_OK,
 )
-async def finances() -> HTMLResponse:
-    """Render the finances dashboard.
+async def finances(request: Request) -> Response:
+    """Render account totals and crypto positions from the cache.
 
-    Authentication: Viewer or Admin via Authentik. Aggregates the
-    ``holdings`` dataset (``pp-security-master``) with the ``positions``
-    dataset (``xero_crypto``) from the SQLite cache.
+    Authentication: Viewer or Admin (ADR-005).
+
+    Args:
+        request (Request): Current request.
 
     Returns:
-        HTMLResponse: Placeholder finances page.
+        Response: Rendered finances page.
     """
-    return HTMLResponse("<h1>Finances</h1>")
+    positions_state = await freshness("positions")
+    return render(
+        request,
+        "pages/finances.html",
+        section="finances",
+        positions=await cache.get_positions(),
+        positions_updated=positions_state["updated"],
+        positions_stale=positions_state["stale"],
+        **(await balances_summary()),
+    )

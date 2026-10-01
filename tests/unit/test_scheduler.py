@@ -7,7 +7,7 @@ Spec contract (``CLAUDE.md`` "Tech stack conventions" + tech-spec §4):
 
 * Four refresh jobs: ``refresh_entities`` (llc-manager), ``refresh_holdings``
   (pp-security-master), ``refresh_positions`` (xero_crypto),
-  ``refresh_documents`` (family_office).
+  ``refresh_documents`` (llc-manager documents; previously family_office).
 * Use synchronous ``httpx.Client`` for outbound calls.
 * Write fetched rows to SQLite with a ``fetched_at`` timestamp.
 * Audit each run in the ``refresh_log`` table with status ``success`` or ``error``.
@@ -20,6 +20,7 @@ Tests mock ``httpx`` to avoid real network calls. Real SQLite is used per
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -283,12 +284,12 @@ def test_refresh_positions_preserves_cache_on_failure(
 
 
 # --------------------------------------------------------------------------- #
-# refresh_documents (family_office)
+# refresh_documents (llc-manager documents)
 # --------------------------------------------------------------------------- #
 
 
 def test_refresh_documents_writes_rows_to_cache(initialized_db: Path) -> None:
-    """A successful family_office fetch lands rows in documents.
+    """A successful llc-manager documents fetch lands rows in documents.
 
     # noqa
     """
@@ -312,7 +313,7 @@ def test_refresh_documents_writes_rows_to_cache(initialized_db: Path) -> None:
 def test_refresh_documents_preserves_cache_on_failure(
     initialized_db: Path,
 ) -> None:
-    """A family_office 5xx must not wipe existing cached documents.
+    """An llc-manager documents 5xx must not wipe existing cached documents.
 
     # noqa
     """
@@ -337,7 +338,250 @@ def test_refresh_documents_preserves_cache_on_failure(
         ]
         log = conn.execute(
             "SELECT status FROM refresh_log "
-            "WHERE service = 'family_office' ORDER BY id DESC LIMIT 1"
+            "WHERE service = 'llc-manager-documents' ORDER BY id DESC LIMIT 1"
         ).fetchall()
     assert "Will.pdf" in names
     assert log and log[0][0] == "error"
+
+
+# --------------------------------------------------------------------------- #
+# Backend contract details
+# --------------------------------------------------------------------------- #
+
+
+def test_refresh_entities_accepts_llc_manager_paged_shape(
+    initialized_db: Path,
+) -> None:
+    """llc-manager returns ``{items, total}`` with ``legal_name`` fields.
+
+    # noqa
+    """
+    payload = {
+        "items": [
+            {
+                "id": "3f0c",
+                "legal_name": "Sample Holdings LLC",
+                "entity_type": "llc",
+                "formation_state": "WY",
+                "is_active": True,
+            }
+        ],
+        "total": 1,
+    }
+    with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        row = conn.execute("SELECT name, type, state, status FROM entities").fetchone()
+    assert row == ("Sample Holdings LLC", "llc", "WY", "active")
+
+
+def test_refresh_sends_backend_api_key(
+    initialized_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each job sends the per-service API key.
+
+    # noqa
+    """
+    del initialized_db
+    api_key = secrets.token_urlsafe(16)
+    monkeypatch.setenv("BACKEND_LLC_MANAGER_API_KEY", api_key)
+    with patch(
+        "httpx.Client", return_value=_mock_client(_mock_response([]))
+    ) as client_cls:
+        scheduler.refresh_entities()
+    headers = client_cls.call_args.kwargs["headers"]
+    assert headers["X-API-Key"] == api_key
+
+
+def test_refresh_without_api_key_sends_no_key_header(initialized_db: Path) -> None:
+    """An unset backend API key sends no ``X-API-Key`` header at all.
+
+    # noqa
+    """
+    del initialized_db
+    with patch(
+        "httpx.Client", return_value=_mock_client(_mock_response([]))
+    ) as client_cls:
+        scheduler.refresh_entities()
+    headers = client_cls.call_args.kwargs["headers"]
+    assert "X-API-Key" not in headers
+    assert headers["Accept"] == "application/json"
+
+
+def test_refresh_documents_maps_type_to_category_and_flags_confidential(
+    initialized_db: Path,
+) -> None:
+    """Documents without a category get one from ``document_type``.
+
+    # noqa
+    """
+    payload = {
+        "items": [
+            {
+                "id": "d1",
+                "title": "2025 Form 1065",
+                "document_type": "tax_return",
+                "entity_id": "e1",
+                "is_confidential": True,
+            },
+            {
+                "id": "d2",
+                "title": "Operating Agreement",
+                "document_type": "operating_agreement",
+            },
+        ],
+        "total": 2,
+    }
+    with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
+        scheduler.refresh_documents()
+    with sqlite3.connect(initialized_db) as conn:
+        rows = {
+            r[0]: r[1:]
+            for r in conn.execute(
+                "SELECT id, category, is_confidential, proxy_url FROM documents"
+            )
+        }
+    assert rows["d1"] == ("Tax Returns", 1, "/documents/d1/preview")
+    assert rows["d2"][0] == "LLCs"
+
+
+def test_refresh_logs_error_on_unexpected_payload(initialized_db: Path) -> None:
+    """A payload of the wrong shape is logged as an error, not raised.
+
+    # noqa
+    """
+    with patch("httpx.Client", return_value=_mock_client(_mock_response("nope"))):
+        scheduler.refresh_positions()
+    with sqlite3.connect(initialized_db) as conn:
+        status = conn.execute(
+            "SELECT status FROM refresh_log WHERE service = 'xero_crypto'"
+        ).fetchone()
+    assert status == ("error",)
+
+
+def test_refresh_logs_error_on_connection_failure(initialized_db: Path) -> None:
+    """A transport error is logged as an error.
+
+    # noqa
+    """
+    client = _mock_client(_mock_response([]))
+    client.get.side_effect = httpx.ConnectError("down")
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        status = conn.execute(
+            "SELECT status, message FROM refresh_log WHERE service = 'llc-manager'"
+        ).fetchone()
+    assert status[0] == "error"
+    assert "ConnectError" in status[1]
+
+
+def test_build_scheduler_registers_every_job() -> None:
+    """The scheduler has one job per dataset, none running concurrently.
+
+    # noqa
+    """
+    sched = scheduler.build_scheduler()
+    jobs = {job.id: job for job in sched.get_jobs()}
+    assert set(jobs) == set(scheduler.JOBS)
+    assert all(job.max_instances == 1 for job in jobs.values())
+
+
+def test_refresh_follows_pages_until_total(initialized_db: Path) -> None:
+    """A paged backend is read page by page until ``total`` rows arrive.
+
+    # noqa
+    """
+    pages = [
+        {"items": [{"id": "e1", "name": "Alpha LLC"}], "total": 2},
+        {"items": [{"id": "e2", "name": "Beta LLC"}], "total": 2},
+    ]
+    client = _mock_client(_mock_response(None))
+    client.get.side_effect = [_mock_response(p) for p in pages]
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        ids = {r[0] for r in conn.execute("SELECT id FROM entities")}
+    assert ids == {"e1", "e2"}
+    assert client.get.call_args_list[1].kwargs["params"] == {
+        "page": 2,
+        "size": scheduler._PAGE_SIZE,  # noqa: SLF001
+    }
+
+
+def test_refresh_keeps_cache_when_pages_fall_short(initialized_db: Path) -> None:
+    """An empty page before ``total`` fails the refresh and keeps old rows.
+
+    # noqa
+    """
+    with sqlite3.connect(initialized_db) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, fetched_at) VALUES ('old', 'Old LLC', 'x')"
+        )
+        conn.commit()
+    client = _mock_client(_mock_response(None))
+    client.get.side_effect = [
+        _mock_response({"items": [{"id": "e1", "name": "Alpha LLC"}], "total": 3}),
+        _mock_response({"items": [], "total": 3}),
+    ]
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        ids = {r[0] for r in conn.execute("SELECT id FROM entities")}
+        status = conn.execute(
+            "SELECT status, message FROM refresh_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert ids == {"old"}
+    assert status[0] == "error"
+    assert "partial" in status[1]
+
+
+def test_refresh_refuses_too_many_pages(
+    initialized_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backend that never reaches ``total`` is stopped at the page cap.
+
+    # noqa
+    """
+    monkeypatch.setattr(scheduler, "_MAX_PAGES", 2)
+    client = _mock_client(
+        _mock_response({"items": [{"id": "e1", "name": "Alpha LLC"}], "total": 99})
+    )
+    with patch("httpx.Client", return_value=client):
+        scheduler.refresh_entities()
+    with sqlite3.connect(initialized_db) as conn:
+        status = conn.execute(
+            "SELECT status, message FROM refresh_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert status[0] == "error"
+    assert "pages" in status[1]
+
+
+def test_refresh_skips_when_same_service_is_running(initialized_db: Path) -> None:
+    """A second run of a service that is already running does nothing.
+
+    # noqa
+    """
+    lock = scheduler._service_lock("llc-manager")  # noqa: SLF001
+    assert lock.acquire(blocking=False)
+    try:
+        with patch("httpx.Client") as client_cls:
+            scheduler.refresh_entities()
+        client_cls.assert_not_called()
+    finally:
+        lock.release()
+    with sqlite3.connect(initialized_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM refresh_log").fetchone()[0] == 0
+
+
+def test_unknown_document_type_defaults_to_other(initialized_db: Path) -> None:
+    """A document type the portal does not know is filed under "Other".
+
+    # noqa
+    """
+    payload = {"items": [{"id": "d9", "title": "Will", "document_type": "will"}]}
+    with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
+        scheduler.refresh_documents()
+    with sqlite3.connect(initialized_db) as conn:
+        row = conn.execute("SELECT category FROM documents WHERE id='d9'").fetchone()
+    assert row[0] == "Other"

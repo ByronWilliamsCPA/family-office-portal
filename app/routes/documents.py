@@ -1,115 +1,170 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""Document folder routes (proxy to ``family_office`` backend)."""
+"""Documents section routes: folders, name search, preview, and download."""
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
-from fastapi import APIRouter, Query, status
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse
+from starlette.responses import (
+    Response,  # noqa: TC002  # FastAPI reads return annotations at runtime
+)
 
-from app.models import DocumentSearchResponse
+from app import cache
+from app.routes._context import freshness, include_confidential
+from app.templating import render, templates
+
+if TYPE_CHECKING:
+    import aiosqlite
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+OptionalSearch = Annotated[
+    str | None, Query(max_length=200, description="Optional name search.")
+]
+RequiredSearch = Annotated[
+    str, Query(min_length=1, max_length=200, description="Text to find in names.")
+]
+
+
+def _group_by_category(
+    documents: list[aiosqlite.Row],
+) -> list[tuple[str, list[aiosqlite.Row]]]:
+    groups: dict[str, list[aiosqlite.Row]] = {}
+    for doc in documents:
+        groups.setdefault(str(doc["category"]), []).append(doc)
+    return sorted(groups.items())
 
 
 @router.get(
     "",
-    summary="List document folders",
+    summary="Document folders",
     response_class=HTMLResponse,
     status_code=status.HTTP_200_OK,
 )
-async def documents_index() -> HTMLResponse:
-    """Render the document folder view.
+async def documents_index(
+    request: Request,
+    q: OptionalSearch = None,
+) -> Response:
+    """Render documents grouped by category, with optional name search.
 
-    Authentication: Viewer or Admin via Authentik. Data is read from
-    the SQLite cache populated by the ``refresh_documents`` job; the route
-    never calls the upstream ``family_office`` service directly (ADR-003).
+    Works without JavaScript: the search form submits here with ``q``.
+    Authentication: Viewer or Admin (ADR-005). Viewers never see
+    confidential documents.
+
+    Args:
+        request (Request): Current request.
+        q (OptionalSearch): Optional name search text.
 
     Returns:
-        HTMLResponse: Placeholder folder listing page.
+        Response: Rendered documents page.
     """
-    return HTMLResponse("<h1>Documents</h1>")
+    admin = include_confidential(request)
+    documents = await cache.get_documents(include_confidential=admin)
+    query = (q or "").strip()
+    results = (
+        await cache.search_documents(query, include_confidential=admin) if query else []
+    )
+    return render(
+        request,
+        "pages/documents.html",
+        section="documents",
+        categories=_group_by_category(documents),
+        query=query,
+        documents=results,
+        **(await freshness("documents")),
+    )
 
 
 @router.get(
     "/search",
-    summary="Search documents by name",
+    summary="Search documents by name (HTMX partial)",
+    response_class=HTMLResponse,
     status_code=status.HTTP_200_OK,
 )
 async def documents_search(
-    q: Annotated[str, Query(min_length=1, description="Free-text search query.")],
-) -> DocumentSearchResponse:
-    """Return documents whose name matches ``q``.
-
-    Authentication: Viewer or Admin via Authentik. Designed as an HTMX
-    partial in Phase 1; the JSON shape is returned at Phase 0 so the contract
-    is OpenAPI-described from the start.
+    request: Request,
+    q: RequiredSearch,
+) -> Response:
+    """Return the search results fragment used by the Documents page.
 
     Args:
-        q (Annotated[str, Query(min_length=1, description="Free-text search query.")]):
-            Free-text query string; must be at least one character.
+        request (Request): Current request.
+        q (RequiredSearch): Text to find in document names.
 
     Returns:
-        DocumentSearchResponse: Matching documents in ranked order.
+        Response: HTML fragment listing matching documents.
     """
-    _ = q
-    return DocumentSearchResponse(hits=[])
+    query = q.strip()
+    results = await cache.search_documents(
+        query, include_confidential=include_confidential(request)
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/document_results.html",
+        {"query": query, "documents": results},
+    )
+
+
+async def _require_document(request: Request, document_id: str) -> aiosqlite.Row:
+    documents = await cache.get_documents(
+        include_confidential=include_confidential(request)
+    )
+    for doc in documents:
+        if doc["id"] == document_id:
+            return doc
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
 @router.get(
     "/{document_id}/preview",
     summary="Inline document preview",
-    status_code=status.HTTP_200_OK,
-    response_class=Response,
+    response_model=None,
     responses={
-        200: {
-            "content": {"application/pdf": {}},
-            "description": "PDF preview stream.",
-        },
+        404: {"description": "Document not found"},
+        503: {"description": "Not yet available"},
     },
 )
-async def document_preview(document_id: str) -> Response:
-    """Stream a PDF preview proxied from the ``family_office`` backend.
+async def document_preview(request: Request, document_id: str) -> NoReturn:
+    """Show a document inline.
 
-    Authentication: Viewer or Admin via Authentik. Phase 0 returns an
-    empty placeholder; Phase 1 will stream upstream content.
+    The planned file proxy to llc-manager is not built yet; until it is, a known
+    document returns 503.
 
     Args:
-        document_id (str): Opaque document identifier sourced from the cache.
+        request (Request): Current request.
+        document_id (str): Document identifier.
 
-    Returns:
-        Response: Placeholder PDF response.
+    Raises:
+        HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.
     """
-    _ = document_id
-    return Response(content=b"", media_type="application/pdf")
+    await _require_document(request, document_id)
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 @router.get(
     "/{document_id}/download",
-    summary="Download original document",
-    status_code=status.HTTP_200_OK,
-    response_class=Response,
+    summary="Download a document",
+    response_model=None,
     responses={
-        200: {
-            "content": {"application/octet-stream": {}},
-            "description": "Binary document download.",
-        },
+        404: {"description": "Document not found"},
+        503: {"description": "Not yet available"},
     },
 )
-async def document_download(document_id: str) -> Response:
-    """Stream the original document as a file download.
+async def document_download(request: Request, document_id: str) -> NoReturn:
+    """Download a document.
 
-    Authentication: Viewer or Admin via Authentik. Phase 0 returns an
-    empty placeholder; Phase 1 will stream upstream content with a
-    ``Content-Disposition: attachment`` header.
+    The planned file proxy to llc-manager is not built yet; until it is, a known
+    document returns 503.
 
     Args:
-        document_id (str): Opaque document identifier sourced from the cache.
+        request (Request): Current request.
+        document_id (str): Document identifier.
 
-    Returns:
-        Response: Placeholder binary response.
+    Raises:
+        HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.
     """
-    _ = document_id
-    return Response(content=b"", media_type="application/octet-stream")
+    await _require_document(request, document_id)
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)

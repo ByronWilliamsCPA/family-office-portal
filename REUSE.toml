@@ -10,3 +10,11 @@ version = 1
 path = ["**", "*"]
 SPDX-FileCopyrightText = "2026 Byron Williams <byronawilliams@gmail.com>"
 SPDX-License-Identifier = "MIT"
+
+# Vendored HTMX 2.0.4 (https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js,
+# sha256 e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447).
+[[annotations]]
+path = "static/htmx.min.js"
+precedence = "override"
+SPDX-FileCopyrightText = "2020 Big Sky Software"
+SPDX-License-Identifier = "0BSD"

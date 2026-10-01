@@ -84,9 +84,12 @@ def test_app_attribute_is_a_fastapi_instance(
 def test_missing_env_var_causes_startup_failure(
     portal_env: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     missing: str,
 ) -> None:
     """Per ``CLAUDE.md``: a missing required env var must cause ``sys.exit(1)``.
+
+    The variable's name, never its value, is printed to stderr.
 
     # noqa
     """
@@ -98,6 +101,7 @@ def test_missing_env_var_causes_startup_failure(
     with pytest.raises(SystemExit) as exc_info:
         importlib.reload(main)
     assert exc_info.value.code == 1
+    assert missing in capsys.readouterr().err
 
 
 @phase1
@@ -114,3 +118,15 @@ def test_static_files_mount_is_registered(
     importlib.reload(main)
     routes = [getattr(r, "path", "") for r in main.app.routes]
     assert any(path.startswith("/static") for path in routes)
+
+
+def test_openapi_schema_builds(portal_env: dict[str, str]) -> None:
+    """The OpenAPI document renders; every route annotation resolves at runtime.
+
+    # noqa
+    """
+    del portal_env
+    main = importlib.import_module("app.main")
+    importlib.reload(main)
+    schema = main.app.openapi()
+    assert "/documents/search" in schema["paths"]

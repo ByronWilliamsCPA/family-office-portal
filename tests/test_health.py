@@ -3,7 +3,7 @@
 # ruff: noqa: PLC0415
 """Health endpoint smoke test.
 
-Verifies the Phase 0 liveness probe returns HTTP 200 with status and service
+Verifies the liveness probe returns HTTP 200 with status and service
 name. Acts as the first integration test that exercises the FastAPI app,
 Authentik auth middleware (``/health`` is public), and ASGI plumbing end to
 end.
