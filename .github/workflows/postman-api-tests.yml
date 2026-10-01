@@ -3,25 +3,31 @@
 #
 # Newman (Postman CLI) contract tests against the Phase 0 stub API.
 #
-# Required GitHub Actions secrets for the FastAPI app to boot:
+# Environment variables the FastAPI app needs to boot:
 #
 #   BACKEND_LLC_MANAGER_URL    Base URL of the llc-manager backend.
 #   BACKEND_PP_SECURITY_URL    Base URL of the pp-security-master backend.
 #   BACKEND_XERO_CRYPTO_URL    Base URL of the xero_crypto backend.
 #   BACKEND_FAMILY_OFFICE_URL  Base URL of the family_office backend.
-#   AUTHENTIK_JWKS_URL         https JWKS URL of the Authentik proxy provider.
+#   AUTHENTIK_JWT_SECRET       HS256 key for X-authentik-jwt; generated per run
+#                              here, never read from a repository secret.
 #   AUTHENTIK_ISSUER           Expected ``iss`` claim of X-authentik-jwt.
 #   AUTHENTIK_AUDIENCE         Expected ``aud`` claim (provider client ID).
 #   SQLITE_PATH                Filesystem path to the SQLite cache database.
 #
 # In this workflow the variables are seeded with harmless placeholder values
-# so that no real credentials are hardcoded. Override any of the above in the
-# repository's Actions secrets to point Newman at a non-stub environment.
+# so that no real credentials are hardcoded. AUTHENTIK_JWT_SECRET has no
+# placeholder: a step generates a random value with openssl on every run, so
+# no secret literal lives in this file, and it must never be set from a
+# repository secret. The production client secret must never be stored as a
+# repository Actions secret, because a holder of it can forge the forwarded
+# identity token. The other variables can be overridden in the repository's
+# Actions secrets to point Newman at a non-stub environment.
 #
 # Newman sends no identity token, so every protected route must answer 403
 # (the collection's fail-closed contract, ADR-005) and only /health returns
-# 200. The placeholder JWKS URL is never fetched: requests without a token
-# are refused before any key lookup.
+# 200. The generated secret never verifies anything here: requests without a
+# token are denied before any signature verification.
 ---
 name: Postman API Tests
 
@@ -48,7 +54,6 @@ jobs:
       BACKEND_PP_SECURITY_URL: ${{ secrets.BACKEND_PP_SECURITY_URL || 'http://localhost:9002' }}
       BACKEND_XERO_CRYPTO_URL: ${{ secrets.BACKEND_XERO_CRYPTO_URL || 'http://localhost:9003' }}
       BACKEND_FAMILY_OFFICE_URL: ${{ secrets.BACKEND_FAMILY_OFFICE_URL || 'http://localhost:9004' }}
-      AUTHENTIK_JWKS_URL: ${{ secrets.AUTHENTIK_JWKS_URL || 'https://auth.example.invalid/application/o/family-office-portal/jwks/' }}
       AUTHENTIK_ISSUER: ${{ secrets.AUTHENTIK_ISSUER || 'https://auth.example.invalid/application/o/family-office-portal/' }}
       AUTHENTIK_AUDIENCE: ${{ secrets.AUTHENTIK_AUDIENCE || 'placeholder-client-id' }}
       SQLITE_PATH: ${{ secrets.SQLITE_PATH || '/tmp/portal.db' }}
@@ -85,6 +90,12 @@ jobs:
 
       - name: Install Newman
         run: npm install --global newman@6.2.1
+
+      - name: Generate the auth test secret
+        run: |
+          secret="$(openssl rand -hex 32)"
+          echo "::add-mask::${secret}"
+          echo "AUTHENTIK_JWT_SECRET=${secret}" >> "$GITHUB_ENV"
 
       - name: Start FastAPI app in background
         run: |

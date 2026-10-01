@@ -58,7 +58,7 @@ These rules are non-negotiable, mirrored from CLAUDE.md so non-Claude agents
 (Codex, Cursor, Aider) see them without reading Claude-specific files:
 
 - **Authentik JWT validation** is mandatory: identity comes only from the
-  signed `X-authentik-jwt` header (RS256 signature, `iss`, `aud`, `exp`), never
+  signed `X-authentik-jwt` header (HS256 signature, `iss`, `aud`, `exp`), never
   from plain `X-authentik-*` headers. Skipping any check is a security defect
   tagged `#CRITICAL`. See ADR-005.
 - **Route handlers read from SQLite only.** They must never call backend HTTP

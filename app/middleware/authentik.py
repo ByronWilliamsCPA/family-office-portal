@@ -5,7 +5,7 @@
 Traefik sends every request for the portal to the Authentik embedded outpost
 (forward auth). On success the outpost forwards identity headers to the
 portal. This middleware trusts only the signed ``X-authentik-jwt`` header: it
-verifies the RS256 signature against the proxy provider's JWKS, checks
+verifies the HS256 signature with the proxy provider's client secret, checks
 ``iss``, ``aud``, ``exp`` (plus ``nbf`` and ``iat`` when present) with a
 ``JWT_LEEWAY_SECONDS`` clock-skew allowance, and maps the ``groups`` claim
 to a portal role. Every failure returns 403 (fail closed).
@@ -18,48 +18,45 @@ straight to the portal.
 headers sent next to a valid JWT do not change the principal
 (``tests/unit/test_middleware.py``).
 
-#ASSUME: external resources: the Authentik proxy provider signs
-``X-authentik-jwt`` with an RSA signing key (RS256, Authentik's default
-certificate), includes a ``kid`` header, and publishes the key at
-``AUTHENTIK_JWKS_URL``. A provider with no signing key falls back to HS256
-with the client secret, which this module rejects.
+#ASSUME: external resources: an Authentik proxy provider cannot keep a signing
+key (Authentik resets it to none on every create and update), so it signs
+``X-authentik-jwt`` with HS256 keyed by the provider's client secret, sets no
+``kid`` header and publishes an empty key set. An asymmetric signature is
+therefore impossible for this token and is refused (ADR-005 amendment
+2026-09-29).
 #VERIFY: decode a real header from the deployed outpost and confirm
-``alg == "RS256"``, a ``kid`` that appears in the JWKS, and the ``iss``,
-``aud``, ``preferred_username`` and ``groups`` claims before first
-production use.
+``alg == "HS256"``, ``aud`` equal to the provider's client ID, ``iss`` equal
+to ``AUTHENTIK_ISSUER`` and a ``groups`` claim listing the portal groups
+before first production use.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urlsplit
 
-import httpx
 import jwt
 import structlog
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Iterable, Mapping
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = structlog.get_logger(__name__)
 
 JWT_HEADER = "X-authentik-jwt"
-# #CRITICAL: security: RS256 only. Never add a symmetric algorithm next to an
-# asymmetric one (pyjwt advisory GHSA-jq35-7prp-9v3f, algorithm confusion).
-# #VERIFY: tests/unit/test_middleware.py rejects alg=none and an HS256 token
-# signed with the public key bytes.
-ALLOWED_ALGORITHMS = ("RS256",)
+# #CRITICAL: security: HS256 only; never add an asymmetric algorithm next to
+# it. A verifier that accepts both an asymmetric and a symmetric algorithm is
+# open to algorithm confusion (pyjwt advisory GHSA-jq35-7prp-9v3f); a single
+# symmetric algorithm keyed with a random secret has no public key to confuse.
+# #VERIFY: tests/unit/test_middleware.py refuses alg=none, a validly signed
+# RS256 token with perfect claims, and a token signed with another secret.
+ALLOWED_ALGORITHMS = ("HS256",)
 # Clock-skew allowance for exp, nbf and iat. An Authentik proxy-provider token
 # is not minted per request: its iat and exp come from the session's access
 # token validity, so its iat can be seconds old or, after an NTP step on
@@ -75,17 +72,14 @@ HEALTH_PATH = "/health"
 
 DEFAULT_ADMIN_GROUP = "fo-admin"
 DEFAULT_VIEWER_GROUP = "fo-viewer"
-DEFAULT_JWKS_CACHE_SECONDS = 600
-# Per-operation httpx timeout, plus a total deadline for the whole fetch so a
-# slow-drip response cannot hold the cache lock indefinitely.
-JWKS_FETCH_TIMEOUT_SECONDS = 5.0
-JWKS_FETCH_DEADLINE_SECONDS = 10.0
-# An Authentik JWKS holds a few keys (a few KiB); anything larger is refused.
-JWKS_MAX_BYTES = 64 * 1024
-# A token whose kid is not cached can force at most one JWKS refetch per
-# interval, so forged tokens cannot turn the portal into a JWKS load source.
-MIN_REFETCH_INTERVAL_SECONDS = 30.0
-_MIN_RSA_KEY_BITS = 2048
+# The HMAC key is the provider's client secret, so a short or placeholder value
+# would let anyone on the shared network forge a token. 32 characters is the
+# HS256 key size in bytes.
+MIN_JWT_SECRET_LENGTH = 32
+# Placeholder the deployment stack ships in AUTHENTIK_JWT_SECRET until a real
+# secret is set. It is a known public string, never a credential, and is
+# refused at startup.
+STACK_PLACEHOLDER_VALUE = "CHANGE_ME_IN_PORTAINER"
 
 
 class Role(Enum):
@@ -139,28 +133,68 @@ class AuthError(Exception):
         self.reason = reason
 
 
+def _jwt_secret_from_env(env: Mapping[str, str]) -> str:
+    """Read and validate ``AUTHENTIK_JWT_SECRET`` without altering it.
+
+    The value is deliberately not stripped: stripping would change the HMAC
+    key bytes and make every genuine token fail verification, so a value with
+    leading or trailing whitespace is refused instead.
+
+    Args:
+        env (Mapping[str, str]): Variables to read.
+
+    Returns:
+        str: The secret, byte for byte as configured.
+
+    Raises:
+        AuthConfigError: If the secret is missing, has surrounding
+            whitespace, is the stack placeholder, or is shorter than
+            ``MIN_JWT_SECRET_LENGTH``. The message names the variable and
+            never includes the value.
+    """
+    var = "AUTHENTIK_JWT_SECRET"
+    secret = env.get(var, "")
+    if not secret:
+        msg = f"{var} is required"
+        raise AuthConfigError(msg)
+    if secret != secret.strip():
+        msg = f"{var} must not have leading or trailing whitespace"
+        raise AuthConfigError(msg)
+    # #CRITICAL: security: the secret both signs and verifies, and any
+    # container on the shared network can reach the portal directly, so a
+    # placeholder or short value is exploitable.
+    # #VERIFY: tests/unit/test_middleware.py refuses the placeholder, 31
+    # characters and surrounding whitespace, and accepts exactly 32.
+    if secret == STACK_PLACEHOLDER_VALUE:
+        msg = f"{var} is still the placeholder value"
+        raise AuthConfigError(msg)
+    if len(secret) < MIN_JWT_SECRET_LENGTH:
+        msg = f"{var} must be at least {MIN_JWT_SECRET_LENGTH} characters"
+        raise AuthConfigError(msg)
+    return secret
+
+
 @dataclass(frozen=True)
 class AuthentikSettings:
     """Authentik forward-auth settings read from the environment.
 
     Attributes:
-        jwks_url (str): ``AUTHENTIK_JWKS_URL``, the provider's JWKS endpoint.
-            Must use ``https://``.
+        jwt_secret (str): ``AUTHENTIK_JWT_SECRET``, the proxy provider's client
+            secret, used as the HS256 verification key. Excluded from repr and
+            comparison, so neither a settings dump nor a failing equality
+            assertion prints it.
         issuer (str): ``AUTHENTIK_ISSUER``, the exact expected ``iss`` claim.
         audience (str): ``AUTHENTIK_AUDIENCE``, the expected ``aud`` claim
             (the provider's client ID).
         admin_group (str): ``FO_ADMIN_GROUP``, group granting Admin.
         viewer_group (str): ``FO_VIEWER_GROUP``, group granting Viewer.
-        jwks_cache_seconds (int): ``AUTHENTIK_JWKS_CACHE_SECONDS``, how long
-            fetched keys are reused before a refetch.
     """
 
-    jwks_url: str
+    jwt_secret: str = field(repr=False, compare=False)
     issuer: str
     audience: str
     admin_group: str = DEFAULT_ADMIN_GROUP
     viewer_group: str = DEFAULT_VIEWER_GROUP
-    jwks_cache_seconds: int = DEFAULT_JWKS_CACHE_SECONDS
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AuthentikSettings:
@@ -175,289 +209,30 @@ class AuthentikSettings:
 
         Raises:
             AuthConfigError: If a required variable is missing or a value is
-                invalid. The message names the offending variable.
+                invalid. The message names the offending variable and never
+                includes the secret's value.
         """
         env: Mapping[str, str] = os.environ if environ is None else environ
         values: dict[str, str] = {}
-        for var in ("AUTHENTIK_JWKS_URL", "AUTHENTIK_ISSUER", "AUTHENTIK_AUDIENCE"):
+        for var in ("AUTHENTIK_ISSUER", "AUTHENTIK_AUDIENCE"):
             value = env.get(var, "").strip()
             if not value:
                 msg = f"{var} is required"
                 raise AuthConfigError(msg)
             values[var] = value
-        jwks_url = values["AUTHENTIK_JWKS_URL"]
-        # #CRITICAL: security: only https JWKS URLs are accepted, so a file://
-        # or plain http URL can never feed signing keys to the portal (lesson
-        # from pyjwt advisory GHSA-993g-76c3-p5m4, PyJWKClient file:// SSRF).
-        # #ASSUME: homelab-infra serves the provider JWKS over https.
-        # #VERIFY: curl the deployed AUTHENTIK_JWKS_URL and confirm a 200 JSON
-        # key set over TLS before first production use.
-        parts = urlsplit(jwks_url)
-        if parts.scheme.lower() != "https" or not parts.netloc:
-            msg = "AUTHENTIK_JWKS_URL must be an https:// URL"
-            raise AuthConfigError(msg)
+        jwt_secret = _jwt_secret_from_env(env)
         admin_group = env.get("FO_ADMIN_GROUP", "").strip() or DEFAULT_ADMIN_GROUP
         viewer_group = env.get("FO_VIEWER_GROUP", "").strip() or DEFAULT_VIEWER_GROUP
         if admin_group == viewer_group:
             msg = "FO_ADMIN_GROUP and FO_VIEWER_GROUP must name different groups"
             raise AuthConfigError(msg)
-        raw_ttl = env.get("AUTHENTIK_JWKS_CACHE_SECONDS", "").strip()
-        ttl = DEFAULT_JWKS_CACHE_SECONDS
-        if raw_ttl:
-            try:
-                ttl = int(raw_ttl)
-            except ValueError:
-                ttl = 0
-            if ttl <= 0:
-                msg = "AUTHENTIK_JWKS_CACHE_SECONDS must be a positive integer"
-                raise AuthConfigError(msg)
         return cls(
-            jwks_url=jwks_url,
+            jwt_secret=jwt_secret,
             issuer=values["AUTHENTIK_ISSUER"],
             audience=values["AUTHENTIK_AUDIENCE"],
             admin_group=admin_group,
             viewer_group=viewer_group,
-            jwks_cache_seconds=ttl,
         )
-
-
-class _JwksTooLargeError(Exception):
-    """Raised internally when a JWKS response exceeds ``JWKS_MAX_BYTES``."""
-
-
-class _JwksDeadlineError(Exception):
-    """Raised internally when a JWKS fetch outlives its total deadline."""
-
-
-async def _read_jwks_body(
-    url: str,
-    transport: httpx.AsyncBaseTransport | None,
-) -> bytes:
-    async with (
-        httpx.AsyncClient(
-            timeout=JWKS_FETCH_TIMEOUT_SECONDS,
-            follow_redirects=False,
-            # Ignore HTTP(S)_PROXY, NO_PROXY and SSL_CERT_* from the
-            # environment, so the key fetch cannot be rerouted through an
-            # unexpected proxy or trust store.
-            trust_env=False,
-            transport=transport,
-        ) as client,
-        client.stream("GET", url, headers={"Accept": "application/json"}) as response,
-    ):
-        # raise_for_status also rejects 3xx, so an unfollowed redirect fails.
-        response.raise_for_status()
-        body = bytearray()
-        # aiter_bytes yields decoded bytes, so the cap also bounds a
-        # compressed body that inflates past the limit.
-        async for chunk in response.aiter_bytes():
-            body.extend(chunk)
-            if len(body) > JWKS_MAX_BYTES:
-                raise _JwksTooLargeError
-        return bytes(body)
-
-
-async def _within_deadline(
-    url: str,
-    transport: httpx.AsyncBaseTransport | None,
-) -> bytes:
-    # asyncio.wait plus an explicit cancel instead of asyncio.wait_for: on
-    # Python 3.10 wait_for raises asyncio.TimeoutError, which is not the
-    # builtin TimeoutError, and the py312 lint target rewrites one to the
-    # other. This form needs no timeout exception class at all.
-    task = asyncio.ensure_future(_read_jwks_body(url, transport))
-    try:
-        done, _pending = await asyncio.wait({task}, timeout=JWKS_FETCH_DEADLINE_SECONDS)
-    finally:
-        if not task.done():
-            task.cancel()
-    if task not in done:
-        raise _JwksDeadlineError
-    return task.result()
-
-
-async def fetch_authentik_jwks(
-    url: str,
-    *,
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> dict[str, Any]:
-    """Fetch the provider's JWKS document without blocking the event loop.
-
-    Redirects are not followed, so a redirect cannot move the fetch off the
-    configured https URL. Proxy and trust-store settings from the environment
-    are ignored, the body is capped at ``JWKS_MAX_BYTES``, and the whole
-    fetch must finish within ``JWKS_FETCH_DEADLINE_SECONDS``.
-
-    Args:
-        url (str): JWKS URL of the Authentik proxy provider.
-        transport (httpx.AsyncBaseTransport | None): Optional transport
-            override, used by tests.
-
-    Returns:
-        dict[str, Any]: The parsed JWKS document.
-
-    Raises:
-        AuthError: If the endpoint is unreachable, returns a non-2xx status,
-            is too slow or too large, or returns something other than a JSON
-            object.
-    """
-    msg = "jwks_unavailable"
-    try:
-        body = await _within_deadline(url, transport)
-        document: object = json.loads(body)
-    except (
-        httpx.HTTPError,
-        ValueError,
-        _JwksTooLargeError,
-        _JwksDeadlineError,
-    ) as exc:
-        logger.warning("jwks_fetch_failed", reason=type(exc).__name__)
-        raise AuthError(msg) from exc
-    if not isinstance(document, dict):
-        logger.warning("jwks_fetch_failed", reason="not_an_object")
-        raise AuthError(msg)
-    return cast("dict[str, Any]", document)
-
-
-def parse_jwks(document: Mapping[str, Any]) -> dict[str, RSAPublicKey]:
-    """Extract usable RS256 signing keys from a JWKS document.
-
-    Keys that are not RSA, not for signing, declared for another algorithm,
-    shorter than 2048 bits, malformed, or missing a ``kid`` are skipped.
-
-    Args:
-        document (Mapping[str, Any]): Parsed JWKS document.
-
-    Returns:
-        dict[str, RSAPublicKey]: Verification keys indexed by ``kid``.
-    """
-    keys: dict[str, RSAPublicKey] = {}
-    raw_keys: object = document.get("keys")
-    if not isinstance(raw_keys, list):
-        return keys
-    for entry in cast("list[object]", raw_keys):
-        if not isinstance(entry, dict):
-            continue
-        jwk_data = cast("dict[str, Any]", entry)
-        kid: object = jwk_data.get("kid")
-        if (
-            not isinstance(kid, str)
-            or not kid
-            or jwk_data.get("kty") != "RSA"
-            or jwk_data.get("use", "sig") != "sig"
-            or jwk_data.get("alg", "RS256") != "RS256"
-        ):
-            continue
-        try:
-            key: object = jwt.PyJWK(jwk_data, algorithm="RS256").key
-        except jwt.PyJWTError:
-            logger.warning("jwks_key_skipped", kid=kid, reason="malformed_key")
-            continue
-        if not isinstance(key, RSAPublicKey) or key.key_size < _MIN_RSA_KEY_BITS:
-            logger.warning("jwks_key_skipped", kid=kid, reason="unsupported_key")
-            continue
-        keys[kid] = key
-    return keys
-
-
-class JwksCache:
-    """Concurrency-safe in-memory JWKS cache with a TTL.
-
-    Keys are fetched lazily on the first request, reused for ``ttl_seconds``,
-    and refetched early when a token names an unknown ``kid`` (key rotation).
-    Fetch attempts, successful or not, are rate limited to one per
-    ``min(ttl_seconds, MIN_REFETCH_INTERVAL_SECONDS)``, so neither forged
-    ``kid`` values nor an unreachable JWKS endpoint turn requests into a
-    fetch storm. An ``asyncio.Lock`` makes concurrent requests on a cold or
-    expired cache share one fetch.
-
-    #EDGE: availability over prompt revocation. When a refetch fails, the
-    last good key set keeps validating tokens for one extra TTL (up to twice
-    ``ttl_seconds`` after the last successful fetch) instead of locking every
-    user out during a short Authentik outage. A key that Authentik removed
-    after a compromise therefore stays trusted for up to that long if the
-    JWKS endpoint is unreachable at the same time; after the grace period
-    every request fails closed with ``jwks_unavailable``.
-    #VERIFY: tests/unit/test_middleware.py shows a real token accepted during
-    the grace period and refused after it; confirm with homelab-infra that
-    ``2 * AUTHENTIK_JWKS_CACHE_SECONDS`` is an acceptable revocation delay.
-    """
-
-    def __init__(
-        self,
-        url: str,
-        *,
-        ttl_seconds: int,
-        clock: Callable[[], float] = time.monotonic,
-        transport: httpx.AsyncBaseTransport | None = None,
-    ) -> None:
-        self._url = url
-        self._ttl = float(ttl_seconds)
-        self._grace = float(ttl_seconds)
-        self._refetch_interval = min(self._ttl, MIN_REFETCH_INTERVAL_SECONDS)
-        self._clock = clock
-        self._transport = transport
-        self._keys: dict[str, RSAPublicKey] = {}
-        # Last successful fetch, which dates the cached keys.
-        self._fetched_at: float | None = None
-        # Last fetch attempt, successful or not, which drives rate limiting.
-        self._attempted_at: float | None = None
-        self._last_fetch_failed = False
-        self._lock = asyncio.Lock()
-
-    def _key_within(self, kid: str, max_age: float) -> RSAPublicKey | None:
-        if self._fetched_at is None:
-            return None
-        if self._clock() - self._fetched_at >= max_age:
-            return None
-        return self._keys.get(kid)
-
-    def _fetch_due(self) -> bool:
-        if self._attempted_at is None:
-            return True
-        return self._clock() - self._attempted_at >= self._refetch_interval
-
-    async def _refresh(self) -> None:
-        # Stamp the attempt before fetching, so a failure is rate limited too.
-        self._attempted_at = self._clock()
-        try:
-            document = await fetch_authentik_jwks(self._url, transport=self._transport)
-        except AuthError:
-            self._last_fetch_failed = True
-            return
-        self._keys = parse_jwks(document)
-        self._fetched_at = self._clock()
-        self._last_fetch_failed = False
-
-    async def get_key(self, kid: str) -> RSAPublicKey:
-        """Return the verification key for ``kid``, fetching keys if needed.
-
-        Args:
-            kid (str): Key ID from the token header.
-
-        Returns:
-            RSAPublicKey: Public key that signed tokens with this ``kid``.
-
-        Raises:
-            AuthError: If no usable key matches ``kid``: ``jwks_unavailable``
-                when the latest fetch attempt failed, else ``unknown_key``.
-        """
-        key = self._key_within(kid, self._ttl)
-        if key is not None:
-            return key
-        async with self._lock:
-            # Another request may have refreshed the cache while this one
-            # waited for the lock.
-            key = self._key_within(kid, self._ttl)
-            if key is None and self._fetch_due():
-                await self._refresh()
-            # Fresh keys after a successful fetch, or last good keys within
-            # the grace period after a failed or rate-limited one.
-            key = self._key_within(kid, self._ttl + self._grace)
-        if key is None:
-            msg = "jwks_unavailable" if self._last_fetch_failed else "unknown_key"
-            raise AuthError(msg)
-        return key
 
 
 # Ordered most specific first: InvalidSignatureError subclasses DecodeError,
@@ -484,7 +259,7 @@ def _reason_for(exc: jwt.PyJWTError) -> str:
 def validate_authentik_jwt(
     token: str,
     *,
-    key: RSAPublicKey,
+    key: str,
     issuer: str,
     audience: str,
 ) -> dict[str, Any]:
@@ -500,7 +275,7 @@ def validate_authentik_jwt(
 
     Args:
         token (str): Encoded JWT.
-        key (RSAPublicKey): Verification key for the token's ``kid``.
+        key (str): HS256 verification key, the provider's client secret.
         issuer (str): Expected ``iss``, compared exactly.
         audience (str): Expected ``aud``; a list containing it is accepted.
 
@@ -509,7 +284,9 @@ def validate_authentik_jwt(
 
     Raises:
         AuthError: If the signature, algorithm, issuer, audience, or any time
-            claim is invalid, or ``exp``, ``iss`` or ``aud`` is missing.
+            claim is invalid, or ``exp``, ``iss`` or ``aud`` is missing. An
+            ``alg=none`` token, or one signed with any algorithm other than
+            HS256, fails as ``disallowed_algorithm``.
     """
     try:
         claims: dict[str, Any] = jwt.decode(
@@ -605,18 +382,20 @@ def principal_from_claims(
     )
 
 
-async def authenticate(
+def authenticate(
     token: str | None,
     *,
     settings: AuthentikSettings,
-    jwks_cache: JwksCache,
 ) -> Principal:
     """Validate an ``X-authentik-jwt`` value and build the principal.
 
+    No token header is read before the signature is verified, and nothing is
+    fetched: the HS256 key is the configured client secret.
+
     Args:
         token (str | None): Value of the ``X-authentik-jwt`` header.
-        settings (AuthentikSettings): Issuer, audience, and group settings.
-        jwks_cache (JwksCache): Source of verification keys.
+        settings (AuthentikSettings): Secret, issuer, audience, and group
+            settings.
 
     Returns:
         Principal: The authenticated user.
@@ -628,29 +407,9 @@ async def authenticate(
     if not token:
         msg = "missing_token"
         raise AuthError(msg)
-    # SonarCloud python:S5659 flags this call; it is marked False Positive
-    # (PR #50). The header is read only to choose the JWKS key by ``kid`` and
-    # to reject a disallowed ``alg`` early; no claim is trusted until
-    # validate_authentik_jwt verifies the signature (RS256 only) plus iss,
-    # aud, and exp. This is the standard RFC 7515 key-selection step.
-    try:
-        header = jwt.get_unverified_header(token)
-    except jwt.PyJWTError as exc:
-        msg = "malformed_token"
-        raise AuthError(msg) from exc
-    # Reject before the key lookup so a forged header cannot trigger a JWKS
-    # refetch; jwt.decode enforces the same list again.
-    if header.get("alg") not in ALLOWED_ALGORITHMS:
-        msg = "disallowed_algorithm"
-        raise AuthError(msg)
-    kid: object = header.get("kid")
-    if not isinstance(kid, str) or not kid:
-        msg = "missing_key_id"
-        raise AuthError(msg)
-    key = await jwks_cache.get_key(kid)
     claims = validate_authentik_jwt(
         token,
-        key=key,
+        key=settings.jwt_secret,
         issuer=settings.issuer,
         audience=settings.audience,
     )
@@ -700,14 +459,9 @@ class AuthentikAuthMiddleware:
         app: ASGIApp,
         *,
         settings: AuthentikSettings,
-        jwks_cache: JwksCache | None = None,
     ) -> None:
         self.app = app
         self.settings = settings
-        self.jwks_cache = jwks_cache or JwksCache(
-            settings.jwks_url,
-            ttl_seconds=settings.jwks_cache_seconds,
-        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Authenticate the request and pass it on, or answer 403.
@@ -735,11 +489,7 @@ class AuthentikAuthMiddleware:
             return
         token = Headers(scope=scope).get(JWT_HEADER)
         try:
-            principal = await authenticate(
-                token,
-                settings=self.settings,
-                jwks_cache=self.jwks_cache,
-            )
+            principal = authenticate(token, settings=self.settings)
         except AuthError as exc:
             logger.info("auth_denied", path=path, reason=exc.reason)
             await _denied()(scope, receive, send)

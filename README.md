@@ -77,7 +77,8 @@ uv run pip-audit
 ## Environment Variables
 
 The variables below are required at startup; the app exits with status 1 if any is
-missing or if `AUTHENTIK_JWKS_URL` is not `https://`. See
+missing or if `AUTHENTIK_JWT_SECRET` is unusable (shorter than 32 characters, the
+stack placeholder, or padded with whitespace). See
 `docs/planning/tech-spec.md` for full documentation.
 
 | Variable | Description |
@@ -86,7 +87,7 @@ missing or if `AUTHENTIK_JWKS_URL` is not `https://`. See
 | `BACKEND_PP_SECURITY_URL` | Base URL for pp-security-master service |
 | `BACKEND_XERO_CRYPTO_URL` | Base URL for xero_crypto service |
 | `BACKEND_FAMILY_OFFICE_URL` | Base URL for family_office service |
-| `AUTHENTIK_JWKS_URL` | `https://` JWKS endpoint of the Authentik provider |
+| `AUTHENTIK_JWT_SECRET` | Client secret of the Authentik proxy provider (HS256 key for `X-authentik-jwt`); a secret, never commit it |
 | `AUTHENTIK_ISSUER` | Expected `iss` claim of the Authentik provider |
 | `AUTHENTIK_AUDIENCE` | Expected `aud` claim (the provider's client ID) |
 | `SQLITE_PATH` | Absolute path to the SQLite cache database |
@@ -97,7 +98,6 @@ Optional variables:
 | --- | --- | --- |
 | `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granted the Admin role |
 | `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granted the Viewer role |
-| `AUTHENTIK_JWKS_CACHE_SECONDS` | `600` | JWKS cache lifetime in seconds |
 
 ## Architecture
 

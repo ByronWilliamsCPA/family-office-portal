@@ -24,7 +24,7 @@ import importlib
 import importlib.util
 import sqlite3
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -64,18 +64,17 @@ phase1 = pytest.mark.skipif(
 @pytest.fixture
 async def client(
     portal_env: dict[str, str],
-    patched_jwks: dict[str, Any],
     tmp_db_path: Path,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """Yield an opened ``httpx.AsyncClient`` bound to a freshly loaded app.
 
     Unlike the shared ``client`` fixture this one sends no identity header;
     tests pass ``viewer_headers`` or ``admin_headers`` (``tests/conftest.py``)
-    explicitly. ``patched_jwks`` keeps the Authentik JWKS fetch offline.
+    explicitly.
 
     # noqa
     """
-    del portal_env, patched_jwks
+    del portal_env
     main = importlib.import_module("app.main")
 
     if importlib.util.find_spec("app.db") is not None:

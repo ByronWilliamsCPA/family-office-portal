@@ -42,7 +42,7 @@ Most project context, conventions, and rules are written for Claude Code.
 ## Critical rules
 
 - **Authentication**: the Authentik middleware MUST take identity only from
-  the signed `X-authentik-jwt` header and validate its RS256 signature, `iss`
+  the signed `X-authentik-jwt` header and validate its HS256 signature, `iss`
   (`AUTHENTIK_ISSUER`), `aud` (`AUTHENTIK_AUDIENCE`) and `exp`. Skipping the
   `aud` check accepts tokens minted for other Authentik applications; trusting
   plain `X-authentik-*` headers lets anyone forge identity. This is `#CRITICAL`
