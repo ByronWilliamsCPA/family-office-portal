@@ -1,8 +1,12 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
+{% from "partials/not_connected.html" import not_connected %}
 {% block title %}Entities - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-2">Entities</h1>
+{% if not connected.llc_manager %}
+{{ not_connected("The entities") }}
+{% else %}
 {{ freshness(updated, stale) }}
 {% if entities %}
 <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200 mt-6">
@@ -15,5 +19,6 @@
 </ul>
 {% else %}
 <p class="text-slate-600 mt-6">No entities to show yet.</p>
+{% endif %}
 {% endif %}
 {% endblock %}

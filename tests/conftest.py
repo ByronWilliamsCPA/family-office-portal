@@ -48,10 +48,10 @@ _OPTIONAL_AUTH_ENV_VARS = (
 
 # Optional backend and display settings (``app.config``) cleared by
 # ``portal_env`` for the same reason; tests that need one set it themselves.
+# The data-ingestor pair is cleared because no client uses it yet.
 _OPTIONAL_PORTAL_ENV_VARS = (
-    "BACKEND_LLC_MANAGER_API_KEY",
-    "BACKEND_PP_SECURITY_API_KEY",
-    "BACKEND_XERO_CRYPTO_API_KEY",
+    "BACKEND_DATA_INGESTOR_URL",
+    "BACKEND_DATA_INGESTOR_API_KEY",
     "BACKEND_TIMEOUT_SECONDS",
     "DISPLAY_TIMEZONE",
     "SCHEDULER_ENABLED",
@@ -89,8 +89,11 @@ def portal_env(
 ) -> Iterator[dict[str, str]]:
     """Set every environment variable ``app.main`` requires at startup.
 
-    Also creates the cache schema at ``SQLITE_PATH``, because the ASGI test
-    transport never runs the lifespan that does this in production.
+    The three backends that have clients are connected: each gets a URL and a
+    random API key, because a URL without a key stops the app at startup.
+    Backend values are generated per test, never literals. Also creates the
+    cache schema at ``SQLITE_PATH``, because the ASGI test transport never
+    runs the lifespan that does this in production.
 
     Args:
         monkeypatch: Pytest monkeypatch fixture.
@@ -102,9 +105,11 @@ def portal_env(
     """
     env = {
         "BACKEND_LLC_MANAGER_URL": "http://llc-manager.test",
+        "BACKEND_LLC_MANAGER_API_KEY": secrets.token_urlsafe(16),
         "BACKEND_PP_SECURITY_URL": "http://pp-security.test",
+        "BACKEND_PP_SECURITY_API_KEY": secrets.token_urlsafe(16),
         "BACKEND_XERO_CRYPTO_URL": "http://xero-crypto.test",
-        "BACKEND_FAMILY_OFFICE_URL": "http://family-office.test",
+        "BACKEND_XERO_CRYPTO_API_KEY": secrets.token_urlsafe(16),
         "AUTHENTIK_JWT_SECRET": jwt_secret,
         "AUTHENTIK_ISSUER": TEST_ISSUER,
         "AUTHENTIK_AUDIENCE": TEST_AUDIENCE,

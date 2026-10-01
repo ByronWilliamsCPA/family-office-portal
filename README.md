@@ -20,8 +20,8 @@ Five sections: Home, Documents, Finances, Portfolio, Entities.
 - [UV](https://docs.astral.sh/uv/) package manager
 - Authentik proxy provider and Traefik forward auth configured by homelab-infra
   (contract in ADR-005)
-- Backend services accessible: `llc-manager`, `pp-security-master`, `xero_crypto`,
-  `family_office`
+- Backend services, each optional and connected when its URL and key are set:
+  `llc-manager`, `pp-security-master`, `xero_crypto`, `data-ingestor`
 
 ## Setup
 
@@ -31,7 +31,7 @@ uv sync --extra dev
 
 # Copy and configure environment variables
 cp .env.example .env
-# Edit .env with your backend URLs, CF credentials, and authorized email lists
+# Edit .env with the Authentik settings, SQLITE_PATH, and any backend URL and key pairs
 
 # Install pre-commit hooks
 pre-commit install
@@ -83,24 +83,31 @@ stack placeholder, or padded with whitespace). See
 
 | Variable | Description |
 | --- | --- |
-| `BACKEND_LLC_MANAGER_URL` | Base URL for llc-manager service |
-| `BACKEND_PP_SECURITY_URL` | Base URL for pp-security-master service |
-| `BACKEND_XERO_CRYPTO_URL` | Base URL for xero_crypto service |
-| `BACKEND_FAMILY_OFFICE_URL` | Base URL for family_office service |
 | `AUTHENTIK_JWT_SECRET` | Client secret of the Authentik proxy provider (HS256 key for `X-authentik-jwt`); a secret, never commit it |
 | `AUTHENTIK_ISSUER` | Expected `iss` claim of the Authentik provider |
 | `AUTHENTIK_AUDIENCE` | Expected `aud` claim (the provider's client ID) |
 | `SQLITE_PATH` | Absolute path to the SQLite cache database |
 
-Optional, each with a documented default:
+Backends are optional, in pairs. Set both variables of a pair to connect a backend:
+
+| Variable | Description |
+| --- | --- |
+| `BACKEND_LLC_MANAGER_URL` / `BACKEND_LLC_MANAGER_API_KEY` | llc-manager base URL and the key sent to it as `X-API-Key` |
+| `BACKEND_PP_SECURITY_URL` / `BACKEND_PP_SECURITY_API_KEY` | pp-security-master base URL and key |
+| `BACKEND_XERO_CRYPTO_URL` / `BACKEND_XERO_CRYPTO_API_KEY` | xero_crypto base URL and key |
+| `BACKEND_DATA_INGESTOR_URL` / `BACKEND_DATA_INGESTOR_API_KEY` | data-ingestor base URL and key (settings only; no client calls it yet) |
+
+A URL with an unset, empty or whitespace key stops startup, and the error names the
+key variable. A key with no URL is allowed and logged at info level. A backend with
+no URL is "not connected": its refresh jobs skip with one log line and make no
+outbound call, and its pages show "Not connected yet".
+
+Other optional variables, each with a documented default:
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granting Admin |
 | `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granting Viewer |
-| `BACKEND_LLC_MANAGER_API_KEY` | empty | Key sent to llc-manager as `X-API-Key`; unset sends no key header |
-| `BACKEND_PP_SECURITY_API_KEY` | empty | Key sent to pp-security-master as `X-API-Key`; unset sends no key header |
-| `BACKEND_XERO_CRYPTO_API_KEY` | empty | Key sent to xero_crypto as `X-API-Key`; unset sends no key header |
 | `DISPLAY_TIMEZONE` | `UTC` | IANA time zone for "last updated" labels |
 | `SCHEDULER_ENABLED` | `true` | Set `false` for template work without backends |
 | `BACKEND_TIMEOUT_SECONDS` | `10` | Outbound request timeout |
