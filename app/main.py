@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
 
 from app import __version__
-from app.config import load_settings
+from app.config import BackendConfigError, check_backends, load_settings
 from app.db import init_schema
 from app.middleware import AuthConfigError, AuthentikAuthMiddleware, AuthentikSettings
 from app.routes import admin, documents, entities, finances, health, home, portfolio
@@ -35,10 +35,6 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 _REQUIRED_ENV_VARS = (
-    "BACKEND_LLC_MANAGER_URL",
-    "BACKEND_PP_SECURITY_URL",
-    "BACKEND_XERO_CRYPTO_URL",
-    "BACKEND_FAMILY_OFFICE_URL",
     "AUTHENTIK_JWT_SECRET",
     "AUTHENTIK_ISSUER",
     "AUTHENTIK_AUDIENCE",
@@ -54,6 +50,13 @@ try:
     _AUTH_SETTINGS = AuthentikSettings.from_env()
 except AuthConfigError as _exc:
     sys.stderr.write(f"Invalid authentication configuration: {_exc}\n")
+    sys.exit(1)
+
+
+try:
+    check_backends(load_settings())
+except BackendConfigError as _exc:
+    sys.stderr.write(f"Invalid backend configuration: {_exc}\n")
     sys.exit(1)
 
 

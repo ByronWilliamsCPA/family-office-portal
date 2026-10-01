@@ -15,7 +15,7 @@ import anyio
 import pytest
 
 from app import cache, db
-from app.config import load_settings
+from app.config import BACKENDS, load_settings
 from app.routes._context import AS_OF_WARN_DAYS, balances_summary
 from app.templating import friendly_date, friendly_time, money, templates
 
@@ -126,15 +126,25 @@ def test_sqlite_path_requires_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_backend_api_keys_default_to_empty() -> None:
-    """The per-backend API keys are optional; unset means an empty key.
+def test_backend_settings_default_to_not_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every backend URL and API key is optional; unset means empty.
 
     # noqa
     """
+    for spec in BACKENDS:
+        monkeypatch.delenv(spec.url_var, raising=False)
+        monkeypatch.delenv(spec.key_var, raising=False)
     settings = load_settings()
+    assert settings.backend_llc_manager_url == ""
+    assert settings.backend_pp_security_url == ""
+    assert settings.backend_xero_crypto_url == ""
+    assert settings.backend_data_ingestor_url == ""
     assert settings.backend_llc_manager_api_key.get_secret_value() == ""
     assert settings.backend_pp_security_api_key.get_secret_value() == ""
     assert settings.backend_xero_crypto_api_key.get_secret_value() == ""
+    assert settings.backend_data_ingestor_api_key.get_secret_value() == ""
 
 
 # --------------------------------------------------------------------------- #

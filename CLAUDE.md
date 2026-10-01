@@ -115,7 +115,8 @@ Key documents to read before making architectural or data-model decisions:
   Authentik forward auth at the reverse proxy; the portal only validates the signed
   JWT; do not add application-level password handling (supersedes ADR-002)
 - `docs/architecture/adr/adr-003-backend-data-aggregation.md` -- all data flows through
-  the SQLite read-through cache; route handlers never call backend services directly
+  the SQLite read-through cache; route handlers never call backend services directly;
+  backends are optional keyed pairs (2026-09-30 amendment)
 - `docs/planning/roadmap.md` -- current phase and acceptance criteria
 
 ## Tech stack conventions
@@ -151,10 +152,12 @@ Key documents to read before making architectural or data-model decisions:
   shown as left out. Format with `Decimal`, never float arithmetic.
 - **HTTP client**: `httpx` for outbound calls in APScheduler refresh jobs. Use
   `httpx.Client` (synchronous) inside scheduler jobs; `httpx.AsyncClient` in tests.
-  Backends are reached on a private Docker network; each refresh job sends its
-  optional per-service API key as `X-API-Key` when one is set, and no key header
-  when it is unset. #ASSUME backends implement the key check.
-  #VERIFY with each backend before its refresh job is enabled.
+  Backends are reached on a private Docker network; every request carries the
+  backend's `X-API-Key`. A backend with a URL always has a key (startup refuses
+  otherwise), so no request goes out without the header. A backend whose URL is
+  unset is "not connected": its refresh jobs skip with one log line and make no
+  outbound call. #ASSUME backends implement the key check.
+  #VERIFY with each backend before its URL and key are set in the deployment.
 - **Logging**: `structlog` in structured JSON format. Never log financial values,
   document contents, or email addresses beyond INFO-level auth events.
 
@@ -211,20 +214,25 @@ Never implement password-based auth, OAuth flows, or session cookies.
 
 ## Environment variables
 
-All environment variables in `docs/planning/tech-spec.md` section 4 are required at
-startup. The application must call `sys.exit(1)` if any are absent. Do not add
-optional env vars without a documented default.
+The variables listed as required in the tech spec (section 4) must be
+present at startup. The application must call `sys.exit(1)` if any are absent. Do
+not add optional env vars without a documented default.
 
-Required: `BACKEND_LLC_MANAGER_URL`, `BACKEND_PP_SECURITY_URL`,
-`BACKEND_XERO_CRYPTO_URL`, `BACKEND_FAMILY_OFFICE_URL`, `AUTHENTIK_JWT_SECRET`
-(at least 32 characters, not the stack placeholder, no leading or trailing
-whitespace), `AUTHENTIK_ISSUER`, `AUTHENTIK_AUDIENCE`, `SQLITE_PATH`.
+Required: `AUTHENTIK_JWT_SECRET` (at least 32 characters, not the stack
+placeholder, no leading or trailing whitespace), `AUTHENTIK_ISSUER`,
+`AUTHENTIK_AUDIENCE`, `SQLITE_PATH`.
 
-Optional, with documented defaults: `FO_ADMIN_GROUP` (`fo-admin`),
-`FO_VIEWER_GROUP` (`fo-viewer`), `BACKEND_LLC_MANAGER_API_KEY`,
-`BACKEND_PP_SECURITY_API_KEY` and `BACKEND_XERO_CRYPTO_API_KEY` (empty; unset
-sends no key header), `BACKEND_TIMEOUT_SECONDS` (10), `DISPLAY_TIMEZONE`
-(`UTC`), `SCHEDULER_ENABLED` (`true`).
+Backends are optional pairs, `BACKEND_<NAME>_URL` plus `BACKEND_<NAME>_API_KEY`,
+for `LLC_MANAGER`, `PP_SECURITY`, `XERO_CRYPTO` and `DATA_INGESTOR` (settings and
+startup checks only; no client calls data-ingestor yet). Startup exits 1, naming
+the key variable, when a URL is set and its key is unset, empty or whitespace. A
+key with no URL is allowed and logged at info level. A backend with no URL is
+"not connected": its refresh jobs skip and its pages show "Not connected yet"
+(see the ADR-003 amendment of 2026-09-30).
+
+Other optional variables, with documented defaults: `FO_ADMIN_GROUP`
+(`fo-admin`), `FO_VIEWER_GROUP` (`fo-viewer`), `BACKEND_TIMEOUT_SECONDS` (10),
+`DISPLAY_TIMEZONE` (`UTC`), `SCHEDULER_ENABLED` (`true`).
 
 ## Frontend conventions
 

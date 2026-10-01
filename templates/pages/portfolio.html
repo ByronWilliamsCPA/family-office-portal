@@ -1,8 +1,12 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
+{% from "partials/not_connected.html" import not_connected %}
 {% block title %}Portfolio - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-2">Portfolio</h1>
+{% if not connected.pp_security %}
+{{ not_connected("Your investments") }}
+{% else %}
 {{ freshness(updated, stale) }}
 {% if holdings %}
 <table class="w-full text-left bg-white rounded-xl border border-stone-200 mt-6">
@@ -19,5 +23,6 @@
 </table>
 {% else %}
 <p class="text-slate-600 mt-6">Investments will appear here once the portfolio is connected.</p>
+{% endif %}
 {% endif %}
 {% endblock %}

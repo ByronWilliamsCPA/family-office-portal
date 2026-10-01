@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 
 scheduler = pytest.importorskip("app.scheduler")
 db = pytest.importorskip("app.db")
@@ -393,19 +395,181 @@ def test_refresh_sends_backend_api_key(
     assert headers["X-API-Key"] == api_key
 
 
-def test_refresh_without_api_key_sends_no_key_header(initialized_db: Path) -> None:
-    """An unset backend API key sends no ``X-API-Key`` header at all.
+# --------------------------------------------------------------------------- #
+# Optional backends: not connected, and never a request without the key
+# --------------------------------------------------------------------------- #
 
-    # noqa
+
+class _Job(NamedTuple):
+    """One refresh job and the backend variables it depends on."""
+
+    name: str
+    service: str
+    url_var: str
+    key_var: str
+    path: str
+
+
+REFRESH_JOBS = [
+    _Job(
+        "refresh_entities",
+        "llc-manager",
+        "BACKEND_LLC_MANAGER_URL",
+        "BACKEND_LLC_MANAGER_API_KEY",
+        "/api/v1/entities",
+    ),
+    _Job(
+        "refresh_documents",
+        "llc-manager-documents",
+        "BACKEND_LLC_MANAGER_URL",
+        "BACKEND_LLC_MANAGER_API_KEY",
+        "/api/v1/documents",
+    ),
+    _Job(
+        "refresh_holdings",
+        "pp-security-master",
+        "BACKEND_PP_SECURITY_URL",
+        "BACKEND_PP_SECURITY_API_KEY",
+        "/api/v1/portfolio/summary",
+    ),
+    _Job(
+        "refresh_positions",
+        "xero_crypto",
+        "BACKEND_XERO_CRYPTO_URL",
+        "BACKEND_XERO_CRYPTO_API_KEY",
+        "/api/v1/positions",
+    ),
+]
+JOB_IDS = [job.name for job in REFRESH_JOBS]
+
+
+def _log_rows(path: Path) -> list[tuple[str, str, str | None]]:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute(
+            "SELECT service, status, message FROM refresh_log"
+        ).fetchall()
+
+
+@pytest.mark.parametrize("job", REFRESH_JOBS, ids=JOB_IDS)
+def test_every_request_carries_the_key_header(
+    initialized_db: Path, portal_env: dict[str, str], job: _Job
+) -> None:
+    """Through a real client, every request to a backend has ``X-API-Key``.
+
+    The header is built from the connection itself, so there is no branch that
+    leaves it out.
     """
     del initialized_db
-    with patch(
-        "httpx.Client", return_value=_mock_client(_mock_response([]))
-    ) as client_cls:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=[])
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+
+    def client_with_transport(**kwargs: Any) -> httpx.Client:
+        return real_client(transport=transport, **kwargs)
+
+    with patch("httpx.Client", side_effect=client_with_transport):
+        getattr(scheduler, job.name)()
+
+    assert seen
+    for request in seen:
+        assert request.headers["X-API-Key"] == portal_env[job.key_var]
+        assert str(request.url).startswith(portal_env[job.url_var])
+        assert request.url.path == job.path
+
+
+@pytest.mark.parametrize("job", REFRESH_JOBS, ids=JOB_IDS)
+@pytest.mark.parametrize("blank", [None, "", "   ", "\t"])
+def test_url_without_usable_key_makes_no_request(
+    initialized_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job: _Job,
+    blank: str | None,
+) -> None:
+    """A URL with a blank key sends nothing and records an error naming the key.
+
+    This is the old "send with no key header" path, now unreachable.
+    """
+    if blank is None:
+        monkeypatch.delenv(job.key_var)
+    else:
+        monkeypatch.setenv(job.key_var, blank)
+
+    with patch("httpx.Client") as client_cls:
+        getattr(scheduler, job.name)()
+
+    client_cls.assert_not_called()
+    rows = _log_rows(initialized_db)
+    assert [(r[0], r[1]) for r in rows] == [(job.service, "error")]
+    assert job.key_var in (rows[0][2] or "")
+
+
+@pytest.mark.parametrize("job", REFRESH_JOBS, ids=JOB_IDS)
+@pytest.mark.parametrize("key_value", [None, "a-key-without-a-url"])
+def test_unconnected_backend_skips_with_one_log_line(
+    initialized_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job: _Job,
+    key_value: str | None,
+) -> None:
+    """With no URL a job logs one skip line and makes no outbound call."""
+    monkeypatch.delenv(job.url_var)
+    if key_value is None:
+        monkeypatch.delenv(job.key_var)
+    else:
+        monkeypatch.setenv(job.key_var, key_value)
+
+    with patch("httpx.Client") as client_cls, capture_logs() as logs:
+        getattr(scheduler, job.name)()
+
+    client_cls.assert_not_called()
+    assert len(logs) == 1
+    assert logs[0]["event"] == "refresh_skipped_not_connected"
+    assert logs[0]["log_level"] == "info"
+    assert _log_rows(initialized_db) == []
+
+
+def test_unconnected_backend_keeps_cached_rows(
+    initialized_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping an unconnected backend leaves any cached rows untouched."""
+    with closing(sqlite3.connect(initialized_db)) as conn, conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, fetched_at) VALUES ('e1', 'Kept LLC', 'x')"
+        )
+    monkeypatch.delenv("BACKEND_LLC_MANAGER_URL")
+
+    scheduler.refresh_entities()
+
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        names = [r[0] for r in conn.execute("SELECT name FROM entities")]
+    assert names == ["Kept LLC"]
+
+
+def test_connecting_a_backend_later_resumes_refreshes(
+    initialized_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job skips while the URL is unset and runs once it is set."""
+    monkeypatch.delenv("BACKEND_LLC_MANAGER_URL")
+    scheduler.refresh_entities()
+    assert _log_rows(initialized_db) == []
+
+    monkeypatch.setenv("BACKEND_LLC_MANAGER_URL", "http://llc-manager.test")
+    with patch("httpx.Client", return_value=_mock_client(_mock_response([]))):
         scheduler.refresh_entities()
-    headers = client_cls.call_args.kwargs["headers"]
-    assert "X-API-Key" not in headers
-    assert headers["Accept"] == "application/json"
+    assert [(r[0], r[1]) for r in _log_rows(initialized_db)] == [
+        ("llc-manager", "success")
+    ]
+
+
+def test_data_ingestor_has_no_refresh_job() -> None:
+    """The data-ingestor pair is configuration only; nothing refreshes from it."""
+    assert all("ingestor" not in name for name in scheduler.JOBS)
+    assert all("ingestor" not in name for name in scheduler.TRIGGERS)
 
 
 def test_refresh_documents_maps_type_to_category_and_flags_confidential(

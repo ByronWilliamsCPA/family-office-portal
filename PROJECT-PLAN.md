@@ -220,14 +220,10 @@ decision record.
 | Auth | Authentik forward auth (Traefik) | Passwordless sign-in; JWT middleware in portal (see ADR-005) |
 | Container | Docker (single container) | SQLite volume-mounted; see Phase 4 for prod image |
 
-### Environment Variables (All Required at Startup)
+### Environment Variables (Required at Startup)
 
 | Variable | Purpose |
 | --- | --- |
-| `BACKEND_LLC_MANAGER_URL` | Base URL for `llc-manager` HTTP API |
-| `BACKEND_PP_SECURITY_URL` | Base URL for `pp-security-master` HTTP API |
-| `BACKEND_XERO_CRYPTO_URL` | Base URL for `xero_crypto` HTTP API |
-| `BACKEND_FAMILY_OFFICE_URL` | Base URL for `family_office` HTTP API |
 | `AUTHENTIK_JWT_SECRET` | Client secret of the Authentik proxy provider (HS256 key); stack-injected, never committed |
 | `AUTHENTIK_ISSUER` | Expected JWT `iss` claim |
 | `AUTHENTIK_AUDIENCE` | Expected JWT `aud` claim (the provider's client ID) |
@@ -237,6 +233,11 @@ The application must call `sys.exit(1)` if any variable is absent, or if
 `AUTHENTIK_JWT_SECRET` is shorter than 32 characters, equals the stack placeholder, or
 has leading or trailing whitespace. No optional env vars without a documented
 default: `FO_ADMIN_GROUP` defaults to `fo-admin` and `FO_VIEWER_GROUP` to `fo-viewer`.
+
+Each backend is an optional pair, `BACKEND_<NAME>_URL` plus `BACKEND_<NAME>_API_KEY`,
+for `LLC_MANAGER`, `PP_SECURITY`, `XERO_CRYPTO` and `DATA_INGESTOR`. A URL set
+without a usable key exits 1, naming the key variable. A backend with no URL is "not
+connected": its refresh jobs skip and its pages say "Not connected yet".
 
 ---
 
@@ -768,7 +769,7 @@ Immediate environment setup tasks to begin Phase 0:
 - [ ] Download and vendor HTMX v2 to `static/htmx.min.js`
 - [ ] Download and vendor Chart.js v4 to `static/chart.min.js`
 - [ ] Set up Tailwind CSS CLI build (no Node runtime)
-- [ ] Create `.env.example` with all eight required env vars
+- [ ] Create `.env.example` documenting the required env vars and the optional backend pairs
 - [ ] Initialize SQLite schema with all six tables and WAL mode pragmas
 - [ ] Scaffold five empty-state route handlers and templates (Home, Documents, Finances,
   Portfolio, Entities)

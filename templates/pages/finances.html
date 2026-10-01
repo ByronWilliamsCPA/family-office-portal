@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
 {% from "partials/as_of.html" import as_of_note %}
+{% from "partials/not_connected.html" import not_connected %}
 {% block title %}Finances - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-6">Finances</h1>
@@ -17,7 +18,9 @@
 </section>
 <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="crypto-heading">
   <h2 id="crypto-heading" class="text-xl font-semibold mb-3">Digital currency</h2>
-  {% if positions %}
+  {% if not connected.xero_crypto %}
+  {{ not_connected("Digital currency") }}
+  {% elif positions %}
   <table class="w-full text-left">
     <thead><tr class="text-slate-500"><th class="py-2">Asset</th><th class="py-2 text-right">Value</th></tr></thead>
     <tbody>
@@ -29,6 +32,6 @@
   {% else %}
   <p class="text-slate-600">No digital currency to show.</p>
   {% endif %}
-  {{ freshness(positions_updated, positions_stale) }}
+  {% if connected.xero_crypto %}{{ freshness(positions_updated, positions_stale) }}{% endif %}
 </section>
 {% endblock %}

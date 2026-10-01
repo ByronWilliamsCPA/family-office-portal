@@ -208,7 +208,7 @@ CREATE TABLE refresh_log (
 | `llc-manager` | `GET /api/v1/entities` | `[{id, name, type, state, agent, status, next_date, ...}]` |
 | `pp-security-master` | `GET /api/v1/portfolio/summary` | `{holdings: [...], performance: [...]}` |
 | `xero_crypto` | `GET /api/v1/positions` | `[{asset, quantity, usd_value, ...}]` |
-| `family_office` | `GET /api/v1/documents` | `[{id, name, category, added_at, url, ...}]` |
+| `llc-manager` (documents) | `GET /api/v1/documents` | `[{id, name, category, added_at, url, ...}]` |
 
 Upstream commercial systems -- **Kubera** (net worth aggregation), **Portfolio Performance**
 (desktop investment tracker), **Box** (document storage), and **Google Drive** -- are not
@@ -216,17 +216,13 @@ contacted by the portal. Each backend service owns its own integration with thes
 
 **Outbound auth**: The mechanism by which the portal authenticates to each backend
 (API key in header, private network restriction, mTLS) must be confirmed with each `#ASSUME` `#VERIFY`
-backend team before Phase 1 begins. Configure via `BACKEND_*_API_KEY` or equivalent
-env vars once the mechanism is decided.
+backend team before Phase 1 begins. The portal sends the key from
+`BACKEND_<NAME>_API_KEY` as `X-API-Key` on every request to that backend.
 
 ### Environment Variables (`.env.example`)
 
 | Variable | Purpose |
 | --- | --- |
-| `BACKEND_LLC_MANAGER_URL` | Base URL for `llc-manager` HTTP API (e.g. `http://llc-manager:8000`) |
-| `BACKEND_PP_SECURITY_URL` | Base URL for `pp-security-master` HTTP API |
-| `BACKEND_XERO_CRYPTO_URL` | Base URL for `xero_crypto` HTTP API |
-| `BACKEND_FAMILY_OFFICE_URL` | Base URL for `family_office` HTTP API |
 | `AUTHENTIK_JWT_SECRET` | Client secret of the Authentik proxy provider, the HS256 key for `X-authentik-jwt`; injected by the deployment stack, never committed; at least 32 characters, not the stack placeholder, no leading or trailing whitespace |
 | `AUTHENTIK_ISSUER` | Exact expected `iss` claim (e.g. `https://auth.example.com/application/o/family-office-portal/`) |
 | `AUTHENTIK_AUDIENCE` | Expected `aud` claim: the Authentik provider's client ID |
@@ -243,12 +239,29 @@ Optional variables, each with a documented default:
 | --- | --- | --- |
 | `FO_ADMIN_GROUP` | `fo-admin` | Authentik group granted the Admin role |
 | `FO_VIEWER_GROUP` | `fo-viewer` | Authentik group granted the Viewer role; must differ from `FO_ADMIN_GROUP` |
-| `BACKEND_LLC_MANAGER_API_KEY` | empty | Key sent to `llc-manager` as `X-API-Key`; unset sends no key header |
-| `BACKEND_PP_SECURITY_API_KEY` | empty | Key sent to `pp-security-master` as `X-API-Key`; unset sends no key header |
-| `BACKEND_XERO_CRYPTO_API_KEY` | empty | Key sent to `xero_crypto` as `X-API-Key`; unset sends no key header |
 | `BACKEND_TIMEOUT_SECONDS` | `10` | Timeout for outbound refresh-job calls |
 | `DISPLAY_TIMEZONE` | `UTC` | IANA time zone for "last updated" labels |
 | `SCHEDULER_ENABLED` | `true` | Start the refresh scheduler at startup; `false` for template work without backends |
+
+Each backend is an optional pair of variables. Set both to connect it:
+
+| Variable pair | Backend | Rule |
+| --- | --- | --- |
+| `BACKEND_LLC_MANAGER_URL`, `BACKEND_LLC_MANAGER_API_KEY` | `llc-manager` | Optional pair |
+| `BACKEND_PP_SECURITY_URL`, `BACKEND_PP_SECURITY_API_KEY` | `pp-security-master` | Optional pair |
+| `BACKEND_XERO_CRYPTO_URL`, `BACKEND_XERO_CRYPTO_API_KEY` | `xero_crypto` | Optional pair |
+| `BACKEND_DATA_INGESTOR_URL`, `BACKEND_DATA_INGESTOR_API_KEY` | `data-ingestor` | Optional pair; settings and startup checks only, no client calls yet |
+
+Rules for every pair:
+
+- A URL set with its key unset, empty or whitespace: the application exits 1 and
+  the error names the key variable.
+- A key set with no URL: allowed; startup logs one info line.
+- No URL: the backend is "not connected". Its scheduled refresh jobs log one
+  line and make no outbound call, and pages that show its data say "Not connected
+  yet" instead of an error.
+- Every request to a connected backend carries `X-API-Key`; there is no path that
+  sends one without it.
 
 ## 5. Security
 

@@ -98,10 +98,6 @@ jobs:
           echo "::add-mask::${AUTHENTIK_JWT_SECRET}"
           export AUTHENTIK_JWT_SECRET
           docker run -d --name portal-smoke -p 18000:8000 \
-            -e BACKEND_LLC_MANAGER_URL=http://llc.invalid \
-            -e BACKEND_PP_SECURITY_URL=http://pp.invalid \
-            -e BACKEND_XERO_CRYPTO_URL=http://xero.invalid \
-            -e BACKEND_FAMILY_OFFICE_URL=http://family-office.invalid \
             -e AUTHENTIK_JWT_SECRET \
             -e AUTHENTIK_ISSUER=https://auth.example.invalid/application/o/family-office-portal/ \
             -e AUTHENTIK_AUDIENCE=smoke \

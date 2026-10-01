@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
 {% from "partials/as_of.html" import as_of_note %}
+{% from "partials/not_connected.html" import not_connected %}
 {% block title %}Home - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-6">Welcome</h1>
@@ -17,7 +18,9 @@
   </section>
   <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="upcoming-heading">
     <h2 id="upcoming-heading" class="text-xl font-semibold mb-3">Coming up</h2>
-    {% if upcoming %}
+    {% if not connected.llc_manager %}
+    {{ not_connected("Upcoming dates") }}
+    {% elif upcoming %}
     <ul class="space-y-2">
       {% for entity in upcoming %}
       <li><a class="text-blue-800 underline" href="/entities/{{ entity['id'] }}">{{ entity['name'] }}</a>: {{ entity['next_date'] | friendly_date }}</li>
@@ -29,7 +32,9 @@
   </section>
   <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="recent-heading">
     <h2 id="recent-heading" class="text-xl font-semibold mb-3">Recently added documents</h2>
-    {% if recent_documents %}
+    {% if not connected.llc_manager %}
+    {{ not_connected("Documents") }}
+    {% elif recent_documents %}
     <ul class="space-y-2">
       {% for doc in recent_documents %}
       <li><a class="text-blue-800 underline" href="{{ doc['proxy_url'] }}">{{ doc['name'] }}</a></li>

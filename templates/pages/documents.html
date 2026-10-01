@@ -1,8 +1,12 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
+{% from "partials/not_connected.html" import not_connected %}
 {% block title %}Documents - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-2">Documents</h1>
+{% if not connected.llc_manager %}
+{{ not_connected("Documents") }}
+{% else %}
 {{ freshness(updated, stale) }}
 <form action="/documents" method="get" class="my-6" role="search">
   <label for="document-search" class="block mb-2">Find a document by name</label>
@@ -28,5 +32,6 @@
   {% endfor %}
 {% else %}
 <p class="text-slate-600">No documents have been added yet.</p>
+{% endif %}
 {% endif %}
 {% endblock %}

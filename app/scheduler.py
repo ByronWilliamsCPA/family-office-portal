@@ -26,7 +26,7 @@ from apscheduler.schedulers.background import (  # pyright: ignore[reportMissing
     BackgroundScheduler,
 )
 
-from app.config import Settings, load_settings
+from app.config import BackendConfigError, BackendConnection, Settings, load_settings
 from app.db import connect_sync
 
 if TYPE_CHECKING:
@@ -169,30 +169,40 @@ def _get_items(client: httpx.Client, url: str) -> list[dict[str, Any]]:
 def _run_refresh(
     service: str,
     *,
-    base_url: str,
-    api_key: str,
+    backend: str,
     fetch: Callable[[httpx.Client, str], Any],
     write: Callable[[sqlite3.Connection, Any, str], int],
 ) -> None:
     """Fetch, replace cached rows, and log the outcome for one dataset.
 
+    A backend whose URL is unset is not connected: the job logs one line and
+    makes no outbound call. A URL with a blank key is refused the same way
+    and recorded as an error, so a request never goes out without its key.
+
     Args:
         service (str): Service identifier recorded in ``refresh_log``.
-        base_url (str): Backend base URL.
-        api_key (str): Backend API key sent as ``X-API-Key``; an empty key
-            sends no key header.
+        backend (str): Backend settings key, for example ``llc_manager``.
         fetch (Callable[[httpx.Client, str], Any]): Pulls the payload.
         write (Callable[[sqlite3.Connection, Any, str], int]): Writes rows
             inside an open transaction and returns the row count.
     """
+    try:
+        connection = load_settings().backend_connection(backend)
+    except BackendConfigError as exc:
+        logger.warning(
+            "refresh_skipped_backend_misconfigured", service=service, detail=str(exc)
+        )
+        _record(service, "error", message=str(exc))
+        return
+    if connection is None:
+        logger.info("refresh_skipped_not_connected", service=service, backend=backend)
+        return
     lock = _service_lock(service)
     if not lock.acquire(blocking=False):
         logger.info("refresh_skipped_already_running", service=service)
         return
     try:
-        _refresh_once(
-            service, base_url=base_url, api_key=api_key, fetch=fetch, write=write
-        )
+        _refresh_once(service, connection=connection, fetch=fetch, write=write)
     finally:
         lock.release()
 
@@ -200,21 +210,18 @@ def _run_refresh(
 def _refresh_once(
     service: str,
     *,
-    base_url: str,
-    api_key: str,
+    connection: BackendConnection,
     fetch: Callable[[httpx.Client, str], Any],
     write: Callable[[sqlite3.Connection, Any, str], int],
 ) -> None:
     settings = load_settings()
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
+    headers = {"Accept": "application/json", "X-API-Key": connection.api_key}
     try:
         with httpx.Client(
             timeout=settings.backend_timeout_seconds,
             headers=headers,
         ) as client:
-            payload = fetch(client, base_url.rstrip("/"))
+            payload = fetch(client, connection.url.rstrip("/"))
     except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
         logger.warning("refresh_failed", service=service, error=type(exc).__name__)
         _record(service, "error", message=f"{type(exc).__name__}: {exc}")
@@ -271,11 +278,9 @@ def _write_entities(
 
 def refresh_entities() -> None:
     """Refresh the entities cache from llc-manager."""
-    settings = load_settings()
     _run_refresh(
         "llc-manager",
-        base_url=settings.backend_llc_manager_url,
-        api_key=settings.backend_llc_manager_api_key.get_secret_value(),
+        backend="llc_manager",
         fetch=lambda client, base: _get_items(client, f"{base}/api/v1/entities"),
         write=_write_entities,
     )
@@ -317,11 +322,9 @@ def _write_holdings(
 
 def refresh_holdings() -> None:
     """Refresh holdings and performance from pp-security-master."""
-    settings = load_settings()
     _run_refresh(
         "pp-security-master",
-        base_url=settings.backend_pp_security_url,
-        api_key=settings.backend_pp_security_api_key.get_secret_value(),
+        backend="pp_security",
         fetch=lambda client, base: _get_json(
             client, f"{base}/api/v1/portfolio/summary"
         ),
@@ -355,11 +358,9 @@ def _write_positions(
 
 def refresh_positions() -> None:
     """Refresh crypto positions from xero-crypto."""
-    settings = load_settings()
     _run_refresh(
         "xero_crypto",
-        base_url=settings.backend_xero_crypto_url,
-        api_key=settings.backend_xero_crypto_api_key.get_secret_value(),
+        backend="xero_crypto",
         fetch=lambda client, base: _get_items(client, f"{base}/api/v1/positions"),
         write=_write_positions,
     )
@@ -408,11 +409,9 @@ def _write_documents(
 
 def refresh_documents() -> None:
     """Refresh document metadata from llc-manager."""
-    settings = load_settings()
     _run_refresh(
         "llc-manager-documents",
-        base_url=settings.backend_llc_manager_url,
-        api_key=settings.backend_llc_manager_api_key.get_secret_value(),
+        backend="llc_manager",
         fetch=lambda client, base: _get_items(client, f"{base}/api/v1/documents"),
         write=_write_documents,
     )

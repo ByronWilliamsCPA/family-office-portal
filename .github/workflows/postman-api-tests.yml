@@ -5,15 +5,14 @@
 #
 # Environment variables the FastAPI app needs to boot:
 #
-#   BACKEND_LLC_MANAGER_URL    Base URL of the llc-manager backend.
-#   BACKEND_PP_SECURITY_URL    Base URL of the pp-security-master backend.
-#   BACKEND_XERO_CRYPTO_URL    Base URL of the xero_crypto backend.
-#   BACKEND_FAMILY_OFFICE_URL  Base URL of the family_office backend.
 #   AUTHENTIK_JWT_SECRET       HS256 key for X-authentik-jwt; generated per run
 #                              here, never read from a repository secret.
 #   AUTHENTIK_ISSUER           Expected ``iss`` claim of X-authentik-jwt.
 #   AUTHENTIK_AUDIENCE         Expected ``aud`` claim (provider client ID).
 #   SQLITE_PATH                Filesystem path to the SQLite cache database.
+#
+# The BACKEND_<NAME>_URL and BACKEND_<NAME>_API_KEY pairs are optional and are
+# left unset here, so every backend is "not connected" during the run.
 #
 # In this workflow the variables are seeded with harmless placeholder values
 # so that no real credentials are hardcoded. AUTHENTIK_JWT_SECRET has no
@@ -50,15 +49,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      BACKEND_LLC_MANAGER_URL: ${{ secrets.BACKEND_LLC_MANAGER_URL || 'http://localhost:9001' }}
-      BACKEND_PP_SECURITY_URL: ${{ secrets.BACKEND_PP_SECURITY_URL || 'http://localhost:9002' }}
-      BACKEND_XERO_CRYPTO_URL: ${{ secrets.BACKEND_XERO_CRYPTO_URL || 'http://localhost:9003' }}
-      BACKEND_FAMILY_OFFICE_URL: ${{ secrets.BACKEND_FAMILY_OFFICE_URL || 'http://localhost:9004' }}
       AUTHENTIK_ISSUER: ${{ secrets.AUTHENTIK_ISSUER || 'https://auth.example.invalid/application/o/family-office-portal/' }}
       AUTHENTIK_AUDIENCE: ${{ secrets.AUTHENTIK_AUDIENCE || 'placeholder-client-id' }}
       SQLITE_PATH: ${{ secrets.SQLITE_PATH || '/tmp/portal.db' }}
-      # Optional (app/config.py): keep the refresh scheduler off so the app
-      # never calls the placeholder backend URLs during the contract run.
+      # Optional (app/config.py): keep the refresh scheduler off during the
+      # contract run.
       SCHEDULER_ENABLED: "false"
 
     steps:

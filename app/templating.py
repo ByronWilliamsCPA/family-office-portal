@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi.templating import Jinja2Templates
 
-from app.config import load_settings
+from app.config import BACKENDS, load_settings
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -104,6 +104,10 @@ def render(
 ) -> Response:
     """Render a full page with the shared navigation context.
 
+    Templates also get ``connected``, a mapping of backend key (for example
+    ``llc_manager``) to whether its URL is set, so a page can say "not
+    connected yet" instead of showing an empty or failed section.
+
     Args:
         request (Request): Current request (carries ``state.principal``).
         name (str): Template path under ``templates/``.
@@ -115,6 +119,7 @@ def render(
         Response: Rendered HTML response.
     """
     principal = getattr(request.state, "principal", None)
+    settings = load_settings()
     return templates.TemplateResponse(
         request,
         name,
@@ -122,6 +127,7 @@ def render(
             "principal": principal,
             "nav_items": NAV_ITEMS,
             "section": section,
+            "connected": {b.name: settings.is_connected(b.name) for b in BACKENDS},
             **context,
         },
         status_code=status_code,
