@@ -6,7 +6,8 @@
 > **Reviewer**: Automated OWASP Top 10 (2021) review
 > **Date**: 2026-05-15
 > **Branch**: `claude/owasp-security-hardening-TAfUX`
-> **Updated**: 2026-09-29, F-06 resolved by the Authentik forward-auth middleware
+> **Updated**: 2026-10-02, `dependency-review` removed from CI (see the F-03
+> status note). 2026-09-29, F-06 resolved by the Authentik forward-auth middleware
 > (ADR-005 supersedes ADR-002). The original findings text is kept as the audit
 > record; status notes mark what changed.
 
@@ -30,7 +31,8 @@ good shape:
   `sonarcloud.yml`).
 - A multi-tool security scan (Bandit, pip-audit, OSV-Scanner,
   OWASP Dependency-Check, dependency-review, OpenSSF Scorecard, SonarCloud,
-  REUSE) already runs on every PR or on a schedule.
+  REUSE) already runs on every PR or on a schedule. (Status 2026-10-02:
+  dependency-review was removed from CI; see the F-03 status note.)
 - A pre-commit pipeline runs Bandit, detect-secrets, and TruffleHog locally.
 
 This PR closes three small but real gaps and surfaces three forward-looking
@@ -79,6 +81,10 @@ Phase-1 commitments that future code must honor.
   would not be recorded.
 - **Fix applied**: Added the standard pinned `harden-runner` step (same
   SHA used elsewhere in the repo) before the checkout.
+- **Status (2026-10-02)**: Moot. GitHub now bills Advanced Security, so
+  `dependency-review.yml` and the `dependency-security` job were deleted
+  from CI. The fix above no longer applies because the workflow no longer
+  exists.
 
 ### F-04 Tech spec example backend URL uses `http://` | **Low (informational)**
 
@@ -205,7 +211,7 @@ Phase-1 commitments that future code must honor.
 | A03 Injection | No SQL/shell code yet; CLAUDE.md mandates parameterized queries | Code review enforces |
 | A04 Insecure Design | F-01 fixed (assert-in-production now blocked) | Threat model in Phase 1 |
 | A05 Security Misconfiguration | F-02, F-03 fixed; F-05 forward-looking | Add security-headers middleware |
-| A06 Vulnerable Components | pip-audit, OSV, OWASP-DC, dependency-review all wired | Maintain `known-vulnerabilities.md` |
+| A06 Vulnerable Components | pip-audit, OSV, OWASP-DC, dependency-review all wired; dependency-review removed 2026-10-02 (see F-03 status) | Maintain `known-vulnerabilities.md` |
 | A07 AuthN Failures | No app-level auth (Cloudflare at edge per ADR-002) | F-06; resolved 2026-09-29, Authentik forward auth plus in-app JWT validation (ADR-005) |
 | A08 Software/Data Integrity | All Actions pinned to SHA; harden-runner in audit mode | Maintain on every PR |
 | A09 Logging Failures | structlog mandated; CLAUDE.md forbids logging financial values or emails beyond INFO auth events | Enforced via code review |

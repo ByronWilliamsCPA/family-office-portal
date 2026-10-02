@@ -275,7 +275,7 @@ jobs:
         run: |
           # #CRITICAL fail closed if change detection did not succeed. Every
           # scan job needs detect-changes, so a failed detect-changes skips
-          # all four scans, and "skipped" alone would pass with no scan run.
+          # all three scans, and "skipped" alone would pass with no scan run.
           # #VERIFY a skipped scan is acceptable only after detect-changes
           # succeeded and reported no security-relevant files.
           is_acceptable() { [[ "$1" == "success" || "$1" == "skipped" ]]; }
