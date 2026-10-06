@@ -263,7 +263,7 @@
           ],
           "name": "Search documents by name (HTMX partial)",
           "request": {
-            "description": "Return the search results fragment used by the Documents page.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
+            "description": "Return the search results fragment used by the Documents page.\n\nWhen the document service is not connected the fragment says so, as the\nfull page does, instead of listing links that could only answer 503.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -303,12 +303,7 @@
                   "pm.test('status is in the expected range', function () {",
                   "    const expected = authed ? [200, 422] : [403];",
                   "    pm.expect(expected).to.include(pm.response.code);",
-                  "});",
-                  "if (authed) {",
-                  "    pm.test('response body is valid JSON', function () {",
-                  "        pm.response.to.have.jsonBody();",
-                  "    });",
-                  "}"
+                  "});"
                 ],
                 "type": "text/javascript"
               }
@@ -316,7 +311,7 @@
           ],
           "name": "Download a document",
           "request": {
-            "description": "Download a document.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
+            "description": "Download a document as a file.\n\nAuthentication: Viewer or Admin (ADR-005); Viewers get 404 for\nconfidential documents.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nReturns:\n    StreamingResponse: The file as an attachment.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -355,12 +350,7 @@
                   "pm.test('status is in the expected range', function () {",
                   "    const expected = authed ? [200, 422] : [403];",
                   "    pm.expect(expected).to.include(pm.response.code);",
-                  "});",
-                  "if (authed) {",
-                  "    pm.test('response body is valid JSON', function () {",
-                  "        pm.response.to.have.jsonBody();",
-                  "    });",
-                  "}"
+                  "});"
                 ],
                 "type": "text/javascript"
               }
@@ -368,7 +358,7 @@
           ],
           "name": "Inline document preview",
           "request": {
-            "description": "Show a document inline.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
+            "description": "Show a document in the browser.\n\nPDFs and images open inline; any other type downloads instead. A link\nmay add ``#page=N`` to open a PDF at a page. Authentication: Viewer or\nAdmin (ADR-005); Viewers get 404 for confidential documents.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nReturns:\n    StreamingResponse: The file, shown inline when its type allows.",
             "header": [
               {
                 "key": "X-authentik-jwt",

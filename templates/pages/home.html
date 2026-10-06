@@ -37,7 +37,7 @@
     {% elif recent_documents %}
     <ul class="space-y-2">
       {% for doc in recent_documents %}
-      <li><a class="text-blue-800 underline" href="{{ doc['proxy_url'] }}">{{ doc['name'] }}</a></li>
+      <li><a class="text-blue-800 underline" href="{{ doc['id'] | document_url }}">{{ doc['name'] }}</a></li>
       {% endfor %}
     </ul>
     {% else %}

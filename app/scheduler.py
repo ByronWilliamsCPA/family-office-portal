@@ -88,18 +88,25 @@ JOB_INTERVAL_HOURS: dict[str, int] = {
 # snapshots, so a day is covered even when the job is late.
 DAILY_SNAPSHOT_TIME: tuple[int, int] = (12, 0)
 
-# llc-manager document types mapped to the portal's document categories.
-_DOCUMENT_CATEGORIES: dict[str, str] = {
-    "tax_return": "Tax Returns",
-    "tax_election": "Tax Returns",
-    "insurance_policy": "Insurance",
-    "operating_agreement": "LLCs",
-    "articles_of_organization": "LLCs",
-    "annual_report": "LLCs",
-    "meeting_minutes": "LLCs",
-}
-# Unknown types land in "Other", never in a specific folder such as "LLCs",
-# so a will or power of attorney is not filed as an LLC document.
+# The document categories the documents contract allows. A missing or
+# unknown category is filed under "Other", never guessed into a specific
+# folder, so a will or power of attorney is not filed as an LLC document.
+# #ASSUME: data integrity: the document service sends exactly these names,
+# with this case. A new or renamed category lands in "Other", and each
+# refresh logs ``document_category_unknown`` with a count.
+# #VERIFY: after the document service changes its categories, check the
+# refresh logs for that event and update this set to match.
+DOCUMENT_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "Estate Planning",
+        "LLCs",
+        "Trusts",
+        "Tax Returns",
+        "Insurance",
+        "Personal records",
+        "Other",
+    }
+)
 _DEFAULT_DOCUMENT_CATEGORY = "Other"
 
 # #CRITICAL: concurrency: APScheduler runs jobs on a thread pool and admins can
@@ -413,39 +420,175 @@ def refresh_positions() -> None:
 
 
 def _document_category(item: dict[str, Any]) -> str:
+    """Return the item's category when allowed, otherwise "Other".
+
+    Args:
+        item (dict[str, Any]): One document from the contract endpoint.
+
+    Returns:
+        str: One of ``DOCUMENT_CATEGORIES``.
+    """
     category = item.get("category")
-    if category:
-        return str(category)
-    return _DOCUMENT_CATEGORIES.get(
-        str(item.get("document_type", "")), _DEFAULT_DOCUMENT_CATEGORY
+    if isinstance(category, str) and category in DOCUMENT_CATEGORIES:
+        return category
+    return _DEFAULT_DOCUMENT_CATEGORY
+
+
+def _is_unknown_category(item: dict[str, Any]) -> bool:
+    """Report whether the item names a category the portal does not know.
+
+    Args:
+        item (dict[str, Any]): One document from the contract endpoint.
+
+    Returns:
+        bool: True when a category is present but not allowed.
+    """
+    category = item.get("category")
+    if category is None:
+        return False
+    return not (isinstance(category, str) and category in DOCUMENT_CATEGORIES)
+
+
+def _document_id(item: dict[str, Any]) -> str | None:
+    """Return a usable document ID, or None.
+
+    An ID must be text or a whole number, and must form one URL path
+    segment: not blank, not ``.`` or ``..``, and without ``/``.
+
+    Args:
+        item (dict[str, Any]): One document from the contract endpoint.
+
+    Returns:
+        str | None: The ID as text, or None when it is missing or unusable.
+    """
+    raw = item.get("id")
+    if isinstance(raw, bool) or not isinstance(raw, str | int):
+        return None
+    doc_id = str(raw).strip()
+    if not doc_id or doc_id in {".", ".."} or "/" in doc_id:
+        return None
+    return doc_id
+
+
+def _document_title(item: dict[str, Any]) -> str | None:
+    """Return the trimmed title, or None when it is missing or blank.
+
+    Args:
+        item (dict[str, Any]): One document from the contract endpoint.
+
+    Returns:
+        str | None: The title, or None when it is not usable text.
+    """
+    title = item.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    return title.strip()
+
+
+def _optional_text(item: dict[str, Any], key: str) -> str | None:
+    """Return a scalar field as text, or None for a missing or odd value.
+
+    Args:
+        item (dict[str, Any]): One document from the contract endpoint.
+        key (str): Field name.
+
+    Returns:
+        str | None: Text for a string or number; None for anything else,
+        including null, true or false, lists and objects.
+    """
+    value = item.get(key)
+    if isinstance(value, bool) or not isinstance(value, str | int | float):
+        return None
+    return str(value)
+
+
+def _document_row(item: object, fetched_at: str) -> tuple[tuple[Any, ...], bool] | None:
+    """Turn one contract document into a cache row, or None to skip it.
+
+    Args:
+        item (object): One element of the contract endpoint's ``items``.
+        fetched_at (str): ISO 8601 refresh time.
+
+    Returns:
+        tuple[tuple[Any, ...], bool] | None: Column values for
+        ``documents`` and whether the item named an unknown category, or
+        None when the item has no usable ID or title.
+    """
+    if not isinstance(item, dict):
+        logger.warning("document_skipped", reason="not_an_object")
+        return None
+    record = cast("dict[str, Any]", item)
+    doc_id = _document_id(record)
+    if doc_id is None:
+        logger.warning("document_skipped", reason="no_usable_id")
+        return None
+    title = _document_title(record)
+    if title is None:
+        # The ID is logged, never the title, which may be personal.
+        logger.warning("document_skipped", reason="no_usable_title", id=doc_id)
+        return None
+    row = (
+        doc_id,
+        title,
+        _document_category(record),
+        _optional_text(record, "entity_id"),
+        _optional_text(record, "document_type"),
+        _optional_text(record, "document_date"),
+        0 if record.get("is_confidential") is False else 1,
+        _optional_text(record, "created_at"),
+        _optional_text(record, "updated_at"),
+        f"/documents/{doc_id}/preview",
+        fetched_at,
     )
+    return row, _is_unknown_category(record)
 
 
 def _write_documents(
-    conn: sqlite3.Connection, items: list[dict[str, Any]], fetched_at: str
+    conn: sqlite3.Connection, items: list[Any], fetched_at: str
 ) -> int:
+    """Replace cached document metadata with the documents-contract fields.
+
+    #CRITICAL: security: ``is_confidential`` fails closed. Only a JSON
+    ``false`` makes a document visible to Viewers; a missing, null or
+    non-boolean flag hides it. #VERIFY: tests/unit/test_scheduler.py covers
+    each case.
+
+    A malformed item (no usable ID or title, or a repeated ID) is skipped
+    and logged by ID rather than failing the whole refresh. Skipping fails
+    closed: the item is not shown, and the rest of the cache, including any
+    change to ``is_confidential``, still updates.
+
+    Args:
+        conn (sqlite3.Connection): Open connection inside a transaction.
+        items (list[Any]): Documents from the contract endpoint.
+        fetched_at (str): ISO 8601 refresh time.
+
+    Returns:
+        int: Number of documents written.
+    """
     conn.execute("DELETE FROM documents")
+    seen: set[str] = set()
+    unknown_categories = 0
     for item in items:
-        doc_id = str(item["id"])
+        parsed = _document_row(item, fetched_at)
+        if parsed is None:
+            continue
+        row, unknown_category = parsed
+        doc_id = str(row[0])
+        if doc_id in seen:
+            logger.warning("document_skipped", reason="duplicate_id", id=doc_id)
+            continue
+        seen.add(doc_id)
+        unknown_categories += unknown_category
         conn.execute(
             "INSERT INTO documents (id, name, category, entity_id, document_type, "
             "document_date, is_confidential, added_at, modified_at, proxy_url, "
             "fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                doc_id,
-                item.get("name") or item["title"],
-                _document_category(item),
-                None if item.get("entity_id") is None else str(item["entity_id"]),
-                item.get("document_type"),
-                item.get("document_date"),
-                1 if item.get("is_confidential") else 0,
-                item.get("added_at") or item.get("created_at"),
-                item.get("modified_at") or item.get("updated_at"),
-                f"/documents/{doc_id}/preview",
-                fetched_at,
-            ),
+            row,
         )
-    return len(items)
+    if unknown_categories:
+        logger.warning("document_category_unknown", count=unknown_categories)
+    return len(seen)
 
 
 def refresh_documents() -> None:

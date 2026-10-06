@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi.templating import Jinja2Templates
 
 from app.config import BACKENDS, display_zone, load_settings
+from app.document_files import document_url
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -84,6 +85,7 @@ def money(value: Decimal | float | None) -> str:
 templates.env.filters["friendly_time"] = friendly_time
 templates.env.filters["friendly_date"] = friendly_date
 templates.env.filters["money"] = money
+templates.env.filters["document_url"] = document_url
 
 
 def render(

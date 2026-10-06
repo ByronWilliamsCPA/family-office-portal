@@ -616,7 +616,7 @@
     },
     "/documents/search": {
       "get": {
-        "description": "Return the search results fragment used by the Documents page.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
+        "description": "Return the search results fragment used by the Documents page.\n\nWhen the document service is not connected the fragment says so, as the\nfull page does, instead of listing links that could only answer 503.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
         "operationId": "documents_search_documents_search_get",
         "parameters": [
           {
@@ -663,7 +663,7 @@
     },
     "/documents/{document_id}/download": {
       "get": {
-        "description": "Download a document.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
+        "description": "Download a document as a file.\n\nAuthentication: Viewer or Admin (ADR-005); Viewers get 404 for\nconfidential documents.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nReturns:\n    StreamingResponse: The file as an attachment.",
         "operationId": "document_download_documents__document_id__download_get",
         "parameters": [
           {
@@ -678,15 +678,10 @@
         ],
         "responses": {
           "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
+            "description": "The file, streamed from the document service"
           },
           "404": {
-            "description": "Document not found"
+            "description": "Document not found, or not visible to this user"
           },
           "422": {
             "content": {
@@ -698,8 +693,14 @@
             },
             "description": "Validation Error"
           },
+          "502": {
+            "description": "The document service failed or refused the request"
+          },
           "503": {
-            "description": "Not yet available"
+            "description": "The document service is not connected"
+          },
+          "504": {
+            "description": "The document service did not answer in time"
           }
         },
         "summary": "Download a document",
@@ -710,7 +711,7 @@
     },
     "/documents/{document_id}/preview": {
       "get": {
-        "description": "Show a document inline.\n\nThe planned file proxy to llc-manager is not built yet; until it is, a known\ndocument returns 503.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nRaises:\n    HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.",
+        "description": "Show a document in the browser.\n\nPDFs and images open inline; any other type downloads instead. A link\nmay add ``#page=N`` to open a PDF at a page. Authentication: Viewer or\nAdmin (ADR-005); Viewers get 404 for confidential documents.\n\nArgs:\n    request (Request): Current request.\n    document_id (str): Document identifier.\n\nReturns:\n    StreamingResponse: The file, shown inline when its type allows.",
         "operationId": "document_preview_documents__document_id__preview_get",
         "parameters": [
           {
@@ -725,15 +726,10 @@
         ],
         "responses": {
           "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
+            "description": "The file, streamed from the document service"
           },
           "404": {
-            "description": "Document not found"
+            "description": "Document not found, or not visible to this user"
           },
           "422": {
             "content": {
@@ -745,8 +741,14 @@
             },
             "description": "Validation Error"
           },
+          "502": {
+            "description": "The document service failed or refused the request"
+          },
           "503": {
-            "description": "Not yet available"
+            "description": "The document service is not connected"
+          },
+          "504": {
+            "description": "The document service did not answer in time"
           }
         },
         "summary": "Inline document preview",

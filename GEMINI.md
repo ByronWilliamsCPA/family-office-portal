@@ -48,7 +48,8 @@ Most project context, conventions, and rules are written for Claude Code.
   plain `X-authentik-*` headers lets anyone forge identity. This is `#CRITICAL`
   per RAD. See ADR-005.
 - **Data layer**: route handlers read from SQLite only; they never call backend
-  HTTP services directly. APScheduler refresh jobs are the only writers. See
+  HTTP services directly, except the document file proxy for preview and
+  download (ADR-007). APScheduler refresh jobs are the only writers. See
   ADR-003.
 - **Stale data**: a stale section must show the last cached value with a "last
   updated" label, never an error page or blank section.
