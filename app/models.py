@@ -28,6 +28,7 @@ from pydantic import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from pydantic.config import JsonDict
     from pydantic_core import ErrorDetails
 
 
@@ -317,10 +318,35 @@ class BalanceRow(BaseModel):
         return provider_of(self.account_id)
 
 
+# A delivery that passes validation. It is the request example in the
+# OpenAPI document, so the generated contract test sends a body the route
+# accepts. ``tests/unit/test_balance_intake.py`` checks that it validates.
+_EXAMPLE_DELIVERY: JsonDict = {
+    "items": [
+        {
+            "account_id": "pp:example-brokerage",
+            "account_name": "Example Brokerage",
+            "entity_id": "11111111-2222-4333-8444-555555555555",
+            "category": "Cash",
+            "source": "broker_report",
+            "value": "1234.56",
+            "currency": "USD",
+            "as_of": "2026-09-26",
+        }
+    ],
+    "total": 1,
+}
+
+
 class BalanceDelivery(BaseModel):
     """A full delivery of balance rows: ``{"items": [...], "total": n}``."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        frozen=True,
+        json_schema_extra={"examples": [_EXAMPLE_DELIVERY]},
+    )
 
     items: list[BalanceRow] = Field(
         max_length=MAX_DELIVERY_ROWS,

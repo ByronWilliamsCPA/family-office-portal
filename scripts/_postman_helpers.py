@@ -263,7 +263,9 @@ def _test_script(
             ``X-API-Key`` instead of the Authentik token. Without a
             ``balanceIntakeKey`` variable it must answer 404 (no key is
             configured on the app) or 401 (a key is configured but not
-            sent); either way the body is JSON.
+            sent); either way the body is JSON. With the variable set the
+            request carries the schema example, which is a valid delivery,
+            so only ``success_status`` passes.
 
     Returns:
         str: JavaScript test script for the Postman request.
@@ -275,7 +277,7 @@ def _test_script(
             [
                 "const keyed = Boolean(pm.variables.get('balanceIntakeKey'));",
                 "pm.test('status is in the expected range', function () {",
-                f"    const expected = keyed ? [{allowed_js}] : [401, 404];",
+                f"    const expected = keyed ? [{success_status}] : [401, 404];",
                 "    pm.expect(expected).to.include(pm.response.code);",
                 "});",
                 "pm.test('response body is valid JSON', function () {",

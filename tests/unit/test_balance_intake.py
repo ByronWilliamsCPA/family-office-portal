@@ -27,6 +27,7 @@ from httpx import AsyncClient
 from starlette.concurrency import run_in_threadpool
 from structlog.testing import capture_logs
 
+from app.models import BalanceDelivery
 from app.routes.balances import MAX_BODY_BYTES
 
 URL = "/api/v1/balances"
@@ -747,3 +748,37 @@ async def test_a_full_delivery_of_maximum_values_sums_and_renders(
     assert total[0] == daily[0] == 2000 * 100_000_000_000_000
     assert (await client.get("/")).status_code == 200
     assert (await client.get("/finances")).status_code == 200
+
+
+def _intake_postman_item() -> dict[str, Any]:
+    """Return the committed Postman request for the intake route."""
+    root = Path(__file__).resolve().parents[2]
+    collection = json.loads(
+        (root / "docs" / "api" / "postman-collection.json").read_text("utf-8")
+    )
+    pending: list[dict[str, Any]] = list(collection["item"])
+    while pending:
+        item = pending.pop()
+        pending.extend(item.get("item", []))
+        request = item.get("request", {})
+        if request.get("method") == "POST" and "balances" in request["url"]["path"]:
+            return item
+    msg = "no POST balances request in the Postman collection"
+    raise AssertionError(msg)
+
+
+def test_schema_example_is_a_valid_delivery() -> None:
+    """The OpenAPI request example passes the same validation as a delivery."""
+    examples = BalanceDelivery.model_json_schema()["examples"]
+    assert len(examples) == 1
+    delivery = BalanceDelivery.model_validate(examples[0])
+    assert delivery.total == len(delivery.items) == 1
+
+
+def test_postman_intake_request_sends_a_valid_body_and_expects_success() -> None:
+    """With a key the contract test sends a valid delivery and accepts only 200."""
+    item = _intake_postman_item()
+    body = json.loads(item["request"]["body"]["raw"])
+    BalanceDelivery.model_validate(body)
+    script = "\n".join(item["event"][0]["script"]["exec"])
+    assert "keyed ? [200] : [401, 404]" in script
