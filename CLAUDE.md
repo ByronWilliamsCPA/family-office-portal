@@ -68,7 +68,7 @@ app/
   config.py            # Pydantic settings read by cache, scheduler, templates
   models.py            # Pydantic request/response models
   retrieval/           # Embeddings client, Qdrant store, chunk-set reader, and the
-                       # scheduled indexer command (ADR-006)
+                       # scheduled indexer and tax-law commands (ADR-006)
   middleware/          # Authentik forward-auth JWT validation middleware (ADR-005)
   routes/              # One module per section: home, documents, finances,
                        # portfolio, entities, health, admin; plus balances
@@ -266,6 +266,9 @@ Never implement password-based auth, OAuth flows, or session cookies.
 - The unchanged-skip needs hash, consent, model and the content digest
   (`index_digest`) to match on every point. Replace writes new points before
   pruning old ones; never switch back to delete-then-write.
+- The tax-law collection has its own command, `python -m app.retrieval.tax_law`,
+  reading the knowledge-base file at `TAX_LAW_PATH`. Never commit that file
+  or any of its content; it is licensed material. Tests use synthetic data.
 
 ## Environment variables
 

@@ -23,6 +23,8 @@ Variables (names only; values come from the deployment environment):
 * ``QDRANT_URL`` and ``QDRANT_API_KEY``: the vector database and its key.
 * ``CHUNKS_DIR``: read-only directory of chunk-set files, used only by the
   indexer command.
+* ``TAX_LAW_PATH``: the tax-law knowledge-base JSON file, used only by the
+  tax-law indexer command.
 
 A value that cannot be parsed (for example a non-numeric timeout) makes
 ``load_retrieval_settings`` raise ``RetrievalConfigError`` naming the variable,
@@ -136,6 +138,7 @@ class RetrievalSettings(BaseSettings):
         qdrant_url (str): Qdrant base URL. Empty means off.
         qdrant_api_key (SecretStr): Qdrant API key.
         chunks_dir (str): Chunk-set directory read by the indexer.
+        tax_law_path (str): Knowledge-base file read by the tax-law indexer.
     """
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
@@ -147,6 +150,7 @@ class RetrievalSettings(BaseSettings):
     qdrant_url: str = ""
     qdrant_api_key: SecretStr = _UNSET
     chunks_dir: str = ""
+    tax_law_path: str = ""
 
     def embedding_connection(self) -> EmbeddingConnection | None:
         """Return the embedding connection, or None when its URL is unset.
@@ -201,6 +205,15 @@ class RetrievalSettings(BaseSettings):
             Path | None: The configured directory, or None.
         """
         value = self.chunks_dir.strip()
+        return Path(value) if value else None
+
+    def tax_law_file(self) -> Path | None:
+        """Return the tax-law knowledge-base file, or None when unset.
+
+        Returns:
+            Path | None: The configured file, or None.
+        """
+        value = self.tax_law_path.strip()
         return Path(value) if value else None
 
     def search_connected(self) -> bool:

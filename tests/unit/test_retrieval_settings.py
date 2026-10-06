@@ -36,6 +36,7 @@ RETRIEVAL_VARS = (
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "CHUNKS_DIR",
+    "TAX_LAW_PATH",
 )
 
 
@@ -68,6 +69,7 @@ def test_everything_is_off_when_unset() -> None:
     assert settings.embedding_connection() is None
     assert settings.qdrant_connection() is None
     assert settings.chunks_path() is None
+    assert settings.tax_law_file() is None
     assert settings.search_connected() is False
 
 
@@ -247,3 +249,13 @@ def test_bad_setting_is_reported_once_and_never_raises(
         }
     ]
     assert "soon" not in repr(logs)
+
+
+def test_tax_law_path_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The knowledge-base path comes from TAX_LAW_PATH; blank means off."""
+    monkeypatch.setenv("TAX_LAW_PATH", " /data/knowledge/kb.json ")
+    assert load_retrieval_settings().tax_law_file() == Path("/data/knowledge/kb.json")
+    monkeypatch.setenv("TAX_LAW_PATH", "   ")
+    assert load_retrieval_settings().tax_law_file() is None

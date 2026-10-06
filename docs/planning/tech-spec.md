@@ -288,6 +288,7 @@ without its key is a configuration error:
 | `EMBED_TIMEOUT_SECONDS` | `60` | Timeout for one embedding request |
 | `QDRANT_URL`, `QDRANT_API_KEY` | unset | Vector database and its key |
 | `CHUNKS_DIR` | unset | Read-only chunk-set directory, used only by the indexer command |
+| `TAX_LAW_PATH` | unset | Tax-law knowledge-base JSON file, used only by `python -m app.retrieval.tax_law` |
 
 ## 5. Security
 

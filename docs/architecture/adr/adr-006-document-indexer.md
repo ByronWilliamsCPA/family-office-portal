@@ -78,6 +78,7 @@ write) fails that document only, with exit 1; the run goes on.
 | `app/retrieval/qdrant_store.py` | Collection creation and schema check with `dense` and `sparse` vectors; the `family-docs` writer |
 | `app/retrieval/chunk_sets.py` | Reads and checks one chunk-set file; consent, tax-return and confidentiality rules |
 | `app/retrieval/indexer.py` | The command: per-file rules, content digest, removed-file cleanup, exit status |
+| `app/retrieval/tax_law.py` | A second command for the `tax-law` collection (see below) |
 
 ### Collection
 
@@ -172,6 +173,7 @@ the command exits 2 and logs one warning; templates get
 | `QDRANT_URL` | unset | Qdrant base URL |
 | `QDRANT_API_KEY` | unset | Qdrant key; required when `QDRANT_URL` is set |
 | `CHUNKS_DIR` | unset | Read-only chunk-set directory (indexer only) |
+| `TAX_LAW_PATH` | unset | Tax-law knowledge-base JSON file (tax-law command only) |
 
 No host or port is hardcoded. Keys are read as secrets, kept as `SecretStr`
 on the connection objects, and never logged.
@@ -184,6 +186,33 @@ its key, or a timeout that cannot be parsed) makes
 never the value. The indexer command reports the same problem and exits 2.
 Whether to fail the web process at startup instead is left for when search
 lands and the setting becomes part of serving pages.
+
+### Tax-law collection
+
+`python -m app.retrieval.tax_law` indexes the tax-law knowledge base, one
+JSON file at `TAX_LAW_PATH`, into its own collection, `tax-law`, created
+through the same `ensure_collection` (so it also has the `sparse` slot). The
+file's shape is a contract with the repository that maintains it:
+`{"knowledgeBase": [{"id", "topic", "subtopics": [{"id", "title",
+"content"}]}]}`.
+
+- One point per subtopic with non-blank content. The payload is the subtopic
+  `id` and `title` (what chat cites), `topic`, `topic_id`, `text`,
+  `embedding_model` and `embedded_at`. The embedded text is the title and
+  content, with no query prefix. Point IDs derive from the subtopic `id`.
+- The whole file is checked first. A subtopic `id` used twice anywhere
+  rejects the file, and so does a file with nothing to index, so a bad or
+  empty file never empties the collection.
+- Every subtopic is embedded before any write. New points are upserted, then
+  points whose subtopic left the file are deleted.
+- It is a separate command, not part of the document indexer, because the
+  file changes rarely and its settings differ: with `TAX_LAW_PATH`, the
+  embedding URL or the Qdrant URL unset it exits 2 and logs one line. It
+  exits 1 when the file cannot be used or embedding fails, leaving the
+  collection unchanged.
+
+The knowledge base is licensed material: it lives outside this repository
+and tests use a small synthetic file.
 
 ## Options Considered
 
