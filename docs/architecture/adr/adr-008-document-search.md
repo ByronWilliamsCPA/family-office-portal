@@ -2,6 +2,9 @@
 
 > **Status**: Accepted
 > **Date**: 2026-10-05
+> **Relates to**: [ADR-003](adr-003-backend-data-aggregation.md) (search is the
+> carve-out ADR-006 announced; see "Relation to earlier decisions"),
+> [ADR-006](adr-006-document-indexer.md)
 
 ## TL;DR
 
@@ -33,6 +36,24 @@ Constraints:
 - Chat is written against a fixed request and response shape so search can
   move behind an HTTP API later without changing the caller.
 
+## Relation to earlier decisions
+
+- **ADR-003** says request handlers read only from SQLite and never call a
+  remote service. Search does the opposite by design: during a request it
+  embeds the query (HTTP to the embedding service) and queries Qdrant. This is
+  the carve-out ADR-006 announced, limited to this function. It is not a
+  cache read, and it does not widen the rule for anything else: a route that
+  needs a different remote call needs its own ADR. Page renders that do not
+  search still read SQLite only.
+- **ADR-007** is another bounded exception to ADR-003 (the live file proxy).
+  The project rule files list each exception by its ADR.
+- **ADR-006** defines the collections and payload this ADR reads, and says
+  search must show "not connected" rather than an error when a service is
+  down. Here that is `build_search_service()` returning None when the
+  services are unset or misconfigured (including an unparseable value), and
+  `SearchError` when a call fails or no requested collection has been
+  indexed; the caller turns either into "not connected".
+
 ## Decision
 
 ### Shape
@@ -48,7 +69,10 @@ than 4000 characters, `top_k` outside 1 to 8, an empty `entity_ids`, an
 unknown collection) raise `ValueError`.
 
 `include_confidential` comes from the signed-in user's role
-(`app.routes._context.include_confidential`), never from user input.
+(`app.routes._context.include_confidential`), never from user input. It must
+be a real `bool`: any other type raises `ValueError`, and the filter and the
+second-line check lift confidentiality only for exactly `True`, so a truthy
+string or number fails closed.
 
 ### Filters
 
@@ -66,10 +90,23 @@ results when more than `k` confidential points score higher.
 
 Each collection returns up to `top_k`; results are merged by cosine score and
 cut to `top_k`. A collection that does not exist yet is skipped with a
-warning. The query embedding and Qdrant calls use a 10-second timeout. The
-latency budget is 2 seconds: a slower search still returns and logs
-`search_over_budget`. Embedding or Qdrant failures raise `SearchError`, whose
-message names the failure type only. Logs carry counts, collections, the
+warning and listed in `SearchResponse.missing_collections`, so "nothing
+relevant" can be told apart from "not indexed yet". If every requested
+collection is missing, search raises `SearchError` instead of returning an
+empty answer.
+
+The query embedding and each Qdrant call use a 10-second request timeout, and
+the query embedding makes one attempt only: the indexer's retry and backoff
+(up to 30 seconds per `Retry-After`) would defeat a timeout meant to report a
+down service quickly. The timeout is per call, not a deadline for the whole
+search. The worst case is one embedding call plus, for each of the two
+collections, an existence check and a query: five calls, so about 50 seconds if
+every one stalls to its timeout (`httpx` applies the timeout to each phase of a
+request, so it is a loose bound). The usual case is far shorter, and a
+fast-failing dependency is reported at once. The latency budget is 2 seconds:
+a slower search still returns and logs `search_over_budget`; it is a signal,
+not a limit. Embedding or Qdrant failures (including a Qdrant rate-limit
+response) raise `SearchError`, whose message names the failure type only. Logs carry counts, collections, the
 admin flag and elapsed time, never the query or result text.
 
 `search` is blocking; `search_async` runs it in a worker thread for async
@@ -85,6 +122,9 @@ or Qdrant is unset or misconfigured, and the caller shows "not connected".
   has a `sparse` slot.
 - Fakes prove the rules. They do not prove latency against the real
   embedding service and Qdrant.
+- A stalled dependency can hold a chat request for tens of seconds in the
+  worst case (see above). A single overall deadline is a possible follow-up
+  if the live measurement shows stalls.
 
 Open assumption: #ASSUME a warm query embedding plus two Qdrant queries
 finish well under 2 seconds on the deployed services. #VERIFY run a search
