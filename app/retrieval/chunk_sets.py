@@ -32,9 +32,10 @@ Fail-closed rules applied here:
 
 #ASSUME: data integrity: the pipeline names tax documents with the category
 ``Tax Returns`` or the document types ``tax_return`` and ``tax_election``,
-give or take case, spaces and hyphens. #VERIFY: compare
-``TAX_RETURN_CATEGORIES`` and ``TAX_RETURN_DOCUMENT_TYPES`` with the
-pipeline's classification vocabulary whenever that vocabulary changes.
+give or take case, spaces and hyphens. Both fields are checked against the
+one name set, so a tax-election ``category`` also counts. #VERIFY: compare
+``TAX_DOCUMENT_NAMES`` with the pipeline's classification vocabulary
+whenever that vocabulary changes.
 """
 
 from __future__ import annotations
@@ -48,8 +49,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-TAX_RETURN_CATEGORIES = frozenset({"tax_returns", "tax_return"})
-TAX_RETURN_DOCUMENT_TYPES = frozenset(
+# Normalized names that mark a tax return, matched in ``category`` and in
+# ``document_type`` alike.
+TAX_DOCUMENT_NAMES = frozenset(
     {"tax_return", "tax_returns", "tax_election", "tax_elections"}
 )
 
@@ -189,14 +191,11 @@ def _is_tax_return(document: JsonObject, chunks: list[JsonObject]) -> bool:
     # non-string values and a set with no classification at all.
     classified = False
     for source in (document, *chunks):
-        for name, names in (
-            ("category", TAX_RETURN_CATEGORIES),
-            ("document_type", TAX_RETURN_DOCUMENT_TYPES),
-        ):
+        for name in ("category", "document_type"):
             value = source.get(name)
             if value is None:
                 continue
-            if not isinstance(value, str) or _normalized(value) in names:
+            if not isinstance(value, str) or _normalized(value) in TAX_DOCUMENT_NAMES:
                 return True
             classified = classified or bool(value.strip())
     return not classified
