@@ -22,14 +22,20 @@ How a search runs:
    Text is returned as plain data with a citation: document, chunk, title and
    pages for family documents; subtopic ``id`` and ``title`` for tax law.
 
+A collection that has not been indexed yet is reported in
+``SearchResponse.missing_collections``; when every requested collection is
+missing, search raises ``SearchError`` so the caller can show "not connected"
+instead of an empty answer.
+
 Logs carry counts and timings, never the query or result text.
 
 #CRITICAL: security: viewers must never receive confidential text. The
 Qdrant filter is the barrier; ``_drop_confidential`` re-checks every
 returned point as a second line. #VERIFY: tests/unit/test_search.py
 ::test_non_admin_never_sees_a_confidential_point,
-::test_point_without_a_boolean_false_flag_is_excluded and
-::test_filter_runs_inside_the_query_not_after_it.
+::test_point_without_a_boolean_false_flag_is_excluded,
+::test_filter_runs_inside_the_query_not_after_it and
+::test_second_line_drops_every_flag_but_false.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ import anyio.to_thread
 import httpx
 import structlog
 from qdrant_client import models
+from qdrant_client.common.client_exceptions import QdrantException
 from qdrant_client.http.exceptions import ApiException
 
 from app.retrieval.embeddings import EmbeddingClient, EmbeddingError
@@ -71,8 +78,15 @@ SEARCHABLE_COLLECTIONS = (FAMILY_DOCS_COLLECTION, TAX_LAW_COLLECTION)
 # target; a slower search still returns, with a warning.
 LATENCY_BUDGET_SECONDS = 2.0
 # Request timeout for the query embedding and each Qdrant call. Short, so a
-# down service is reported quickly instead of holding the chat request.
+# down service is reported quickly instead of holding the chat request. It is
+# a per-call httpx timeout, not a deadline for the whole search: the worst
+# case is one embedding call plus two Qdrant calls per collection, each
+# bounded separately.
 SEARCH_TIMEOUT_SECONDS = 10
+# One embedding attempt: the indexer's retry and backoff (up to 30 seconds of
+# Retry-After) would defeat the timeout above. A failed attempt is a
+# SearchError and chat shows "not connected".
+SEARCH_EMBED_ATTEMPTS = 1
 
 
 class SearchError(RuntimeError):
@@ -111,11 +125,17 @@ class SearchRequest:
         """Reject requests outside the search interface.
 
         Raises:
-            ValueError: If the query is blank or too long, ``top_k`` is out
-                of range, ``entity_ids`` is empty or has a blank id, or a
-                collection is unknown or none is given. Messages name the
-                field, never its value.
+            ValueError: If ``include_confidential`` is not a bool, the query
+                is blank or too long, ``top_k`` is out of range,
+                ``entity_ids`` is empty or has a blank id, or a collection
+                is unknown or none is given. Messages name the field, never
+                its value.
         """
+        # Exact type check: a truthy non-bool such as "false" must not grant
+        # admin visibility, so reject it instead of coercing it.
+        if type(self.include_confidential) is not bool:
+            msg = "include_confidential must be a bool"
+            raise ValueError(msg)
         if not self.query.strip() or len(self.query) > MAX_QUERY_CHARS:
             msg = f"query must be non-blank and at most {MAX_QUERY_CHARS} characters"
             raise ValueError(msg)
@@ -223,20 +243,26 @@ class SearchResponse:
     Attributes:
         results (tuple[SearchResult, ...]): At most ``top_k`` results.
         embedding_model (str): Model that embedded the query.
+        missing_collections (tuple[str, ...]): Requested collections that do
+            not exist yet, so "no relevant passages" can be told apart from
+            "not indexed".
     """
 
     results: tuple[SearchResult, ...]
     embedding_model: str
+    missing_collections: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         """Return the response as plain data.
 
         Returns:
-            dict[str, object]: ``results`` and ``embedding_model``.
+            dict[str, object]: ``results``, ``embedding_model`` and
+                ``missing_collections``.
         """
         return {
             "results": [result.as_dict() for result in self.results],
             "embedding_model": self.embedding_model,
+            "missing_collections": list(self.missing_collections),
         }
 
 
@@ -246,14 +272,16 @@ def family_docs_filter(
     """Build the payload filter that runs inside the family-docs query.
 
     Args:
-        include_confidential (bool): True for an admin caller.
+        include_confidential (bool): True for an admin caller. Any value
+            other than ``True`` is treated as a viewer.
         entity_ids (Sequence[str] | None): Entities to limit results to.
 
     Returns:
         models.Filter | None: The filter, or None when nothing is limited.
     """
     must: list[models.Condition] = []
-    if not include_confidential:
+    # Only a real True lifts the filter; anything else is treated as a viewer.
+    if include_confidential is not True:
         # A point without the field, or with any value but false, does not
         # match: unlabeled data fails closed.
         must.append(
@@ -412,20 +440,23 @@ class SearchService:
             SearchResponse: Up to ``top_k`` results, best first.
 
         Raises:
-            SearchError: If the embedding service or Qdrant fails. The
-                message names the failure type only.
+            SearchError: If the embedding service or Qdrant fails, or none of
+                the requested collections exists. The message names the
+                failure type only.
         """
         started = self._clock()
         try:
-            results = self._run(request)
+            results, missing = self._run(request)
         except EmbeddingError as exc:
             reason = f"query embedding failed: {exc}"
-        except (ApiException, httpx.HTTPError) as exc:
+        except (ApiException, QdrantException, httpx.HTTPError) as exc:
             reason = f"Qdrant request failed: {type(exc).__name__}"
         else:
             self._log_finished(request, len(results), self._clock() - started)
             return SearchResponse(
-                results=tuple(results), embedding_model=self._embedder.model
+                results=tuple(results),
+                embedding_model=self._embedder.model,
+                missing_collections=missing,
             )
         logger.error("search_failed", reason=reason)
         raise SearchError(reason)
@@ -441,12 +472,17 @@ class SearchService:
         """
         return await anyio.to_thread.run_sync(self.search, request)
 
-    def _run(self, request: SearchRequest) -> list[SearchResult]:
+    def _run(
+        self, request: SearchRequest
+    ) -> tuple[list[SearchResult], tuple[str, ...]]:
         vector = self._embedder.embed_query(request.query)
         results: list[SearchResult] = []
-        for collection in dict.fromkeys(request.collections):
+        missing: list[str] = []
+        wanted = tuple(dict.fromkeys(request.collections))
+        for collection in wanted:
             if not self._client.collection_exists(collection):
                 logger.warning("search_collection_missing", collection=collection)
+                missing.append(collection)
                 continue
             is_family = collection == FAMILY_DOCS_COLLECTION
             query_filter = (
@@ -465,11 +501,14 @@ class SearchService:
                 limit=request.top_k,
                 with_payload=True,
             ).points
-            if is_family and not request.include_confidential:
+            if is_family and request.include_confidential is not True:
                 points = _drop_confidential(points)
             results.extend(_to_result(collection, point) for point in points)
+        if len(missing) == len(wanted):
+            msg = "no requested collection has been indexed"
+            raise SearchError(msg)
         results.sort(key=lambda result: result.score, reverse=True)
-        return results[: request.top_k]
+        return results[: request.top_k], tuple(missing)
 
     @staticmethod
     def _log_finished(request: SearchRequest, count: int, elapsed: float) -> None:
@@ -496,7 +535,8 @@ def build_search_service(
     """Build the search service from settings, or None when search is off.
 
     Search is off when the embedding service or Qdrant is unset or
-    misconfigured; the caller then shows "not connected".
+    misconfigured, including an unparseable environment value; the caller
+    then shows "not connected".
 
     Args:
         settings (RetrievalSettings | None): Settings to use; None reads the
@@ -505,8 +545,8 @@ def build_search_service(
     Returns:
         SearchService | None: A ready service, or None when not connected.
     """
-    current = settings or load_retrieval_settings()
     try:
+        current = settings or load_retrieval_settings()
         embedding = current.embedding_connection()
         qdrant = current.qdrant_connection()
     except RetrievalConfigError:
@@ -519,6 +559,6 @@ def build_search_service(
         timeout_seconds=min(embedding.timeout_seconds, SEARCH_TIMEOUT_SECONDS),
     )
     return SearchService(
-        EmbeddingClient(embedding),
+        EmbeddingClient(embedding, max_attempts=SEARCH_EMBED_ATTEMPTS),
         make_client(qdrant, timeout=SEARCH_TIMEOUT_SECONDS),
     )
