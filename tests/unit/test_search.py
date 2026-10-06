@@ -86,29 +86,26 @@ def search(embedder: EmbeddingClient, qdrant: QdrantClient) -> SearchService:
     return SearchService(embedder, qdrant)
 
 
-def add_doc(
-    qdrant: QdrantClient,
-    name: str,
-    text: str,
-    *,
-    confidential: object = False,
-    entity_id: str = ENTITY_A,
-    **extra: object,
-) -> None:
-    """Write one family-docs point; ``_MISSING`` leaves out is_confidential."""
+def add_doc(qdrant: QdrantClient, name: str, text: str, **overrides: object) -> None:
+    """Write one family-docs point.
+
+    Keyword overrides replace payload fields. ``is_confidential`` defaults to
+    False; passing ``_MISSING`` leaves the field out entirely.
+    """
     payload: dict[str, Any] = {
         "document_id": f"doc-{name}",
         "chunk_id": f"chunk-{name}",
         "title": f"Title {name}",
-        "entity_id": entity_id,
+        "entity_id": ENTITY_A,
         "document_date": "2024-01-31",
         "page_range": [2, 3],
         "section_hierarchy": ["Report", f"Section {name}"],
         "text": text,
-        **extra,
+        "is_confidential": False,
+        **overrides,
     }
-    if confidential is not _MISSING:
-        payload["is_confidential"] = confidential
+    if payload["is_confidential"] is _MISSING:
+        del payload["is_confidential"]
     qdrant.upsert(
         FAMILY_DOCS_COLLECTION,
         points=[
@@ -162,8 +159,8 @@ def test_non_admin_never_sees_a_confidential_point(
 ) -> None:
     """A viewer's search returns only points marked is_confidential false."""
     for n in range(5):
-        add_doc(qdrant, f"secret-{n}", MATCHING, confidential=True)
-    add_doc(qdrant, "open", "manager agreement", confidential=False)
+        add_doc(qdrant, f"secret-{n}", MATCHING, is_confidential=True)
+    add_doc(qdrant, "open", "manager agreement", is_confidential=False)
     response = search.search(SearchRequest(query=QUERY))
     assert doc_ids(response) == ["doc-open"]
 
@@ -172,8 +169,8 @@ def test_admin_sees_confidential_points(
     search: SearchService, qdrant: QdrantClient
 ) -> None:
     """An admin search applies no confidentiality filter."""
-    add_doc(qdrant, "secret", MATCHING, confidential=True)
-    add_doc(qdrant, "open", "manager agreement", confidential=False)
+    add_doc(qdrant, "secret", MATCHING, is_confidential=True)
+    add_doc(qdrant, "open", "manager agreement", is_confidential=False)
     response = search.search(SearchRequest(query=QUERY, include_confidential=True))
     assert set(doc_ids(response)) == {"doc-secret", "doc-open"}
 
@@ -183,8 +180,8 @@ def test_point_without_a_boolean_false_flag_is_excluded(
     search: SearchService, qdrant: QdrantClient, flag: object
 ) -> None:
     """A missing, null or non-boolean flag fails closed for a viewer."""
-    add_doc(qdrant, "unlabeled", MATCHING, confidential=flag)
-    add_doc(qdrant, "open", "manager agreement", confidential=False)
+    add_doc(qdrant, "unlabeled", MATCHING, is_confidential=flag)
+    add_doc(qdrant, "open", "manager agreement", is_confidential=False)
     response = search.search(SearchRequest(query=QUERY))
     assert doc_ids(response) == ["doc-open"]
 
@@ -199,9 +196,9 @@ def test_filter_runs_inside_the_query_not_after_it(
     nothing.
     """
     for n in range(12):
-        add_doc(qdrant, f"secret-{n}", MATCHING, confidential=True)
+        add_doc(qdrant, f"secret-{n}", MATCHING, is_confidential=True)
     for n in range(10):
-        add_doc(qdrant, f"open-{n}", f"manager filler{n}", confidential=False)
+        add_doc(qdrant, f"open-{n}", f"manager filler{n}", is_confidential=False)
     response = search.search(SearchRequest(query=QUERY))
     assert len(response.results) == DEFAULT_TOP_K
     assert all(cid and cid.startswith("doc-open-") for cid in doc_ids(response))
@@ -228,8 +225,8 @@ def test_results_are_checked_again_after_the_query(
         """Build no filter, as if the filter step were lost."""
 
     monkeypatch.setattr(search_module, "family_docs_filter", no_filter)
-    add_doc(qdrant, "secret", MATCHING, confidential=True)
-    add_doc(qdrant, "open", "manager agreement", confidential=False)
+    add_doc(qdrant, "secret", MATCHING, is_confidential=True)
+    add_doc(qdrant, "open", "manager agreement", is_confidential=False)
     with capture_logs() as logs:
         response = search.search(SearchRequest(query=QUERY))
     assert doc_ids(response) == ["doc-open"]
@@ -250,7 +247,7 @@ def test_entity_filter_limits_family_results(
     """Only points for the requested entities come back."""
     add_doc(qdrant, "a", MATCHING, entity_id=ENTITY_A)
     add_doc(qdrant, "b", MATCHING, entity_id=ENTITY_B)
-    add_doc(qdrant, "b-secret", MATCHING, entity_id=ENTITY_B, confidential=True)
+    add_doc(qdrant, "b-secret", MATCHING, entity_id=ENTITY_B, is_confidential=True)
     response = search.search(SearchRequest(query=QUERY, entity_ids=(ENTITY_B,)))
     assert doc_ids(response) == ["doc-b"]
 
@@ -260,7 +257,7 @@ def test_entity_filter_combines_with_admin(
 ) -> None:
     """For an admin the entity filter still applies on its own."""
     add_doc(qdrant, "a", MATCHING, entity_id=ENTITY_A)
-    add_doc(qdrant, "b-secret", MATCHING, entity_id=ENTITY_B, confidential=True)
+    add_doc(qdrant, "b-secret", MATCHING, entity_id=ENTITY_B, is_confidential=True)
     response = search.search(
         SearchRequest(query=QUERY, include_confidential=True, entity_ids=(ENTITY_B,))
     )
