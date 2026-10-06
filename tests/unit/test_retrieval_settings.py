@@ -115,8 +115,9 @@ def test_embed_url_without_model_is_an_error(monkeypatch: pytest.MonkeyPatch) ->
     """Embed url without model is an error."""
     _set_all(monkeypatch)
     monkeypatch.delenv("EMBEDDING_MODEL")
+    settings = load_retrieval_settings()
     with pytest.raises(RetrievalConfigError, match="EMBEDDING_MODEL"):
-        load_retrieval_settings().embedding_connection()
+        settings.embedding_connection()
 
 
 def test_qdrant_url_without_key_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,10 +165,11 @@ def test_embedding_connection_rejects_blank_values(
     base_url: str, key: str, model: str, timeout: float, message: str
 ) -> None:
     """Embedding connection rejects blank values."""
+    api_key = SecretStr(key)
     with pytest.raises(RetrievalConfigError, match=message):
         EmbeddingConnection(
             base_url=base_url,
-            api_key=SecretStr(key),
+            api_key=api_key,
             model=model,
             timeout_seconds=timeout,
         )
@@ -180,8 +182,9 @@ def test_qdrant_connection_rejects_blank_values(
     url: str, key: str, message: str
 ) -> None:
     """Qdrant connection rejects blank values."""
+    api_key = SecretStr(key)
     with pytest.raises(RetrievalConfigError, match=message):
-        QdrantConnection(url=url, api_key=SecretStr(key))
+        QdrantConnection(url=url, api_key=api_key)
 
 
 @pytest.mark.parametrize("value", ["abc", "", "nan", "inf", "0", "-1"])

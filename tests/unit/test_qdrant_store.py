@@ -183,8 +183,9 @@ def test_existing_collection_with_the_wrong_schema_is_refused(
             {"sparse": models.SparseVectorParams()} if sparse else None
         ),
     )
+    writer = FamilyDocsWriter(client)
     with pytest.raises(VectorStoreError, match="unexpected vector schema"):
-        FamilyDocsWriter(client).ensure_collection()
+        writer.ensure_collection()
 
 
 class RacingClient(RecordingClient):
@@ -225,8 +226,9 @@ def test_other_create_errors_are_raised() -> None:
     """Any other refusal to create the collection is raised."""
     racing = RacingClient(500)
     try:
+        writer = FamilyDocsWriter(racing)
         with pytest.raises(UnexpectedResponse):
-            FamilyDocsWriter(racing).ensure_collection()
+            writer.ensure_collection()
     finally:
         racing.close()
 
@@ -329,14 +331,16 @@ def test_large_documents_are_written_in_batches(
 
 def test_rejects_two_points_at_one_position(writer: FamilyDocsWriter) -> None:
     """Two points at one chunk position are refused before any write."""
+    points = [_point("d1", 0), _point("d1", 0)]
     with pytest.raises(VectorStoreError, match="share a chunk position"):
-        writer.replace_document("d1", [_point("d1", 0), _point("d1", 0)])
+        writer.replace_document("d1", points)
 
 
 def test_rejects_a_payload_for_another_document(writer: FamilyDocsWriter) -> None:
     """Rejects a payload for another document."""
+    points = [_point("d2", 0)]
     with pytest.raises(VectorStoreError, match="another document"):
-        writer.replace_document("d1", [_point("d2", 0)])
+        writer.replace_document("d1", points)
 
 
 def test_stored_document_reads_the_state_fields(writer: FamilyDocsWriter) -> None:

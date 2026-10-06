@@ -104,8 +104,9 @@ def test_empty_input_makes_no_request(service: FakeEmbeddingService) -> None:
 
 def test_wrong_key_is_an_error(service: FakeEmbeddingService) -> None:
     """Wrong key is an error, marked as a refused key and not retried."""
+    client = _client(service, key="wrong-key")
     with pytest.raises(EmbeddingError, match="401") as excinfo:
-        _client(service, key="wrong-key").embed_query("q")
+        client.embed_query("q")
     assert excinfo.value.status_code == 401
     assert excinfo.value.refused_key is True
     assert excinfo.value.retryable is False
@@ -115,8 +116,9 @@ def test_wrong_key_is_an_error(service: FakeEmbeddingService) -> None:
 def test_server_error_does_not_leak_input_text(service: FakeEmbeddingService) -> None:
     """Server error does not leak input text and is not retried."""
     service.fail_with = 500
+    client = _client(service)
     with pytest.raises(EmbeddingError) as excinfo:
-        _client(service).embed_documents(["confidential passage text"])
+        client.embed_documents(["confidential passage text"])
     assert "confidential" not in str(excinfo.value)
     assert "500" in str(excinfo.value)
     assert excinfo.value.refused_key is False
@@ -141,8 +143,9 @@ def test_retries_stop_after_the_last_attempt(service: FakeEmbeddingService) -> N
     """Retries stop after the last attempt and raise a retryable error."""
     service.fail_with = 503
     sleeps: list[float] = []
+    client = _client(service, sleeps=sleeps)
     with pytest.raises(EmbeddingError, match="503") as excinfo:
-        _client(service, sleeps=sleeps).embed_query("q")
+        client.embed_query("q")
     assert excinfo.value.retryable is True
     assert len(service.requests) == 3
     assert sleeps == [1.0, 2.0]
@@ -166,8 +169,9 @@ def test_retry_after_is_honored_up_to_a_cap(
 
 def test_max_attempts_must_be_positive(service: FakeEmbeddingService) -> None:
     """Max attempts must be positive."""
+    connection = service.connection()
     with pytest.raises(ValueError, match="max_attempts"):
-        EmbeddingClient(service.connection(), max_attempts=0)
+        EmbeddingClient(connection, max_attempts=0)
 
 
 def test_a_later_batch_failure_fails_the_whole_call(
@@ -176,16 +180,18 @@ def test_a_later_batch_failure_fails_the_whole_call(
     """A failure in a later batch fails the call; no partial result returns."""
     service.fail_with = 500
     service.fail_after = 1
+    client = _client(service, batch_size=2)
     with pytest.raises(EmbeddingError, match="500"):
-        _client(service, batch_size=2).embed_documents(["a", "b", "c"])
+        client.embed_documents(["a", "b", "c"])
     assert len(service.requests) == 2
 
 
 def test_wrong_dimensions_is_an_error(service: FakeEmbeddingService) -> None:
     """Wrong dimensions is an error."""
     service.dimensions = 768
+    client = _client(service)
     with pytest.raises(EmbeddingError, match="1024"):
-        _client(service).embed_query("q")
+        client.embed_query("q")
 
 
 def test_transport_failure_is_an_error_without_text(
@@ -194,8 +200,9 @@ def test_transport_failure_is_an_error_without_text(
     """Transport failure is retried, then an error without text."""
     service.raise_error = httpx.ConnectError("refused")
     sleeps: list[float] = []
+    client = _client(service, sleeps=sleeps)
     with pytest.raises(EmbeddingError, match="ConnectError") as excinfo:
-        _client(service, sleeps=sleeps).embed_documents(["private words"])
+        client.embed_documents(["private words"])
     assert "private" not in str(excinfo.value)
     assert excinfo.value.retryable is True
     assert sleeps == [1.0, 2.0]
@@ -207,8 +214,9 @@ def test_other_transport_errors_are_not_retried(
     """An error that a retry cannot fix is raised at once."""
     service.raise_error = httpx.UnsupportedProtocol("bad scheme")
     sleeps: list[float] = []
+    client = _client(service, sleeps=sleeps)
     with pytest.raises(EmbeddingError, match="UnsupportedProtocol") as excinfo:
-        _client(service, sleeps=sleeps).embed_query("q")
+        client.embed_query("q")
     assert excinfo.value.retryable is False
     assert sleeps == []
 
@@ -257,8 +265,9 @@ def test_vectors_are_returned_in_index_order() -> None:
 )
 def test_malformed_bodies_are_errors(body: object) -> None:
     """Malformed bodies are errors."""
+    response = _response(body)
     with pytest.raises(EmbeddingError, match="malformed"):
-        parse_response(_response(body), 1)
+        parse_response(response, 1)
 
 
 def test_non_json_body_is_an_error() -> None:
@@ -271,8 +280,9 @@ def test_non_json_body_is_an_error() -> None:
 @pytest.mark.parametrize("value", ["0.1", True, None])
 def test_non_numeric_values_are_errors(value: object) -> None:
     """Non numeric values are errors."""
+    response = _response({"data": [_item(0, value=value)]})
     with pytest.raises(EmbeddingError, match="non-numeric"):
-        parse_response(_response({"data": [_item(0, value=value)]}), 1)
+        parse_response(response, 1)
 
 
 def test_non_finite_values_are_errors() -> None:
@@ -296,11 +306,13 @@ def test_huge_integer_values_are_errors() -> None:
 
 def test_wrong_count_is_an_error() -> None:
     """Wrong count is an error."""
+    response = _response({"data": [_item(0)]})
     with pytest.raises(EmbeddingError, match="1 vectors for 2 inputs"):
-        parse_response(_response({"data": [_item(0)]}), 2)
+        parse_response(response, 2)
 
 
 def test_duplicate_indexes_are_an_error() -> None:
     """Duplicate indexes are an error."""
+    response = _response({"data": [_item(0), _item(0)]})
     with pytest.raises(EmbeddingError, match="unexpected indexes"):
-        parse_response(_response({"data": [_item(0), _item(0)]}), 2)
+        parse_response(response, 2)

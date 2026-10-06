@@ -52,6 +52,7 @@ _RETRYABLE_TRANSPORT_ERRORS = (
 )
 _BACKOFF_SECONDS = 1.0
 _MAX_RETRY_DELAY_SECONDS = 30.0
+_MALFORMED_BODY = "Embedding service returned a malformed body"
 
 # The query text is appended directly after "Query:". The newline is real.
 QUERY_PREFIX = (
@@ -135,17 +136,14 @@ def _vector_from_item(item: object) -> tuple[int, list[float]]:
             value is not a finite number.
     """
     if not isinstance(item, dict):
-        msg = "Embedding service returned a malformed body"
-        raise EmbeddingError(msg)
+        raise EmbeddingError(_MALFORMED_BODY)
     entry = cast("dict[str, object]", item)
     index = entry.get("index", 0)
     raw = entry.get("embedding")
     if isinstance(index, bool) or not isinstance(index, int):
-        msg = "Embedding service returned a malformed body"
-        raise EmbeddingError(msg)
+        raise EmbeddingError(_MALFORMED_BODY)
     if not isinstance(raw, list):
-        msg = "Embedding service returned a malformed body"
-        raise EmbeddingError(msg)
+        raise EmbeddingError(_MALFORMED_BODY)
     values = cast("list[object]", raw)
     vector: list[float] = []
     for value in values:
@@ -189,14 +187,12 @@ def parse_response(response: httpx.Response, expected: int) -> list[list[float]]
     try:
         body: object = response.json()
     except ValueError as exc:
-        msg = "Embedding service returned a malformed body"
-        raise EmbeddingError(msg) from exc
+        raise EmbeddingError(_MALFORMED_BODY) from exc
     data = (
         cast("dict[str, object]", body).get("data") if isinstance(body, dict) else None
     )
     if not isinstance(data, list):
-        msg = "Embedding service returned a malformed body"
-        raise EmbeddingError(msg)
+        raise EmbeddingError(_MALFORMED_BODY)
     items = [_vector_from_item(item) for item in cast("list[object]", data)]
     if len(items) != expected:
         msg = f"Embedding service returned {len(items)} vectors for {expected} inputs"

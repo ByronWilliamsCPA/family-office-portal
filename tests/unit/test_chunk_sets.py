@@ -287,8 +287,9 @@ def test_consented_tax_return_may_be_indexed() -> None:
 
 def test_document_id_must_match_the_file_name() -> None:
     """Document id must match the file name."""
+    data = chunk_set(DOC_B)
     with pytest.raises(ChunkSetError, match="file name"):
-        parse_chunk_set(chunk_set(DOC_B), DOC_A)
+        parse_chunk_set(data, DOC_A)
 
 
 def test_chunk_from_another_document_is_an_error() -> None:
@@ -309,8 +310,9 @@ def test_chunks_that_disagree_on_sha256_are_an_error() -> None:
 
 def test_non_string_sha256_is_an_error() -> None:
     """Non string sha256 is an error."""
+    data = chunk_set() | {"sha256": 12}
     with pytest.raises(ChunkSetError, match="sha256"):
-        parse_chunk_set(chunk_set() | {"sha256": 12}, DOC_A)
+        parse_chunk_set(data, DOC_A)
 
 
 @pytest.mark.parametrize("blank", ["", "   "])
