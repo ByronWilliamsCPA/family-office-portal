@@ -25,9 +25,9 @@ It runs behind Authentik forward auth and is read-only from the user's perspecti
 ## Architecture rules
 
 - Route handlers return `TemplateResponse` (server-rendered HTML). Never return a raw dict or `JSONResponse` except for HTMX partials returning HTML fragments.
-- Route handlers read from SQLite via `cache.py` only. They never call backend HTTP services directly.
+- Route handlers read from SQLite via `cache.py` only. They never call backend HTTP services directly, except the document file proxy for preview and download (`app/document_files.py`, ADR-007), which checks visibility in the cache first.
 - Auth is handled by Authentik forward auth at the reverse proxy; the app only validates the signed `X-authentik-jwt` header (ADR-005). Never add password-based auth, OAuth flows, session cookies, or a login view.
-- Backend HTTP calls (httpx) belong only in APScheduler refresh jobs in `scheduler.py`.
+- Backend HTTP calls (httpx) belong only in APScheduler refresh jobs in `scheduler.py`, plus the document file proxy in `app/document_files.py` (ADR-007).
 
 ## Do not do
 

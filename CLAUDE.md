@@ -93,7 +93,7 @@ Component-to-file mapping from `docs/planning/tech-spec.md`:
 | Component | Location | Notes |
 | --- | --- | --- |
 | Authentik JWT Middleware | `app/middleware/authentik.py` | Validates the signed `X-authentik-jwt` header (HS256 signature keyed by `AUTHENTIK_JWT_SECRET`, `iss`, `aud`, `exp`), maps groups to a role, fails closed with 403 (ADR-005) |
-| Route Handlers | `app/routes/` | Return `TemplateResponse`; read SQLite via `cache.py`. Exception: `balances.py` (balance intake) checks `X-API-Key`, returns JSON, and writes through `app.scheduler.store_balance_delivery` |
+| Route Handlers | `app/routes/` | Return `TemplateResponse`; read SQLite via `cache.py`; document preview and download stream through `app/document_files.py` (ADR-007). Exception: `balances.py` (balance intake) checks `X-API-Key`, returns JSON, and writes through `app.scheduler.store_balance_delivery` |
 | Cache Reader | `app/cache.py` | Async `aiosqlite` reads; called by routes |
 | Refresh Scheduler | `app/scheduler.py` | Sync writes; calls backend services via `httpx` |
 | Staleness Checker | `app/cache.py` | `is_stale(dataset, threshold_hours)` |
@@ -120,8 +120,11 @@ Key documents to read before making architectural or data-model decisions:
   Authentik forward auth at the reverse proxy; the portal only validates the signed
   JWT; do not add application-level password handling (supersedes ADR-002)
 - `docs/architecture/adr/adr-003-backend-data-aggregation.md` -- all data flows through
-  the SQLite read-through cache; route handlers never call backend services directly;
-  backends are optional keyed pairs (2026-09-30 amendment)
+  the SQLite read-through cache; route handlers never call backend services directly
+  (except the document file proxy, ADR-007); backends are optional keyed pairs
+  (2026-09-30 amendment)
+- `docs/architecture/adr/adr-007-live-document-file-proxy.md` -- document preview and
+  download stream the file from llc-manager per request, after a cache visibility check
 - `docs/planning/roadmap.md` -- current phase and acceptance criteria
 
 ## Tech stack conventions
@@ -214,10 +217,11 @@ Never implement password-based auth, OAuth flows, or session cookies.
 
 ## Data layer rules
 
-- Route handlers read from SQLite only. They never call backend HTTP services.
-  The one exception to read-only is the balance intake route, the only handler
-  that writes: it goes through the process-wide write lock in a worker thread
-  (ADR-003 amendment 2026-10-05).
+- Route handlers read from SQLite only. They never call backend HTTP services,
+  except the document file proxy described below (ADR-007). The one exception
+  to read-only is the balance intake route, the only handler that writes: it
+  goes through the process-wide write lock in a worker thread (ADR-003
+  amendment 2026-10-05).
 - Refresh jobs (APScheduler) call backend services and write to SQLite. They never
   serve HTTP responses.
 - Every cached dataset has a `fetched_at` ISO8601 timestamp column.
@@ -231,7 +235,7 @@ Never implement password-based auth, OAuth flows, or session cookies.
   Never show a blank section or an unhandled error to a primary user.
 - `pp-security-master` is alpha-status. Treat its 500 responses as expected; surface
   as stale data, not as errors in user-visible templates. #ASSUME API contract unstable
-- Document preview and download are the one exception to "never call a
+- Document preview and download are an exception to "never call a
   backend": they stream the file from llc-manager per request
   (`app/document_files.py`, ADR-007). The cache decides visibility first, so a
   Viewer's request for a confidential document makes no upstream call. Keep

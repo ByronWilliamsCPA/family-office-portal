@@ -168,6 +168,8 @@ superseded one.
 
 **Decision**: The portal maintains a local SQLite cache populated by a scheduled background
 refresher. Route handlers read from SQLite only; they never call backend services directly.
+The one recorded exception is the document file proxy for preview and download
+([ADR-007](docs/architecture/adr/adr-007-live-document-file-proxy.md)).
 
 **Rationale**: Live fetching means one slow backend blocks the entire page. The cache
 decouples portal availability from backend availability. Staleness indicators tell the user
@@ -794,3 +796,4 @@ Immediate environment setup tasks to begin Phase 0:
 - *[ADR-002: Authentication via Cloudflare Zero Trust](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) (superseded)*
 - *[ADR-003: Backend Data Aggregation Pattern](docs/architecture/adr/adr-003-backend-data-aggregation.md)*
 - *[ADR-005: Authentication via Authentik Forward Auth](docs/architecture/adr/adr-005-authentication-authentik-forward-auth.md)*
+- *[ADR-007: Live Proxy for Document Files](docs/architecture/adr/adr-007-live-document-file-proxy.md)*

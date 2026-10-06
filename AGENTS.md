@@ -62,7 +62,9 @@ These rules are non-negotiable, mirrored from CLAUDE.md so non-Claude agents
   from plain `X-authentik-*` headers. Skipping any check is a security defect
   tagged `#CRITICAL`. See ADR-005.
 - **Route handlers read from SQLite only.** They must never call backend HTTP
-  services directly. See ADR-003.
+  services directly, except the document file proxy for preview and download
+  (`app/document_files.py`), which checks visibility in the cache first. See
+  ADR-003 and ADR-007.
 - **Python 3.12 only.** Do not introduce 3.13 syntax or features.
 - **No CDN-loaded assets in production.** HTMX and Chart.js are vendored
   static files; never reference a CDN URL in templates.

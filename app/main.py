@@ -3,9 +3,10 @@
 """FastAPI application: startup checks, lifespan, middleware, and routes.
 
 Identity comes from the Authentik forward-auth middleware described in
-ADR-005. Page route handlers read only from the SQLite cache (ADR-003); the
-APScheduler refresh jobs fill it. The one exception is the balance intake
-route, which authenticates with its own key and writes delivered balances
+ADR-005. Page route handlers read only from the SQLite cache (ADR-003), except
+the document file proxy, which streams preview and download from the document
+service (ADR-007); the APScheduler refresh jobs fill the cache. The balance
+intake route authenticates with its own key and writes delivered balances
 (ADR-003 and ADR-005 amendments of 2026-10-05).
 """
 

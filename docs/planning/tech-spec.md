@@ -161,7 +161,8 @@ CREATE TABLE documents (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     category    TEXT NOT NULL,             -- 'Estate Planning' | 'LLCs' | 'Trusts' |
-                                           --   'Tax Returns' | 'Insurance' | 'Other'
+                                           --   'Tax Returns' | 'Insurance' |
+                                           --   'Personal records' | 'Other'
     added_at    TEXT NOT NULL,             -- ISO8601 from source system
     modified_at TEXT,
     proxy_url   TEXT NOT NULL,             -- portal proxy path for download/preview
@@ -209,7 +210,8 @@ CREATE TABLE refresh_log (
 | `llc-manager` | `GET /api/v1/entities` | `[{id, name, type, state, agent, status, next_date, ...}]` |
 | `pp-security-master` | `GET /api/v1/portfolio/summary` | `{holdings: [...], performance: [...]}` |
 | `xero_crypto` | `GET /api/v1/positions` | `[{asset, quantity, usd_value, ...}]` |
-| `llc-manager` (documents) | `GET /api/v1/documents` | `[{id, name, category, added_at, url, ...}]` |
+| `llc-manager` (documents) | `GET /api/v1/documents` | `{items: [{id, title, category, entity_id, document_type, document_date, is_confidential, created_at, updated_at, ...}], total}` |
+| `llc-manager` (document file) | `GET /api/v1/documents/{id}/file` | The file bytes with its `Content-Type`; streamed per request by the preview and download routes (ADR-007) |
 
 Upstream commercial systems -- **Kubera** (net worth aggregation), **Portfolio Performance**
 (desktop investment tracker), **Box** (document storage), and **Google Drive** -- are not

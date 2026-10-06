@@ -188,8 +188,8 @@ storage (Box integration handled by `family_office`; not a portal concern).
 
 **Acceptance Criteria**:
 
-- [ ] All six categories are visible (Estate Planning, LLCs, Trusts, Tax Returns,
-  Insurance, Other)
+- [ ] All seven categories are visible (Estate Planning, LLCs, Trusts, Tax Returns,
+  Insurance, Personal records, Other)
 - [ ] PDF opens inline with a visible download button
 - [ ] Download works on tablet without triggering a new browser window
 

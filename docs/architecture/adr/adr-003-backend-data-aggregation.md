@@ -4,6 +4,8 @@
 > **Date**: 2026-05-06
 > **Amended**: 2026-09-30 (optional, keyed backend connections; see "Amendment 2026-09-30" below)
 > **Amended**: 2026-10-05 (balance intake writer; see "Amendment 2026-10-05" below)
+> **Related**: [ADR-007](adr-007-live-document-file-proxy.md) records a bounded exception:
+> document preview and download stream the file from llc-manager per request
 
 ## TL;DR
 
