@@ -2,6 +2,7 @@
 {% from "partials/freshness.html" import freshness %}
 {% from "partials/as_of.html" import as_of_note %}
 {% from "partials/not_connected.html" import not_connected %}
+{% from "partials/balance_breakdown.html" import held, trend, sources, chart_scripts %}
 {% block title %}Home - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-6">Welcome</h1>
@@ -16,6 +17,11 @@
     {{ freshness(balances_updated, balances_stale) }}
     {{ as_of_note(oldest_as_of, as_of_stale, excluded_currency_count) }}
   </section>
+  <div class="md:col-span-2 space-y-6">
+    {{ held(categories, people, companies) }}
+    {{ trend(trend_rows, trend_json, trend_chart) }}
+    {{ sources(sources_list) }}
+  </div>
   <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="upcoming-heading">
     <h2 id="upcoming-heading" class="text-xl font-semibold mb-3">Coming up</h2>
     {% if not connected.llc_manager %}
@@ -46,3 +52,4 @@
   </section>
 </div>
 {% endblock %}
+{% block scripts %}{{ chart_scripts(trend_chart) }}{% endblock %}

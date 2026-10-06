@@ -10,9 +10,12 @@ is the one handler that writes, through ``app.scheduler``. Every reader returns
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from app.balances import local_today
 from app.db import get_connection
 
 if TYPE_CHECKING:
@@ -41,6 +44,24 @@ STALENESS_HOURS: dict[str, int] = {
     "documents": 24,
     "balances": 24,
 }
+
+
+# Provider of an account: the text before the first colon of its id.
+_PROVIDER_SQL = (
+    "CASE WHEN instr(account_id, ':') > 0 "
+    "THEN substr(account_id, 1, instr(account_id, ':') - 1) ELSE '' END"
+)
+
+# Order in which categories are listed; anything else follows alphabetically.
+CATEGORY_ORDER: tuple[str, ...] = (
+    "Investments",
+    "Retirement",
+    "Cash",
+    "Digital currency",
+    "Alternatives",
+)
+UNKNOWN_ENTITY = "Unknown entity"
+TREND_DAYS = 90
 
 
 async def _fetch_all(
@@ -235,6 +256,9 @@ async def last_fetched_at(dataset: str) -> datetime | None:
     Args:
         dataset (str): Dataset name from ``DATASET_TABLES``.
 
+    For ``balances`` this is the oldest of each provider's latest fetch time,
+    so one provider that stopped reporting makes the whole section stale.
+
     Returns:
         datetime | None: Latest fetch time, or None when the dataset is empty.
 
@@ -245,8 +269,18 @@ async def last_fetched_at(dataset: str) -> datetime | None:
     if table is None:
         msg = f"Unknown dataset: {dataset}"
         raise ValueError(msg)
-    # ``table`` comes from the DATASET_TABLES allowlist, never from input.
-    query = f"SELECT MAX(fetched_at) AS latest FROM {table}"  # nosec B608
+    if dataset == "balances":
+        # Balances arrive one provider at a time and a provider that stops
+        # reporting keeps its last rows, so the section is as fresh as its
+        # least recently updated provider, not its newest row.
+        query = (
+            "SELECT MIN(latest) AS latest FROM ("  # nosec B608
+            f"SELECT MAX(fetched_at) AS latest FROM {table} "
+            f"GROUP BY {_PROVIDER_SQL})"
+        )
+    else:
+        # ``table`` comes from the DATASET_TABLES allowlist, never from input.
+        query = f"SELECT MAX(fetched_at) AS latest FROM {table}"  # nosec B608
     rows = await _fetch_all(query)
     latest = rows[0]["latest"] if rows else None
     return _parse_timestamp(str(latest)) if latest else None
@@ -269,3 +303,249 @@ async def is_stale(dataset: str, threshold_hours: int) -> bool:
         return True
     age = datetime.now(timezone.utc) - latest
     return age > timedelta(hours=threshold_hours)
+
+
+# --------------------------------------------------------------------------- #
+# Balance aggregates (USD only; money is Decimal dollars, never a float)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class BalanceGroup:
+    """A total over a group of accounts.
+
+    Attributes:
+        name (str): Category or entity name shown to people.
+        total (Decimal): Sum of the group's USD balances, in dollars.
+        accounts (int): Number of accounts in the group.
+        kind (str | None): Entity type such as ``individual``; None for a
+            category or an unknown entity.
+    """
+
+    name: str
+    total: Decimal
+    accounts: int
+    kind: str | None = None
+
+
+@dataclass(frozen=True)
+class TrendPoint:
+    """The total of all accounts on one day.
+
+    Attributes:
+        date (str): Day, ``YYYY-MM-DD``.
+        total (Decimal): Sum of that day's USD balances, in dollars.
+    """
+
+    date: str
+    total: Decimal
+
+
+@dataclass(frozen=True)
+class ManualMark:
+    """An account whose value is entered by hand.
+
+    Attributes:
+        account_name (str): Account name shown to people.
+        entity_name (str): Owner name, or ``Unknown entity``.
+        as_of (str): Date the mark is true for, ``YYYY-MM-DD``.
+        age_days (int): Whole days from that date to today, never negative.
+    """
+
+    account_name: str
+    entity_name: str
+    as_of: str
+    age_days: int
+
+
+@dataclass(frozen=True)
+class BalanceSource:
+    """One feed of balances and how current its values are.
+
+    Attributes:
+        source (str): Feed name such as ``manual_mark``.
+        accounts (int): USD accounts the feed supplies.
+        oldest_as_of (str): Oldest as-of date among them.
+        newest_as_of (str): Newest as-of date among them.
+    """
+
+    source: str
+    accounts: int
+    oldest_as_of: str
+    newest_as_of: str
+
+
+@dataclass(frozen=True)
+class CashAccount:
+    """A cash or bank account with its date details.
+
+    Attributes:
+        name (str): Account name shown to people.
+        value (Decimal): Balance in dollars.
+        as_of (str): Date the balance is true for.
+        reconciled_through (str | None): Date through which the bank
+            statement is matched, when the feed supplies it.
+    """
+
+    name: str
+    value: Decimal
+    as_of: str
+    reconciled_through: str | None
+
+
+def _dollars(cents: object) -> Decimal:
+    """Convert integer cents to Decimal dollars with two places.
+
+    Args:
+        cents (object): Integer cent amount from SQLite.
+
+    Returns:
+        Decimal: Amount in dollars, for example ``Decimal("12.34")``.
+    """
+    return Decimal(int(str(cents))).scaleb(-2)
+
+
+def _category_rank(name: str) -> tuple[int, str]:
+    try:
+        return (CATEGORY_ORDER.index(name), name)
+    except ValueError:
+        return (len(CATEGORY_ORDER), name)
+
+
+async def get_balance_totals_by_category() -> list[BalanceGroup]:
+    """Return USD totals per category in a fixed, plain order.
+
+    Returns:
+        list[BalanceGroup]: One group per category that has balances.
+    """
+    rows = await _fetch_all(
+        "SELECT category, SUM(value_cents) AS cents, COUNT(*) AS accounts "
+        "FROM account_balances WHERE currency = 'USD' GROUP BY category"
+    )
+    groups = [
+        BalanceGroup(str(r["category"]), _dollars(r["cents"]), int(r["accounts"]))
+        for r in rows
+    ]
+    return sorted(groups, key=lambda g: _category_rank(g.name))
+
+
+async def get_balance_totals_by_entity() -> list[BalanceGroup]:
+    """Return USD totals per owning entity, largest first.
+
+    Names come from the cached entities table. An entity that is not cached,
+    or an account with no entity, is grouped as ``Unknown entity``; an id is
+    never used as a label.
+
+    Returns:
+        list[BalanceGroup]: One group per entity with balances.
+    """
+    rows = await _fetch_all(
+        "SELECT e.name AS name, e.type AS kind, SUM(b.value_cents) AS cents, "
+        "COUNT(*) AS accounts FROM account_balances b "
+        "LEFT JOIN entities e ON e.id = b.entity_id "
+        "WHERE b.currency = 'USD' GROUP BY e.id"
+    )
+    groups = [
+        BalanceGroup(
+            name=str(r["name"]) if r["name"] else UNKNOWN_ENTITY,
+            total=_dollars(r["cents"]),
+            accounts=int(r["accounts"]),
+            kind=str(r["kind"]).lower() if r["kind"] else None,
+        )
+        for r in rows
+    ]
+    return sorted(groups, key=lambda g: (-g.total, g.name))
+
+
+async def get_daily_totals(
+    days: int = TREND_DAYS, today: date | None = None
+) -> list[TrendPoint]:
+    """Return the total of all USD accounts per day for the last ``days`` days.
+
+    Args:
+        days (int): Length of the window, ending on ``today``.
+        today (date | None): Last day of the window; defaults to today in the
+            display time zone.
+
+    Returns:
+        list[TrendPoint]: One point per day that has history, oldest first.
+    """
+    end = today if today is not None else local_today()
+    start = end - timedelta(days=days - 1)
+    rows = await _fetch_all(
+        "SELECT date, SUM(value_cents) AS cents FROM balances_daily "
+        "WHERE currency = 'USD' AND date >= ? AND date <= ? "
+        "GROUP BY date ORDER BY date",
+        (start.isoformat(), end.isoformat()),
+    )
+    return [TrendPoint(str(r["date"]), _dollars(r["cents"])) for r in rows]
+
+
+async def get_manual_marks(today: date | None = None) -> list[ManualMark]:
+    """Return accounts valued by hand with how old each mark is, oldest first.
+
+    Args:
+        today (date | None): Date to measure age from; defaults to today in
+            the display time zone.
+
+    Returns:
+        list[ManualMark]: One entry per manually marked account.
+    """
+    now = today if today is not None else local_today()
+    rows = await _fetch_all(
+        "SELECT b.account_name AS name, e.name AS entity, b.as_of AS as_of "
+        "FROM account_balances b LEFT JOIN entities e ON e.id = b.entity_id "
+        "WHERE b.source = 'manual_mark' ORDER BY b.as_of, b.account_name"
+    )
+    return [
+        ManualMark(
+            account_name=str(r["name"]),
+            entity_name=str(r["entity"]) if r["entity"] else UNKNOWN_ENTITY,
+            as_of=str(r["as_of"]),
+            age_days=max((now - date.fromisoformat(str(r["as_of"]))).days, 0),
+        )
+        for r in rows
+    ]
+
+
+async def get_balance_sources() -> list[BalanceSource]:
+    """Return each balance feed with its accounts and as-of date range.
+
+    Returns:
+        list[BalanceSource]: One entry per feed, ordered by feed name.
+    """
+    rows = await _fetch_all(
+        "SELECT source, COUNT(*) AS accounts, MIN(as_of) AS oldest, "
+        "MAX(as_of) AS newest FROM account_balances WHERE currency = 'USD' "
+        "GROUP BY source ORDER BY source"
+    )
+    return [
+        BalanceSource(
+            str(r["source"]), int(r["accounts"]), str(r["oldest"]), str(r["newest"])
+        )
+        for r in rows
+    ]
+
+
+async def get_cash_accounts() -> list[CashAccount]:
+    """Return USD cash accounts, largest first, with reconciled-through dates.
+
+    Returns:
+        list[CashAccount]: Cash and bank accounts.
+    """
+    rows = await _fetch_all(
+        "SELECT account_name, value_cents, as_of, reconciled_through "
+        "FROM account_balances WHERE category = 'Cash' AND currency = 'USD' "
+        "ORDER BY value_cents DESC, account_name"
+    )
+    return [
+        CashAccount(
+            name=str(r["account_name"]),
+            value=_dollars(r["value_cents"]),
+            as_of=str(r["as_of"]),
+            reconciled_through=(
+                str(r["reconciled_through"]) if r["reconciled_through"] else None
+            ),
+        )
+        for r in rows
+    ]

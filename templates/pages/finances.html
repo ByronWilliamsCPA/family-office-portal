@@ -2,6 +2,7 @@
 {% from "partials/freshness.html" import freshness %}
 {% from "partials/as_of.html" import as_of_note %}
 {% from "partials/not_connected.html" import not_connected %}
+{% from "partials/balance_breakdown.html" import held, trend, sources, cash, chart_scripts %}
 {% block title %}Finances - Family Office{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-semibold mb-6">Finances</h1>
@@ -16,6 +17,15 @@
   {{ as_of_note(oldest_as_of, as_of_stale, excluded_currency_count) }}
   <p class="text-base text-slate-500 mt-2">The home, vehicles, and loans are not included yet.</p>
 </section>
+<div class="space-y-6 mb-6">
+  {{ held(categories, people, companies) }}
+  {{ trend(trend_rows, trend_json, trend_chart) }}
+  {{ cash(cash_accounts) }}
+  {{ sources(sources_list) }}
+  {% if is_admin %}
+  <p><a class="text-blue-800 underline" href="/admin/manual-marks">See which accounts are valued by hand</a></p>
+  {% endif %}
+</div>
 <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="crypto-heading">
   <h2 id="crypto-heading" class="text-xl font-semibold mb-3">Digital currency</h2>
   {% if not connected.xero_crypto %}
@@ -35,3 +45,4 @@
   {% if connected.xero_crypto %}{{ freshness(positions_updated, positions_stale) }}{% endif %}
 </section>
 {% endblock %}
+{% block scripts %}{{ chart_scripts(trend_chart) }}{% endblock %}

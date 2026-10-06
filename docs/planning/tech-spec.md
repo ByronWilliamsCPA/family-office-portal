@@ -211,6 +211,7 @@ CREATE TABLE refresh_log (
 | GET | `/entities/{id}` | Entity detail view | Viewer, Admin |
 | GET | `/admin/refresh-status` | Per-service refresh log | Admin only |
 | POST | `/admin/refresh/{service}` | Trigger manual refresh | Admin only |
+| GET | `/admin/manual-marks` | Accounts valued by hand, oldest first | Admin only |
 | POST | `/api/v1/balances` | Deliver account balances (collector) | `X-API-Key` header, not identity; disabled (404) when `BALANCE_INTAKE_API_KEY` is unset |
 
 ### Backend Service Contracts (Required from Backend Teams)

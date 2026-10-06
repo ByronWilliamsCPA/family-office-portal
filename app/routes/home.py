@@ -11,7 +11,11 @@ from starlette.responses import (
 )
 
 from app import cache
-from app.routes._context import balances_summary, include_confidential
+from app.routes._context import (
+    balance_breakdown,
+    balances_summary,
+    include_confidential,
+)
 from app.templating import render
 
 router = APIRouter(tags=["home"])
@@ -55,4 +59,5 @@ async def home(request: Request) -> Response:
         upcoming=upcoming,
         recent_documents=recent,
         **(await balances_summary()),
+        **(await balance_breakdown(is_admin=include_confidential(request))),
     )

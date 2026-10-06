@@ -67,9 +67,9 @@ def replace_balances(
     #ASSUME: product: there is no way to retire a provider that has stopped
     reporting. Its last rows stay in the stored balances and the daily
     history until a delivery names that provider again. The balance pages
-    (a follow-up change) judge staleness per provider from ``fetched_at``,
-    so a silent provider is labelled out of date there; until those pages
-    land, nothing shows balances to people. #VERIFY: the owner decides
+    judge staleness per provider from ``fetched_at`` (see
+    ``app.cache.last_fetched_at``), so a silent provider is labelled out of
+    date there. #VERIFY: the owner decides
     whether a retire action (or an expiry age) is wanted before any provider
     is switched off for good.
 

@@ -1,0 +1,105 @@
+{#- Balance blocks shared by Home and Finances. Money shows whole dollars. -#}
+{% macro group_table(heading, groups) -%}
+{% if groups %}
+<h3 class="text-lg font-semibold mt-4 mb-2">{{ heading }}</h3>
+<table class="w-full text-left">
+  <thead class="sr-only"><tr><th scope="col">Name</th><th scope="col">Total</th></tr></thead>
+  <tbody>
+    {% for g in groups %}
+    <tr class="border-t border-stone-200">
+      <th scope="row" class="py-2 font-normal">{{ g.name }}</th>
+      <td class="py-2 text-right">{{ g.total | money }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{%- endmacro %}
+
+{% macro held(categories, people, companies) -%}
+{% if categories %}
+<section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="held-heading">
+  <h2 id="held-heading" class="text-xl font-semibold mb-1">Where the money is held</h2>
+  {{ group_table("By type of account", categories) }}
+  {{ group_table("By person and household", people) }}
+  {{ group_table("By company and trust", companies) }}
+</section>
+{% endif %}
+{%- endmacro %}
+
+{% macro trend(points, chart_json, chart) -%}
+<section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="trend-heading">
+  <h2 id="trend-heading" class="text-xl font-semibold mb-3">The last 90 days</h2>
+  {% if points %}
+  {% if chart %}
+  <div class="mb-4" data-trend-chart data-points='{{ chart_json }}' hidden>
+    <canvas aria-hidden="true" height="220"></canvas>
+  </div>
+  {% endif %}
+  <details>
+    <summary class="cursor-pointer text-blue-800 underline">Show the totals day by day</summary>
+    <table class="w-full text-left mt-3">
+      <caption class="text-left text-slate-500 pb-2">Total by day, newest first</caption>
+      <thead><tr class="text-slate-500">
+        <th scope="col" class="py-2">Day</th>
+        <th scope="col" class="py-2 text-right">Total</th>
+      </tr></thead>
+      <tbody>
+        {% for p in points %}
+        <tr class="border-t border-stone-200">
+          <th scope="row" class="py-2 font-normal">{{ p.date | friendly_date }}</th>
+          <td class="py-2 text-right">{{ p.total | money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% else %}
+  <p class="text-slate-600">No daily history yet.</p>
+  {% endif %}
+</section>
+{%- endmacro %}
+
+{% macro sources(items) -%}
+{% if items %}
+<section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="sources-heading">
+  <h2 id="sources-heading" class="text-xl font-semibold mb-3">Where these numbers come from</h2>
+  <ul class="space-y-2">
+    {% for s in items %}
+    <li>
+      <span class="font-semibold">{{ s.label }}</span>:
+      {{ s.accounts }} account{{ 's' if s.accounts != 1 }},
+      {% if s.oldest == s.newest %}values from {{ s.oldest | friendly_date }}.{% else %}values from {{ s.oldest | friendly_date }} to {{ s.newest | friendly_date }}.{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{%- endmacro %}
+
+{% macro cash(accounts) -%}
+{% if accounts %}
+<section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="cash-heading">
+  <h2 id="cash-heading" class="text-xl font-semibold mb-3">Cash and bank accounts</h2>
+  <ul class="space-y-3">
+    {% for a in accounts %}
+    <li>
+      <div class="flex justify-between gap-4">
+        <span>{{ a.name }}</span>
+        <span>{{ a.value | money }}</span>
+      </div>
+      <p class="text-base text-slate-500">Balance from {{ a.as_of | friendly_date }}.
+        {%- if a.reconciled_through %} Matched to the bank through {{ a.reconciled_through | friendly_date }}.{% endif %}</p>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{%- endmacro %}
+
+{% macro chart_scripts(chart) -%}
+{% if chart %}
+<script src="/static/chart.umd.min.js"></script>
+<script src="/static/balance_trend.js"></script>
+{% endif %}
+{%- endmacro %}
