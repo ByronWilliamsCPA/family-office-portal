@@ -23,12 +23,17 @@ Variables (names only; values come from the deployment environment):
 * ``QDRANT_URL`` and ``QDRANT_API_KEY``: the vector database and its key.
 * ``CHUNKS_DIR``: read-only directory of chunk-set files, used only by the
   indexer command.
+* ``TAX_LAW_PATH``: the tax-law knowledge-base JSON file, used only by the
+  tax-law indexer command.
 
 A value that cannot be parsed (for example a non-numeric timeout) makes
 ``load_retrieval_settings`` raise ``RetrievalConfigError`` naming the variable,
-never its value. Unlike the backend pairs in ``app.config``, these settings are
-not checked at startup: the web process treats a bad value as "not connected"
-and logs a warning, and the indexer command exits 2.
+never its value. So does a URL that contains a control character or is not
+http or https with a host and a valid port, which the connection objects
+reject before any client is built.
+Unlike the backend pairs in ``app.config``, these settings are not checked at
+startup: the web process treats a bad value as "not connected" and logs a
+warning, and the indexer command exits 2.
 
 #ASSUME: security: the embedding service and Qdrant are reached over a
 private network, so an ``http://`` URL does not expose the keys. #VERIFY:
@@ -40,6 +45,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import structlog
 from pydantic import Field, SecretStr, ValidationError
@@ -49,6 +55,10 @@ logger = structlog.get_logger(__name__)
 
 _UNSET = SecretStr("")
 
+# ASCII control characters are the codes below the space and DEL.
+_SPACE = 0x20
+_DELETE = 0x7F
+
 # Problems already logged by ``document_search_connected``, so a bad setting
 # is reported once per process rather than on every page render.
 _reported_problems: set[str] = set()
@@ -56,6 +66,38 @@ _reported_problems: set[str] = set()
 
 class RetrievalConfigError(ValueError):
     """Retrieval settings are set but cannot form a usable connection."""
+
+
+def _require_http_url(url: str, name: str) -> None:
+    """Check that a URL is http or https with a host and a usable port.
+
+    The client libraries raise on a malformed URL with a message that can
+    echo it, userinfo included, so the check happens here and the error names
+    only the variable. ASCII control characters are rejected before parsing
+    because ``urlsplit`` silently drops tabs and newlines, so a value such as
+    ``ht<newline>tp://host`` would otherwise be accepted as ``http://host``.
+
+    Args:
+        url (str): The configured URL.
+        name (str): The variable it came from, for the error message.
+
+    Raises:
+        RetrievalConfigError: If the value contains an ASCII control
+            character, the scheme is not http or https, the host is missing,
+            or the port is not a number from 0 to 65535. The message never
+            includes the URL.
+    """
+    usable = not any(ord(char) < _SPACE or ord(char) == _DELETE for char in url)
+    if usable:
+        try:
+            parts = urlsplit(url.strip())
+            usable = parts.scheme in {"http", "https"} and bool(parts.hostname)
+            _ = parts.port  # raises ValueError for a port that is not 0-65535
+        except ValueError:
+            usable = False
+    if not usable:
+        msg = f"{name} must be an http or https URL with a host and a valid port"
+        raise RetrievalConfigError(msg)
 
 
 @dataclass(frozen=True)
@@ -78,13 +120,15 @@ class EmbeddingConnection:
         """Reject blank values and a timeout that is not a positive number.
 
         Raises:
-            RetrievalConfigError: If the URL, key or model is blank, or the
-                timeout is not a finite number above zero. The message never
-                includes the key.
+            RetrievalConfigError: If the URL, key or model is blank, the URL
+                is not an http or https URL with a host and a valid port, or
+                the timeout is not a finite number above zero. The message
+                never includes the URL or the key.
         """
         if not self.base_url.strip():
             msg = "the embedding service needs a base URL"
             raise RetrievalConfigError(msg)
+        _require_http_url(self.base_url, "EMBED_BASE_URL")
         if not self.api_key.get_secret_value().strip():
             msg = "the embedding service needs a non-blank API key"
             raise RetrievalConfigError(msg)
@@ -109,14 +153,17 @@ class QdrantConnection:
     api_key: SecretStr
 
     def __post_init__(self) -> None:
-        """Reject a blank URL or key.
+        """Reject a blank or malformed URL and a blank key.
 
         Raises:
-            RetrievalConfigError: If the URL or the key is blank.
+            RetrievalConfigError: If the URL is blank or is not an http or
+                https URL with a host and a valid port, or the key is blank.
+                The message never includes the URL or the key.
         """
         if not self.url.strip():
             msg = "Qdrant needs a URL"
             raise RetrievalConfigError(msg)
+        _require_http_url(self.url, "QDRANT_URL")
         if not self.api_key.get_secret_value().strip():
             msg = "Qdrant needs a non-blank API key"
             raise RetrievalConfigError(msg)
@@ -136,6 +183,7 @@ class RetrievalSettings(BaseSettings):
         qdrant_url (str): Qdrant base URL. Empty means off.
         qdrant_api_key (SecretStr): Qdrant API key.
         chunks_dir (str): Chunk-set directory read by the indexer.
+        tax_law_path (str): Knowledge-base file read by the tax-law indexer.
     """
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
@@ -147,6 +195,7 @@ class RetrievalSettings(BaseSettings):
     qdrant_url: str = ""
     qdrant_api_key: SecretStr = _UNSET
     chunks_dir: str = ""
+    tax_law_path: str = ""
 
     def embedding_connection(self) -> EmbeddingConnection | None:
         """Return the embedding connection, or None when its URL is unset.
@@ -201,6 +250,15 @@ class RetrievalSettings(BaseSettings):
             Path | None: The configured directory, or None.
         """
         value = self.chunks_dir.strip()
+        return Path(value) if value else None
+
+    def tax_law_file(self) -> Path | None:
+        """Return the tax-law knowledge-base file, or None when unset.
+
+        Returns:
+            Path | None: The configured file, or None.
+        """
+        value = self.tax_law_path.strip()
         return Path(value) if value else None
 
     def search_connected(self) -> bool:

@@ -28,6 +28,9 @@ from app.retrieval.settings import (
     load_retrieval_settings,
 )
 
+# Generated per run so no credential-shaped literal sits in the source.
+USERINFO_SECRET = secrets.token_urlsafe(9)
+
 RETRIEVAL_VARS = (
     "EMBED_BASE_URL",
     "EMBED_API_KEY",
@@ -36,6 +39,7 @@ RETRIEVAL_VARS = (
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "CHUNKS_DIR",
+    "TAX_LAW_PATH",
 )
 
 
@@ -68,6 +72,7 @@ def test_everything_is_off_when_unset() -> None:
     assert settings.embedding_connection() is None
     assert settings.qdrant_connection() is None
     assert settings.chunks_path() is None
+    assert settings.tax_law_file() is None
     assert settings.search_connected() is False
 
 
@@ -187,6 +192,88 @@ def test_qdrant_connection_rejects_blank_values(
         QdrantConnection(url=url, api_key=api_key)
 
 
+BAD_URLS = [
+    "ftp://host.test",
+    "host.test:6333",
+    "http://",
+    "http://host.test:99999",
+    "http://host.test:bad",
+    "http://[host.test",
+    "ht\ntp://host.test:6333",
+    "http://host.\ttest:6333",
+    "http://host.test:6333\x00",
+    "http://host.test\x7f:6333",
+    f"http://user:{USERINFO_SECRET}@host.test:99999",
+]
+
+
+@pytest.mark.parametrize("url", BAD_URLS)
+def test_qdrant_connection_rejects_a_malformed_url_without_echoing_it(
+    url: str,
+) -> None:
+    """A URL that is not http or https with a host and port names the variable."""
+    with pytest.raises(RetrievalConfigError, match="QDRANT_URL") as caught:
+        QdrantConnection(url=url, api_key=SecretStr("k"))
+    assert url not in str(caught.value)
+    assert USERINFO_SECRET not in str(caught.value)
+
+
+@pytest.mark.parametrize("url", [*BAD_URLS, "embed.test/v1"])
+def test_embedding_connection_rejects_a_malformed_url_without_echoing_it(
+    url: str,
+) -> None:
+    """A malformed embedding base URL names the variable, never its value."""
+    with pytest.raises(RetrievalConfigError, match="EMBED_BASE_URL") as caught:
+        EmbeddingConnection(base_url=url, api_key=SecretStr("k"), model="m")
+    assert url not in str(caught.value)
+    assert USERINFO_SECRET not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://q", "https://q.test:6333", "http://q.test:6333/prefix"]
+)
+def test_qdrant_connection_accepts_http_and_https_urls(url: str) -> None:
+    """Valid http and https URLs, with or without a port or path, are kept."""
+    assert QdrantConnection(url=url, api_key=SecretStr("k")).url == url
+
+
+def test_a_malformed_url_in_the_environment_is_not_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bad URL makes search not connected instead of failing a later client."""
+    _set_all(monkeypatch)
+    monkeypatch.setenv("QDRANT_URL", "ftp://qdrant.test")
+    with pytest.raises(RetrievalConfigError, match="QDRANT_URL"):
+        load_retrieval_settings().qdrant_connection()
+    assert load_retrieval_settings().search_connected() is False
+
+
+@pytest.mark.parametrize("name", ["QDRANT_URL", "EMBED_BASE_URL"])
+def test_a_control_character_inside_a_url_in_the_environment_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """``urlsplit`` drops a newline, so the value must be refused before it."""
+    _set_all(monkeypatch)
+    monkeypatch.setenv(name, "ht\ntp://host.test:6333")
+    settings = load_retrieval_settings()
+    with pytest.raises(RetrievalConfigError, match=name) as caught:
+        settings.qdrant_connection()
+        settings.embedding_connection()
+    assert "host.test" not in str(caught.value)
+    assert settings.search_connected() is False
+
+
+def test_surrounding_whitespace_on_a_url_in_the_environment_is_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trailing newline from an env file is trimmed, not treated as corruption."""
+    _set_all(monkeypatch)
+    monkeypatch.setenv("QDRANT_URL", "http://qdrant.test:6333\n")
+    connection = load_retrieval_settings().qdrant_connection()
+    assert connection is not None
+    assert connection.url == "http://qdrant.test:6333"
+
+
 @pytest.mark.parametrize("value", ["abc", "", "nan", "inf", "0", "-1"])
 def test_bad_timeout_names_the_variable_not_the_value(
     monkeypatch: pytest.MonkeyPatch, value: str
@@ -247,3 +334,13 @@ def test_bad_setting_is_reported_once_and_never_raises(
         }
     ]
     assert "soon" not in repr(logs)
+
+
+def test_tax_law_path_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The knowledge-base path comes from TAX_LAW_PATH; blank means off."""
+    monkeypatch.setenv("TAX_LAW_PATH", " /data/knowledge/kb.json ")
+    assert load_retrieval_settings().tax_law_file() == Path("/data/knowledge/kb.json")
+    monkeypatch.setenv("TAX_LAW_PATH", "   ")
+    assert load_retrieval_settings().tax_law_file() is None

@@ -12,4 +12,6 @@ them:
 * ``chunk_sets``: reads one chunk-set JSON file into typed values.
 * ``indexer``: the scheduled command that keeps the collection in step with
   the chunk-set directory. It never runs inside the web process.
+* ``tax_law``: the command that indexes the tax-law knowledge base into the
+  ``tax-law`` collection.
 """
