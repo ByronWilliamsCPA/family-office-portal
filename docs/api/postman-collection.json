@@ -263,7 +263,7 @@
           ],
           "name": "Search documents by name (HTMX partial)",
           "request": {
-            "description": "Return the search results fragment used by the Documents page.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
+            "description": "Return the search results fragment used by the Documents page.\n\nWhen the document service is not connected the fragment says so, as the\nfull page does, instead of listing links that could only answer 503.\n\nArgs:\n    request (Request): Current request.\n    q (RequiredSearch): Text to find in document names.\n\nReturns:\n    Response: HTML fragment listing matching documents.",
             "header": [
               {
                 "key": "X-authentik-jwt",
