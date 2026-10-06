@@ -129,7 +129,9 @@ it is configured from this repository.
 | 12 | The portal is reachable only through Traefik (no published host port) | Deployment |
 | 13 | The portal has its own single-application Authentik proxy provider, not a domain-level forward-auth provider shared with sibling applications | `AUTHENTIK_AUDIENCE` and `AUTHENTIK_ISSUER` unique to the portal |
 
-> Contract item 3: superseded by the 2026-09-29 amendment below.
+> Contract item 3: superseded by the 2026-09-29 amendment below. Contract
+> items 1 and 12: amended for the balance intake route by the 2026-10-05
+> amendment below.
 
 Contract item 13 is a requirement on homelab-infra, not an infrastructure
 design. A provider shared across applications issues every application behind
@@ -518,14 +520,27 @@ that token. A third class is added.
 - A signed token sent to this route is ignored: it neither grants access nor
   sets a principal. A request with a valid token and no key is a 401.
 
+### Contract items restated
+
+| # | Contract item, as amended | Portal setting or check |
+| --- | --- | --- |
+| 1 | Every request for the portal's hostname that arrives through Traefik passes forward auth to the Authentik outpost. No Traefik route publishes `/api/v1/balances`; the collector calls that one route directly on the internal Docker network instead | Portal returns 403 to anything without a valid token, except `POST /api/v1/balances`, which answers 401 or 404 by its own key check |
+| 12 | The portal publishes no host port. It is reachable through Traefik and, for the balance intake only, from containers on its internal Docker network | Deployment |
+
 ### Consequences of the amendment
 
 - The collector must reach the portal directly on the internal network. A
   forward-auth route in front of the portal would refuse the collector, because
   it carries no Authentik session, so the route must not be published through
   the proxy that enforces forward auth.
-- The portal holds one more stack-injected secret. `SECURITY.md` should record
-  how to handle and rotate it, as for `AUTHENTIK_JWT_SECRET`.
-- #ASSUME the internal network path to the portal is reachable only by the
-  collector and other trusted services. #VERIFY with homelab-infra that no
-  public route forwards `/api/v1/balances` to the portal.
+- The portal holds one more stack-injected secret. `SECURITY.md` records how
+  to handle and rotate it.
+- The network is not a control for this route. As the Constraints section
+  says, any container on the shared Traefik network can send requests
+  straight to the portal, so the intake key is the only thing that guards
+  `POST /api/v1/balances`, and it travels as plain HTTP inside that network.
+  #ASSUME no container on that network is hostile or able to read another
+  container's traffic, so the key is not observed in transit. #VERIFY with
+  homelab-infra that no public route forwards `/api/v1/balances` to the
+  portal, that the collector reaches the portal on the internal network
+  only, and which containers share that network.

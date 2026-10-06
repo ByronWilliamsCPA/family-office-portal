@@ -306,10 +306,12 @@ token. A collector on the internal network sends the shared key in `X-API-Key`.
   (routed path, any `root_path` stripped). Every other method and path still
   needs a valid token, and a token sent to this route is ignored.
 - The key is the optional `BALANCE_INTAKE_API_KEY` setting (at least 32
-  characters), compared with `hmac.compare_digest`. It is checked before the
+  characters of printable ASCII, different from `AUTHENTIK_JWT_SECRET`),
+  compared with `hmac.compare_digest`. It is checked before the
   body is read. A wrong or missing key is a 401. When the setting is unset the
   endpoint is disabled and answers 404.
-- The body is limited to 2 MiB and 2000 rows, and values are decimal strings
+- The body is limited to 6 MiB (enough for the largest valid delivery) and
+  2000 rows, and values are decimal strings
   with at most 12 digits before the point. A validation error names the row
   and field but never echoes a submitted value, and nothing is stored on any
   error.

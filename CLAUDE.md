@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Status**: Active | **Version**: 1.3.0 | **Updated**: 2026-09-29
+> **Status**: Active | **Version**: 1.4.0 | **Updated**: 2026-10-05
 >
 > Project-specific rules for the family-office-portal FastAPI application.
 > Global standards are in `~/.claude/CLAUDE.md` and apply everywhere.
@@ -69,10 +69,11 @@ app/
   models.py            # Pydantic request/response models
   middleware/          # Authentik forward-auth JWT validation middleware (ADR-005)
   routes/              # One module per section: home, documents, finances,
-                       # portfolio, entities, health, admin
+                       # portfolio, entities, health, admin; plus balances
+                       # (POST /api/v1/balances, the key-authenticated intake)
   templating.py        # Jinja2 environment, plain-English filters, render helper
   cache.py             # Async SQLite readers called by route handlers
-  scheduler.py         # APScheduler setup; refresh job definitions
+  scheduler.py         # APScheduler setup; refresh and snapshot jobs; write lock
   balances.py          # Balance intake storage: cents, provider replace, daily snapshot
   db.py                # SQLite connection factory, schema init (WAL + busy_timeout)
 templates/
@@ -92,17 +93,20 @@ Component-to-file mapping from `docs/planning/tech-spec.md`:
 | Component | Location | Notes |
 | --- | --- | --- |
 | Authentik JWT Middleware | `app/middleware/authentik.py` | Validates the signed `X-authentik-jwt` header (HS256 signature keyed by `AUTHENTIK_JWT_SECRET`, `iss`, `aud`, `exp`), maps groups to a role, fails closed with 403 (ADR-005) |
-| Route Handlers | `app/routes/` | Return `TemplateResponse`; read SQLite via `cache.py` |
+| Route Handlers | `app/routes/` | Return `TemplateResponse`; read SQLite via `cache.py`. Exception: `balances.py` (balance intake) checks `X-API-Key`, returns JSON, and writes through `app.scheduler.store_balance_delivery` |
 | Cache Reader | `app/cache.py` | Async `aiosqlite` reads; called by routes |
 | Refresh Scheduler | `app/scheduler.py` | Sync writes; calls backend services via `httpx` |
 | Staleness Checker | `app/cache.py` | `is_stale(dataset, threshold_hours)` |
 
 ## Project context
 
-This is a private, read-only family estate portal. Two low-proficiency primary
-users view it on tablets. Reliability and plain-English presentation are the top
-priorities. The portal is a read-only consumer of four backend services; it never
-writes to or contacts upstream commercial systems directly.
+This is a private family estate portal that people only read. Two
+low-proficiency primary users view it on tablets. Reliability and plain-English
+presentation are the top priorities. The portal is a read-only consumer of four
+backend services; it never writes to or contacts upstream commercial systems
+directly. Its only inbound write is the balance intake
+(`POST /api/v1/balances`), where a collector delivers account balances into the
+portal's own SQLite cache (ADR-003 and ADR-005 amendments of 2026-10-05).
 
 **Current phase**: the portal foundation is built: settings, SQLite schema, cache
 readers, refresh scheduler, Authentik auth, five section templates, Docker image.
@@ -125,9 +129,11 @@ Key documents to read before making architectural or data-model decisions:
 - **Language**: Python 3.12 primary; minimum supported runtime is 3.10 (tested in CI via 3.10-3.14 matrix). Do not introduce syntax or stdlib additions from 3.11+ (e.g. `tomllib`, `Self`, `ExceptionGroup`, `asyncio.timeout`) or 3.13+ in application code. BasedPyright is pinned to 3.12 for type checking.
 - **Package management**: UV. Never use pip or conda directly. Use `uv run` for
   tool invocations and `uv add` for dependencies.
-- **Web framework**: FastAPI with Starlette's `Jinja2Templates`. Route handlers
-  return `TemplateResponse`; they do not return JSON unless the route is an HTMX
-  partial returning an HTML fragment.
+- **Web framework**: FastAPI with Starlette's `Jinja2Templates`. Page route
+  handlers return `TemplateResponse` (an HTMX partial returns an HTML
+  fragment). JSON is returned only by `/health`, the `/admin` endpoints, and
+  the balance intake `POST /api/v1/balances`, which a machine collector calls
+  with an `X-API-Key` instead of a signed-in identity.
 - **Templates**: Jinja2 in `templates/`. Full-page templates in `templates/pages/`;
   HTMX partial fragments in `templates/partials/`. Never return a partial from a
   route that a browser may navigate to directly.
@@ -140,8 +146,12 @@ Key documents to read before making architectural or data-model decisions:
   refresh functions exist (`refresh_entities`, `refresh_holdings`,
   `refresh_positions`, `refresh_documents`); only entities and documents are
   scheduled until the holdings and positions backends ship their endpoints.
-  Admins can still trigger any of them. Each service runs at most once at a
-  time, and every SQLite write goes through `app.scheduler._WRITE_LOCK`.
+  Admins can still trigger any of them. A fifth job, `snapshot_balances_daily`,
+  copies stored balances into `balances_daily` once at startup and then daily
+  at midday in `DISPLAY_TIMEZONE` (a fixed local time, so daylight saving
+  cannot skip a date), with a 3600 s misfire grace. Each job runs at most once
+  at a time, and every SQLite write, including the balance intake, goes
+  through `app.scheduler._WRITE_LOCK`.
 - **Paging**: refresh jobs read `{items, total}` pages until `total` rows arrive.
   A short or runaway page set fails the refresh and keeps the old cache; never
   replace cached rows with a partial set.
@@ -165,8 +175,11 @@ Key documents to read before making architectural or data-model decisions:
 ## Authentication rules
 
 Authentik forward auth behind Traefik handles login, passkeys and sessions
-(ADR-005, which supersedes ADR-002). The portal's only auth responsibility is
-validating the signed JWT in `app/middleware/authentik.py`. The Authentik
+(ADR-005, which supersedes ADR-002). The portal's auth responsibilities are
+validating the signed JWT in `app/middleware/authentik.py` and, for the one
+machine route `POST /api/v1/balances`, checking the shared `X-API-Key` in
+`app/routes/balances.py`. The middleware exemption for that route must stay an
+exact method and path match, never a prefix or pattern. The Authentik
 blueprint, groups, Traefik and compose wiring, and session length belong to
 homelab-infra; ADR-005 records the contract.
 

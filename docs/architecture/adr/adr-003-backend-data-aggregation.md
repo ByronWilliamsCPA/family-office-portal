@@ -262,23 +262,30 @@ being fetched by it, so the portal cannot pull them on a schedule.
 
 ### Decision
 
-- `POST /api/v1/balances` is the single HTTP handler allowed to write. Every
-  page route still reads SQLite only and calls no backend. Authentication for
+- `POST /api/v1/balances` is the single HTTP handler allowed to write. This
+  amendment does not change how page routes read data. Authentication for
   this route is described in the ADR-005 amendment of the same date.
 - The write goes through the same process-wide write lock as the scheduler's
   writes, in a worker thread so the event loop is never blocked, in a single
-  all-or-nothing transaction. Any failure rolls the whole delivery back and
-  answers 503 with a fixed message.
+  all-or-nothing transaction. Any failure inside the transaction rolls the
+  whole delivery back, and a database failure answers 503 with a fixed
+  message.
 - Per-provider replace semantics: a provider is the part of an account
   identifier before its first colon. Each provider present in a delivery has
   its stored rows replaced by the delivered rows, and a provider absent from
-  the delivery keeps its previous rows. Section staleness for balances is the
-  oldest provider's latest delivery time, so one provider that stops reporting
-  shows the existing "may be out of date" label.
+  the delivery keeps its previous rows. Every stored row keeps its own
+  delivery time (`fetched_at`), so staleness can be judged per provider. The
+  balance pages, a follow-up change, judge the balances section by the oldest
+  provider's latest delivery, so one provider that stops reporting shows the
+  existing "may be out of date" label. Until those pages land, no page shows
+  balances, and the admin refresh status for balances reflects the newest
+  delivery.
 - The same transaction upserts today's row per account into `balances_daily`,
   and removes today's rows for accounts that the delivery replaced away, so the
   day's total matches the headline total. History for earlier days is never
-  deleted. A scheduled job also snapshots once every 24 hours.
+  deleted. A scheduled job also snapshots once at startup and then daily at
+  midday in `DISPLAY_TIMEZONE`; a fixed local time, unlike a 24 hour
+  interval, cannot skip a local date when daylight saving time changes.
 - Amounts are decimal strings, stored as integer cents (rounded half to
   even) with their currency. At most 12 digits before the decimal point are
   accepted, so a full delivery of the largest value cannot overflow SQLite's
@@ -287,7 +294,8 @@ being fetched by it, so the portal cannot pull them on a schedule.
 ### Consequences of the amendment
 
 - There is no way yet to retire a provider that has stopped reporting: its last
-  rows stay in the totals and the section stays labelled out of date.
+  rows stay stored, and once the balance pages land the section stays labelled
+  out of date.
   #ASSUME the owner will decide whether a retire action or an age limit is
   wanted. #VERIFY before any provider is switched off for good.
 - The "route handlers never write" rule now has this one named exception, which
