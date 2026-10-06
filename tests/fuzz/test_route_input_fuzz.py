@@ -133,8 +133,7 @@ async def test_document_preview_path_param_never_crashes(
     The handler (``app/routes/documents.py::document_preview``) looks the
     identifier up in the SQLite cache before anything else. The fixture
     cache is empty, so every routable identifier is unknown and must get
-    the 404 page; the 503 "not yet available" answer is reserved for a
-    document that exists, which none does here.
+    the 404 page, and no request is ever made to the document service.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
@@ -155,8 +154,7 @@ async def test_document_download_path_param_never_crashes(
     The handler (``app/routes/documents.py::document_download``) looks the
     identifier up in the SQLite cache before anything else. The fixture
     cache is empty, so every routable identifier is unknown and must get
-    the 404 page; the 503 "not yet available" answer is reserved for a
-    document that exists, which none does here.
+    the 404 page, and no request is ever made to the document service.
 
     Args:
         client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).

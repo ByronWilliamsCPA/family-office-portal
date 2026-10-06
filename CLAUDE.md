@@ -231,6 +231,11 @@ Never implement password-based auth, OAuth flows, or session cookies.
   Never show a blank section or an unhandled error to a primary user.
 - `pp-security-master` is alpha-status. Treat its 500 responses as expected; surface
   as stale data, not as errors in user-visible templates. #ASSUME API contract unstable
+- Document preview and download are the one exception to "never call a
+  backend": they stream the file from llc-manager per request
+  (`app/document_files.py`, ADR-007). The cache decides visibility first, so a
+  Viewer's request for a confidential document makes no upstream call. Keep
+  that order, the content-type allowlist and the size cap when changing them.
 
 ## Environment variables
 

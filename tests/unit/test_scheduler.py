@@ -295,15 +295,7 @@ def test_refresh_documents_writes_rows_to_cache(initialized_db: Path) -> None:
 
     # noqa
     """
-    payload = [
-        {
-            "id": "doc-1",
-            "name": "Trust Agreement.pdf",
-            "category": "Trusts",
-            "added_at": "2026-04-15T00:00:00",
-            "url": "/box/abc",
-        }
-    ]
+    payload = {"items": [_contract_document(id="doc-1", category="Trusts")], "total": 1}
     with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
         scheduler.refresh_documents()
 
@@ -572,41 +564,176 @@ def test_data_ingestor_has_no_refresh_job() -> None:
     assert all("ingestor" not in name for name in scheduler.TRIGGERS)
 
 
-def test_refresh_documents_maps_type_to_category_and_flags_confidential(
-    initialized_db: Path,
-) -> None:
-    """Documents without a category get one from ``document_type``.
+def _contract_document(**overrides: Any) -> dict[str, Any]:
+    """Return one document in the documents contract shape, made-up values.
 
     # noqa
     """
-    payload = {
-        "items": [
-            {
-                "id": "d1",
-                "title": "2025 Form 1065",
-                "document_type": "tax_return",
-                "entity_id": "e1",
-                "is_confidential": True,
-            },
-            {
-                "id": "d2",
-                "title": "Operating Agreement",
-                "document_type": "operating_agreement",
-            },
-        ],
-        "total": 2,
+    item: dict[str, Any] = {
+        "id": "d1",
+        "title": "Operating Agreement",
+        "category": "LLCs",
+        "document_type": "operating_agreement",
+        "entity_id": "e1",
+        "document_date": "2024-05-01",
+        "effective_date": "2024-05-01",
+        "is_confidential": False,
+        "consent_on_file": False,
+        "sha256": "0" * 64,
+        "mime_type": "application/pdf",
+        "created_at": "2026-09-28T14:02:11+00:00",
+        "updated_at": "2026-09-29T09:00:00+00:00",
     }
+    item.update(overrides)
+    return item
+
+
+def _refresh_documents_with(items: list[dict[str, Any]]) -> None:
+    payload = {"items": items, "total": len(items)}
     with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
         scheduler.refresh_documents()
-    with sqlite3.connect(initialized_db) as conn:
-        rows = {
-            r[0]: r[1:]
-            for r in conn.execute(
-                "SELECT id, category, is_confidential, proxy_url FROM documents"
-            )
-        }
-    assert rows["d1"] == ("Tax Returns", 1, "/documents/d1/preview")
-    assert rows["d2"][0] == "LLCs"
+
+
+def test_refresh_documents_maps_contract_fields(initialized_db: Path) -> None:
+    """Every contract field the portal uses lands in its cache column.
+
+    # noqa
+    """
+    _refresh_documents_with([_contract_document()])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM documents WHERE id = 'd1'").fetchone()
+    assert row["name"] == "Operating Agreement"
+    assert row["category"] == "LLCs"
+    assert row["entity_id"] == "e1"
+    assert row["document_type"] == "operating_agreement"
+    assert row["document_date"] == "2024-05-01"
+    assert row["is_confidential"] == 0
+    assert row["added_at"] == "2026-09-28T14:02:11+00:00"
+    assert row["modified_at"] == "2026-09-29T09:00:00+00:00"
+    assert row["proxy_url"] == "/documents/d1/preview"
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "Estate Planning",
+        "LLCs",
+        "Trusts",
+        "Tax Returns",
+        "Insurance",
+        "Personal records",
+        "Other",
+    ],
+)
+def test_refresh_documents_keeps_every_contract_category(
+    initialized_db: Path, category: str
+) -> None:
+    """Each of the seven contract categories is stored as sent.
+
+    # noqa
+    """
+    _refresh_documents_with([_contract_document(category=category)])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        row = conn.execute("SELECT category FROM documents").fetchone()
+    assert row[0] == category
+
+
+@pytest.mark.parametrize(
+    "category",
+    [None, "", "llcs", "Wills", "LLC", 7],
+    ids=["missing", "empty", "wrong-case", "unknown", "near-miss", "not-text"],
+)
+def test_refresh_documents_files_unknown_category_under_other(
+    initialized_db: Path, category: object
+) -> None:
+    """A missing or unknown category is "Other", never a guessed folder.
+
+    Even a type that looks like an LLC document is not guessed into "LLCs".
+
+    # noqa
+    """
+    item = _contract_document(category=category, document_type="operating_agreement")
+    if category is None:
+        del item["category"]
+    _refresh_documents_with([item])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        row = conn.execute("SELECT category FROM documents").fetchone()
+    assert row[0] == "Other"
+
+
+@pytest.mark.parametrize(
+    ("flag", "stored"),
+    [
+        (False, 0),
+        (True, 1),
+        (None, 1),
+        ("false", 1),
+        (0, 1),
+        ("missing", 1),
+    ],
+    ids=["false", "true", "null", "string-false", "zero", "missing"],
+)
+def test_refresh_documents_confidential_flag_fails_closed(
+    initialized_db: Path, flag: object, stored: int
+) -> None:
+    """Only an explicit JSON ``false`` makes a document visible to Viewers.
+
+    # noqa
+    """
+    item = _contract_document(is_confidential=flag)
+    if flag == "missing":
+        del item["is_confidential"]
+    _refresh_documents_with([item])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        row = conn.execute("SELECT is_confidential FROM documents").fetchone()
+    assert row[0] == stored
+
+
+def test_refresh_documents_tolerates_missing_optional_fields(
+    initialized_db: Path,
+) -> None:
+    """Dates, type and entity are optional in the cache; the row still lands.
+
+    # noqa
+    """
+    item = {"id": "d2", "title": "  Insurance Policy  ", "is_confidential": False}
+    _refresh_documents_with([item])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM documents WHERE id = 'd2'").fetchone()
+    assert row["name"] == "Insurance Policy"
+    assert row["category"] == "Other"
+    assert row["entity_id"] is None
+    assert row["document_date"] is None
+    assert row["added_at"] is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [None, "", "   ", 42, "missing"],
+    ids=["null", "empty", "blank", "not-text", "missing"],
+)
+def test_refresh_documents_without_title_keeps_previous_cache(
+    initialized_db: Path, title: object
+) -> None:
+    """A document with no usable title fails the refresh; old rows stay.
+
+    # noqa
+    """
+    _refresh_documents_with([_contract_document(id="keep")])
+    item = _contract_document(id="bad", title=title)
+    if title == "missing":
+        del item["title"]
+    _refresh_documents_with([_contract_document(id="new"), item])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        ids = [r[0] for r in conn.execute("SELECT id FROM documents")]
+        status = conn.execute(
+            "SELECT status FROM refresh_log WHERE service = 'llc-manager-documents' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert ids == ["keep"]
+    assert status[0] == "error"
 
 
 def test_refresh_logs_error_on_unexpected_payload(initialized_db: Path) -> None:
@@ -736,16 +863,3 @@ def test_refresh_skips_when_same_service_is_running(initialized_db: Path) -> Non
         lock.release()
     with sqlite3.connect(initialized_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM refresh_log").fetchone()[0] == 0
-
-
-def test_unknown_document_type_defaults_to_other(initialized_db: Path) -> None:
-    """A document type the portal does not know is filed under "Other".
-
-    # noqa
-    """
-    payload = {"items": [{"id": "d9", "title": "Will", "document_type": "will"}]}
-    with patch("httpx.Client", return_value=_mock_client(_mock_response(payload))):
-        scheduler.refresh_documents()
-    with sqlite3.connect(initialized_db) as conn:
-        row = conn.execute("SELECT category FROM documents WHERE id='d9'").fetchone()
-    assert row[0] == "Other"

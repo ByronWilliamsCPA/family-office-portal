@@ -1,18 +1,23 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""Documents section routes: folders, name search, preview, and download."""
+"""Documents section routes: folders, name search, preview, and download.
+
+Preview and download stream the file from llc-manager on each request
+(ADR-007). They are the only handlers that call a backend; every other route
+reads the SQLite cache (ADR-003).
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated
 
+import structlog
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
-from starlette.responses import (
-    Response,  # noqa: TC002  # FastAPI reads return annotations at runtime
-)
+from starlette.responses import Response, StreamingResponse
 
-from app import cache
+from app import cache, document_files
+from app.config import BackendConfigError, load_settings
 from app.routes._context import freshness, include_confidential
 from app.templating import render, templates
 
@@ -20,6 +25,8 @@ if TYPE_CHECKING:
     import aiosqlite
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+logger = structlog.get_logger(__name__)
 
 OptionalSearch = Annotated[
     str | None, Query(max_length=200, description="Optional name search.")
@@ -108,63 +115,110 @@ async def documents_search(
     )
 
 
-async def _require_document(request: Request, document_id: str) -> aiosqlite.Row:
-    documents = await cache.get_documents(
-        include_confidential=include_confidential(request)
+_FILE_RESPONSES: dict[int | str, dict[str, str]] = {
+    200: {"description": "The file, streamed from the document service"},
+    404: {"description": "Document not found, or not visible to this user"},
+    502: {"description": "The document service failed or refused the request"},
+    503: {"description": "The document service is not connected"},
+    504: {"description": "The document service did not answer in time"},
+}
+
+
+async def _stream_document(
+    request: Request,
+    document_id: str,
+    requested: document_files.Disposition,
+) -> StreamingResponse:
+    """Check visibility in the cache, then stream the file from upstream.
+
+    Args:
+        request (Request): Current request.
+        document_id (str): Document identifier from the path.
+        requested (document_files.Disposition): ``inline`` or ``attachment``.
+
+    Returns:
+        StreamingResponse: The file with safe headers.
+
+    Raises:
+        HTTPException: 404 when unknown or hidden from this user (no upstream
+            request is made), 503 when the document service is not
+            connected, or the mapped status of an upstream failure.
+    """
+    # #CRITICAL: security: visibility is decided from the cache before any
+    # upstream request, so a Viewer never causes a confidential file to be
+    # fetched. #VERIFY: tests/unit/test_document_files.py proves no request.
+    # #EDGE: a document marked confidential upstream stays visible to Viewers
+    # until the next documents refresh (at most 12 hours).
+    # #VERIFY: refresh documents from the admin page after marking one.
+    document = await cache.get_document(
+        document_id, include_confidential=include_confidential(request)
     )
-    for doc in documents:
-        if doc["id"] == document_id:
-            return doc
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    settings = load_settings()
+    try:
+        connection = settings.backend_connection("llc_manager")
+    except BackendConfigError:
+        logger.warning("document_file_failed", reason="backend_misconfigured")
+        connection = None
+    if connection is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    try:
+        upstream = await document_files.open_upstream(
+            connection,
+            str(document["id"]),
+            timeout_seconds=settings.backend_timeout_seconds,
+        )
+    except document_files.FileProxyError as exc:
+        raise HTTPException(status_code=exc.status_code) from exc
+    return document_files.UpstreamFileResponse(
+        upstream,
+        headers=document_files.response_headers(
+            upstream, title=str(document["name"]), requested=requested
+        ),
+    )
 
 
 @router.get(
     "/{document_id}/preview",
     summary="Inline document preview",
-    response_model=None,
-    responses={
-        404: {"description": "Document not found"},
-        503: {"description": "Not yet available"},
-    },
+    response_class=StreamingResponse,
+    responses=_FILE_RESPONSES,
 )
-async def document_preview(request: Request, document_id: str) -> NoReturn:
-    """Show a document inline.
+async def document_preview(request: Request, document_id: str) -> StreamingResponse:
+    """Show a document in the browser.
 
-    The planned file proxy to llc-manager is not built yet; until it is, a known
-    document returns 503.
+    PDFs and images open inline; any other type downloads instead. A link
+    may add ``#page=N`` to open a PDF at a page. Authentication: Viewer or
+    Admin (ADR-005); Viewers get 404 for confidential documents.
 
     Args:
         request (Request): Current request.
         document_id (str): Document identifier.
 
-    Raises:
-        HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.
+    Returns:
+        StreamingResponse: The file, shown inline when its type allows.
     """
-    await _require_document(request, document_id)
-    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return await _stream_document(request, document_id, "inline")
 
 
 @router.get(
     "/{document_id}/download",
     summary="Download a document",
-    response_model=None,
-    responses={
-        404: {"description": "Document not found"},
-        503: {"description": "Not yet available"},
-    },
+    response_class=StreamingResponse,
+    responses=_FILE_RESPONSES,
 )
-async def document_download(request: Request, document_id: str) -> NoReturn:
-    """Download a document.
+async def document_download(request: Request, document_id: str) -> StreamingResponse:
+    """Download a document as a file.
 
-    The planned file proxy to llc-manager is not built yet; until it is, a known
-    document returns 503.
+    Authentication: Viewer or Admin (ADR-005); Viewers get 404 for
+    confidential documents.
 
     Args:
         request (Request): Current request.
         document_id (str): Document identifier.
 
-    Raises:
-        HTTPException: 404 when unknown or not visible, 503 until the file proxy exists.
+    Returns:
+        StreamingResponse: The file as an attachment.
     """
-    await _require_document(request, document_id)
-    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return await _stream_document(request, document_id, "attachment")

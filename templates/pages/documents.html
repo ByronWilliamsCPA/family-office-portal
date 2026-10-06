@@ -23,8 +23,11 @@
     <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200">
       {% for doc in docs %}
       <li class="px-5 py-4 flex justify-between gap-4">
-        <a class="text-blue-800 underline" href="{{ doc['proxy_url'] }}">{{ doc['name'] }}</a>
-        {% if doc['document_date'] %}<span class="text-slate-500">{{ doc['document_date'] | friendly_date }}</span>{% endif %}
+        <a class="text-blue-800 underline" href="{{ doc['id'] | document_url }}">{{ doc['name'] }}</a>
+        <span class="flex gap-4">
+          {% if doc['document_date'] %}<span class="text-slate-500">{{ doc['document_date'] | friendly_date }}</span>{% endif %}
+          <a class="text-blue-800 underline" href="{{ doc['id'] | document_url('download') }}">Download</a>
+        </span>
       </li>
       {% endfor %}
     </ul>

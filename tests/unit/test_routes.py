@@ -118,25 +118,6 @@ async def test_document_download_unknown_document_is_404(
     assert response.status_code == 404
 
 
-async def test_document_preview_known_document_not_yet_available(
-    client: AsyncClient,
-    viewer_headers: dict[str, str],
-    tmp_db_path: object,
-) -> None:
-    """A cached document returns 503 until the planned file proxy lands."""
-    with sqlite3.connect(str(tmp_db_path)) as conn:
-        conn.execute(
-            "INSERT INTO documents (id, name, category, proxy_url, fetched_at) "
-            "VALUES ('doc-1', 'Will.pdf', 'Estate Planning', "
-            "'/documents/doc-1/preview', '2026-09-01T00:00:00')"
-        )
-        conn.commit()
-    async with client as ac:
-        response = await ac.get("/documents/doc-1/preview", headers=viewer_headers)
-    assert response.status_code == 503
-    assert "not available right now" in response.text
-
-
 async def test_finances_returns_html(
     client: AsyncClient, viewer_headers: dict[str, str]
 ) -> None:

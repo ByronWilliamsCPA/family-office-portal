@@ -88,18 +88,20 @@ JOB_INTERVAL_HOURS: dict[str, int] = {
 # snapshots, so a day is covered even when the job is late.
 DAILY_SNAPSHOT_TIME: tuple[int, int] = (12, 0)
 
-# llc-manager document types mapped to the portal's document categories.
-_DOCUMENT_CATEGORIES: dict[str, str] = {
-    "tax_return": "Tax Returns",
-    "tax_election": "Tax Returns",
-    "insurance_policy": "Insurance",
-    "operating_agreement": "LLCs",
-    "articles_of_organization": "LLCs",
-    "annual_report": "LLCs",
-    "meeting_minutes": "LLCs",
-}
-# Unknown types land in "Other", never in a specific folder such as "LLCs",
-# so a will or power of attorney is not filed as an LLC document.
+# The document categories the documents contract allows. A missing or
+# unknown category is filed under "Other", never guessed into a specific
+# folder, so a will or power of attorney is not filed as an LLC document.
+DOCUMENT_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "Estate Planning",
+        "LLCs",
+        "Trusts",
+        "Tax Returns",
+        "Insurance",
+        "Personal records",
+        "Other",
+    }
+)
 _DEFAULT_DOCUMENT_CATEGORY = "Other"
 
 # #CRITICAL: concurrency: APScheduler runs jobs on a thread pool and admins can
@@ -414,16 +416,45 @@ def refresh_positions() -> None:
 
 def _document_category(item: dict[str, Any]) -> str:
     category = item.get("category")
-    if category:
-        return str(category)
-    return _DOCUMENT_CATEGORIES.get(
-        str(item.get("document_type", "")), _DEFAULT_DOCUMENT_CATEGORY
-    )
+    if isinstance(category, str) and category in DOCUMENT_CATEGORIES:
+        return category
+    return _DEFAULT_DOCUMENT_CATEGORY
+
+
+def _document_title(item: dict[str, Any]) -> str:
+    title = item.get("title")
+    if not isinstance(title, str):
+        msg = "document title is not text"
+        raise TypeError(msg)
+    if not title.strip():
+        msg = "document has no title"
+        raise ValueError(msg)
+    return title.strip()
+
+
+def _optional_text(item: dict[str, Any], key: str) -> str | None:
+    value = item.get(key)
+    return None if value is None else str(value)
 
 
 def _write_documents(
     conn: sqlite3.Connection, items: list[dict[str, Any]], fetched_at: str
 ) -> int:
+    """Replace cached document metadata with the documents-contract fields.
+
+    #CRITICAL: security: ``is_confidential`` fails closed. Only a JSON
+    ``false`` makes a document visible to Viewers; a missing, null or
+    non-boolean flag hides it. #VERIFY: tests/unit/test_scheduler.py covers
+    each case.
+
+    Args:
+        conn (sqlite3.Connection): Open connection inside a transaction.
+        items (list[dict[str, Any]]): Documents from the contract endpoint.
+        fetched_at (str): ISO 8601 refresh time.
+
+    Returns:
+        int: Number of documents written.
+    """
     conn.execute("DELETE FROM documents")
     for item in items:
         doc_id = str(item["id"])
@@ -433,14 +464,14 @@ def _write_documents(
             "fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 doc_id,
-                item.get("name") or item["title"],
+                _document_title(item),
                 _document_category(item),
-                None if item.get("entity_id") is None else str(item["entity_id"]),
-                item.get("document_type"),
-                item.get("document_date"),
-                1 if item.get("is_confidential") else 0,
-                item.get("added_at") or item.get("created_at"),
-                item.get("modified_at") or item.get("updated_at"),
+                _optional_text(item, "entity_id"),
+                _optional_text(item, "document_type"),
+                _optional_text(item, "document_date"),
+                0 if item.get("is_confidential") is False else 1,
+                _optional_text(item, "created_at"),
+                _optional_text(item, "updated_at"),
                 f"/documents/{doc_id}/preview",
                 fetched_at,
             ),

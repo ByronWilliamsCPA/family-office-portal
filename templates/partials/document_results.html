@@ -3,8 +3,11 @@
   <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200">
     {% for doc in documents %}
     <li class="px-5 py-4 flex justify-between gap-4">
-      <a class="text-blue-800 underline" href="{{ doc['proxy_url'] }}">{{ doc['name'] }}</a>
-      <span class="text-slate-500">{{ doc['category'] }}</span>
+      <a class="text-blue-800 underline" href="{{ doc['id'] | document_url }}">{{ doc['name'] }}</a>
+      <span class="flex gap-4">
+        <span class="text-slate-500">{{ doc['category'] }}</span>
+        <a class="text-blue-800 underline" href="{{ doc['id'] | document_url('download') }}">Download</a>
+      </span>
     </li>
     {% endfor %}
   </ul>
