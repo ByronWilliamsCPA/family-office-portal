@@ -714,10 +714,13 @@ def test_refresh_documents_tolerates_missing_optional_fields(
     [None, "", "   ", 42, "missing"],
     ids=["null", "empty", "blank", "not-text", "missing"],
 )
-def test_refresh_documents_without_title_keeps_previous_cache(
+def test_refresh_documents_skips_item_without_title(
     initialized_db: Path, title: object
 ) -> None:
-    """A document with no usable title fails the refresh; old rows stay.
+    """A document with no usable title is skipped and logged by ID.
+
+    The rest of the refresh still lands, so one bad item cannot freeze the
+    cache (and with it every confidentiality change).
 
     # noqa
     """
@@ -725,15 +728,202 @@ def test_refresh_documents_without_title_keeps_previous_cache(
     item = _contract_document(id="bad", title=title)
     if title == "missing":
         del item["title"]
-    _refresh_documents_with([_contract_document(id="new"), item])
+    with capture_logs() as logs:
+        _refresh_documents_with([_contract_document(id="new"), item])
     with closing(sqlite3.connect(initialized_db)) as conn:
         ids = [r[0] for r in conn.execute("SELECT id FROM documents")]
         status = conn.execute(
-            "SELECT status FROM refresh_log WHERE service = 'llc-manager-documents' "
-            "ORDER BY id DESC LIMIT 1"
+            "SELECT status, rows FROM refresh_log "
+            "WHERE service = 'llc-manager-documents' ORDER BY id DESC LIMIT 1"
         ).fetchone()
-    assert ids == ["keep"]
-    assert status[0] == "error"
+    assert ids == ["new"]
+    assert status == ("success", 1)
+    skipped = [e for e in logs if e["event"] == "document_skipped"]
+    assert skipped == [
+        {
+            "event": "document_skipped",
+            "reason": "no_usable_title",
+            "id": "bad",
+            "log_level": "warning",
+        }
+    ]
+
+
+def test_refresh_documents_applies_confidential_change_despite_bad_item(
+    initialized_db: Path,
+) -> None:
+    """A newly confidential document is hidden even when another item is bad.
+
+    # noqa
+    """
+    _refresh_documents_with([_contract_document(id="d1", is_confidential=False)])
+    _refresh_documents_with(
+        [
+            _contract_document(id="d1", is_confidential=True),
+            _contract_document(id="bad", title=""),
+        ]
+    )
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        rows = conn.execute("SELECT id, is_confidential FROM documents").fetchall()
+    assert rows == [("d1", 1)]
+
+
+@pytest.mark.parametrize(
+    "doc_id",
+    [None, "", "  ", ".", "..", "a/b", True, 1.5, ["d"], "missing"],
+    ids=[
+        "null",
+        "empty",
+        "blank",
+        "dot",
+        "dot-dot",
+        "slash",
+        "bool",
+        "float",
+        "list",
+        "missing",
+    ],
+)
+def test_refresh_documents_skips_item_without_usable_id(
+    initialized_db: Path, doc_id: object
+) -> None:
+    """An item whose ID cannot form one URL path segment is skipped.
+
+    A null ID is never stored as the text "None".
+
+    # noqa
+    """
+    item = _contract_document(id=doc_id)
+    if doc_id == "missing":
+        del item["id"]
+    with capture_logs() as logs:
+        _refresh_documents_with([item, _contract_document(id="ok")])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        ids = [r[0] for r in conn.execute("SELECT id FROM documents")]
+    assert ids == ["ok"]
+    assert {"event": "document_skipped", "reason": "no_usable_id"}.items() <= next(
+        e for e in logs if e["event"] == "document_skipped"
+    ).items()
+
+
+def test_refresh_documents_accepts_a_numeric_id(initialized_db: Path) -> None:
+    """A whole-number ID is stored as text.
+
+    # noqa
+    """
+    _refresh_documents_with([_contract_document(id=42)])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        row = conn.execute("SELECT id, proxy_url FROM documents").fetchone()
+    assert row == ("42", "/documents/42/preview")
+
+
+def test_refresh_documents_skips_a_repeated_id(initialized_db: Path) -> None:
+    """The first item with an ID wins; a repeat is skipped and logged.
+
+    # noqa
+    """
+    with capture_logs() as logs:
+        _refresh_documents_with(
+            [
+                _contract_document(id="d1", title="First"),
+                _contract_document(id="d1", title="Second"),
+            ]
+        )
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        rows = conn.execute("SELECT id, name FROM documents").fetchall()
+    assert rows == [("d1", "First")]
+    assert any(
+        e["event"] == "document_skipped" and e["reason"] == "duplicate_id" for e in logs
+    )
+
+
+def test_refresh_documents_uses_title_not_legacy_name(initialized_db: Path) -> None:
+    """The contract ``title`` is stored; a legacy ``name`` field is ignored.
+
+    # noqa
+    """
+    _refresh_documents_with([_contract_document(title="From Title", name="Old")])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        row = conn.execute("SELECT name FROM documents").fetchone()
+    assert row == ("From Title",)
+
+
+def test_refresh_documents_counts_unknown_categories_once(
+    initialized_db: Path,
+) -> None:
+    """Unknown categories produce one warning per refresh, with a count.
+
+    # noqa
+    """
+    del initialized_db
+    with capture_logs() as logs:
+        _refresh_documents_with(
+            [
+                _contract_document(id="a", category="Wills"),
+                _contract_document(id="b", category=["LLCs"]),
+                _contract_document(id="c", category="LLCs"),
+            ]
+        )
+    unknown = [e for e in logs if e["event"] == "document_category_unknown"]
+    assert unknown == [
+        {"event": "document_category_unknown", "count": 2, "log_level": "warning"}
+    ]
+
+
+def test_refresh_documents_known_categories_log_nothing(
+    initialized_db: Path,
+) -> None:
+    """A missing category is not counted as unknown.
+
+    # noqa
+    """
+    del initialized_db
+    item = _contract_document()
+    del item["category"]
+    with capture_logs() as logs:
+        _refresh_documents_with([item])
+    assert all(e["event"] != "document_category_unknown" for e in logs)
+
+
+@pytest.mark.parametrize(
+    ("value", "stored"),
+    [
+        ("2024-05-01", "2024-05-01"),
+        (20240501, "20240501"),
+        (None, None),
+        (True, None),
+        ({"y": 2024}, None),
+        (["2024"], None),
+    ],
+    ids=["text", "number", "null", "bool", "object", "list"],
+)
+def test_refresh_documents_optional_fields_store_scalars_only(
+    initialized_db: Path, value: object, stored: str | None
+) -> None:
+    """An optional field is stored only when it is text or a number.
+
+    # noqa
+    """
+    _refresh_documents_with([_contract_document(document_date=value)])
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        row = conn.execute("SELECT document_date FROM documents").fetchone()
+    assert row == (stored,)
+
+
+def test_write_documents_skips_an_item_that_is_not_an_object(
+    initialized_db: Path,
+) -> None:
+    """A non-object item is skipped rather than failing the refresh.
+
+    # noqa
+    """
+    with closing(sqlite3.connect(initialized_db)) as conn, conn:
+        written = scheduler._write_documents(  # noqa: SLF001
+            conn, ["not-a-document", _contract_document(id="ok")], "2026-10-05"
+        )
+        ids = [r[0] for r in conn.execute("SELECT id FROM documents")]
+    assert written == 1
+    assert ids == ["ok"]
 
 
 def test_refresh_logs_error_on_unexpected_payload(initialized_db: Path) -> None:

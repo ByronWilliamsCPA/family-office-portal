@@ -111,6 +111,11 @@ async def get_positions() -> list[aiosqlite.Row]:
     return await _fetch_all("SELECT * FROM positions ORDER BY usd_value DESC")
 
 
+# The one predicate that hides confidential documents from Viewers. Every
+# document reader uses it, so the rule cannot drift between queries.
+_VIEWER_VISIBLE = "is_confidential = 0"
+
+
 async def get_documents(
     *,
     include_confidential: bool = False,
@@ -129,7 +134,7 @@ async def get_documents(
     clauses: list[str] = []
     params: list[object] = []
     if not include_confidential:
-        clauses.append("is_confidential = 0")
+        clauses.append(_VIEWER_VISIBLE)
     if entity_id is not None:
         clauses.append("entity_id = ?")
         params.append(entity_id)
@@ -158,11 +163,9 @@ async def get_document(
         aiosqlite.Row | None: The document row, or None when it is unknown
         or hidden from the caller.
     """
-    query = (
-        "SELECT * FROM documents WHERE id = ?"
-        if include_confidential
-        else "SELECT * FROM documents WHERE id = ? AND is_confidential = 0"
-    )
+    visible = "" if include_confidential else f" AND {_VIEWER_VISIBLE}"
+    # ``visible`` is one of two fixed strings; the ID is bound.
+    query = f"SELECT * FROM documents WHERE id = ?{visible}"  # nosec B608
     rows = await _fetch_all(query, (document_id,))
     return rows[0] if rows else None
 
@@ -184,7 +187,7 @@ async def search_documents(
         list[aiosqlite.Row]: Matching document rows.
     """
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    confidential = "" if include_confidential else " AND is_confidential = 0"
+    confidential = "" if include_confidential else f" AND {_VIEWER_VISIBLE}"
     # ``confidential`` is one of two fixed strings; values are bound.
     query = (
         "SELECT * FROM documents WHERE name LIKE ? ESCAPE '\\'"  # nosec B608
