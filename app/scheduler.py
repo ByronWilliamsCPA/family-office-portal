@@ -26,11 +26,14 @@ from apscheduler.schedulers.background import (  # pyright: ignore[reportMissing
     BackgroundScheduler,
 )
 
+from app import balances
 from app.config import BackendConfigError, BackendConnection, Settings, load_settings
 from app.db import connect_sync
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from app.models import BalanceDelivery
 
 logger = structlog.get_logger(__name__)
 
@@ -38,13 +41,25 @@ _MAX_MESSAGE_LENGTH = 500
 _PAGE_SIZE = 100
 _MAX_PAGES = 50
 
+# Seconds a job may start late and still run. The daily snapshot gets a long
+# grace so a run delayed by a busy or briefly paused process is coalesced into
+# one late run instead of being dropped; every other job keeps the library
+# default of one second.
+DEFAULT_MISFIRE_GRACE_SECONDS = 1
+JOB_MISFIRE_GRACE_SECONDS: dict[str, int] = {"snapshot_balances_daily": 3600}
+
 # Refresh cadences in hours. Each is shorter than the staleness threshold in
 # ``app.cache.STALENESS_HOURS`` so one missed run does not mark data stale.
+# ``snapshot_balances_daily`` is not a refresh: it copies the balances already
+# cached into the durable daily history once every 24 hours (and once at
+# startup); a balance delivery also snapshots, so a day is covered even when
+# the job is late.
 JOB_INTERVAL_HOURS: dict[str, float] = {
     "refresh_entities": 4,
     "refresh_holdings": 2,
     "refresh_positions": 2,
     "refresh_documents": 12,
+    "snapshot_balances_daily": 24,
 }
 
 # llc-manager document types mapped to the portal's document categories.
@@ -417,13 +432,102 @@ def refresh_documents() -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Account balances: intake writes and the daily history snapshot
+# --------------------------------------------------------------------------- #
+
+_BALANCES_SERVICE = "balances"
+_BALANCES_DAILY_SERVICE = "balances-daily"
+
+
+def store_balance_delivery(delivery: BalanceDelivery) -> list[str]:
+    """Store a validated balance delivery and today's snapshot in one transaction.
+
+    This is the only writer the intake route calls. It runs under the same
+    process-wide write lock as the scheduler jobs and is blocking, so the
+    route runs it in a worker thread. On any database error the transaction
+    is rolled back (the previous rows and history stay), the failure is
+    recorded in ``refresh_log`` by error class only, and the error is raised.
+
+    #CRITICAL: concurrency: the intake writes while scheduled jobs may also be
+    writing. #VERIFY: the write holds ``_WRITE_LOCK``
+    (``tests/unit/test_balance_jobs.py``) and the app runs one worker.
+
+    Args:
+        delivery (BalanceDelivery): Rows already checked by the intake model.
+
+    Returns:
+        list[str]: Providers whose rows were replaced.
+
+    Raises:
+        sqlite3.Error: If the database write fails; nothing was changed.
+    """
+    settings = load_settings()
+    fetched_at = _now()
+    today = balances.local_today().isoformat()
+    try:
+        with _WRITE_LOCK:
+            conn = connect_sync(settings.sqlite_path)
+            try:
+                with conn:
+                    count = balances.replace_balances(conn, delivery.items, fetched_at)
+                    balances.drop_unreported_from_day(conn, today, delivery.providers())
+                    balances.snapshot_daily(conn, today)
+            finally:
+                conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("balance_delivery_failed", error=type(exc).__name__)
+        _record(_BALANCES_SERVICE, "error", message=type(exc).__name__)
+        raise
+    providers = delivery.providers()
+    logger.info("balance_delivery_stored", rows=count, providers=providers)
+    _record(_BALANCES_SERVICE, "success", rows=count)
+    return providers
+
+
+def snapshot_balances_daily() -> None:
+    """Copy today's cached balances into the durable daily history.
+
+    Runs once a day. It never raises: a database error is recorded in
+    ``refresh_log`` (error class only) and the next run tries again. A run is
+    skipped when the previous one is still going.
+    """
+    lock = _service_lock(_BALANCES_DAILY_SERVICE)
+    if not lock.acquire(blocking=False):
+        logger.info("refresh_skipped_already_running", service=_BALANCES_DAILY_SERVICE)
+        return
+    try:
+        today = balances.local_today().isoformat()
+        try:
+            with _WRITE_LOCK:
+                conn = connect_sync(load_settings().sqlite_path)
+                try:
+                    with conn:
+                        count = balances.snapshot_daily(conn, today)
+                finally:
+                    conn.close()
+        except sqlite3.Error as exc:
+            logger.warning(
+                "balance_snapshot_failed",
+                service=_BALANCES_DAILY_SERVICE,
+                error=type(exc).__name__,
+            )
+            _record(_BALANCES_DAILY_SERVICE, "error", message=type(exc).__name__)
+            return
+        logger.info("balance_snapshot_written", rows=count)
+        _record(_BALANCES_DAILY_SERVICE, "success", rows=count)
+    finally:
+        lock.release()
+
+
 # Scheduled jobs. ``refresh_holdings`` and ``refresh_positions`` stay
 # callable from the admin trigger but are not scheduled: no backend serves
-# their endpoints yet, and a later phase replaces positions with the account
-# balance jobs.
+# their endpoints yet, and account balances arrive through the intake endpoint
+# instead of a pull.
 JOBS: dict[str, Callable[[], None]] = {
     "refresh_entities": refresh_entities,
     "refresh_documents": refresh_documents,
+    "snapshot_balances_daily": snapshot_balances_daily,
 }
 
 # Admin trigger names (``POST /admin/refresh/{service}``) mapped to jobs.
@@ -457,5 +561,8 @@ def build_scheduler(settings: Settings | None = None) -> BackgroundScheduler:
             next_run_time=start,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=JOB_MISFIRE_GRACE_SECONDS.get(
+                name, DEFAULT_MISFIRE_GRACE_SECONDS
+            ),
         )
     return scheduler

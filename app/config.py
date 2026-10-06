@@ -17,6 +17,12 @@ its refresh jobs skip and its pages say so. A backend whose URL is set must
 also have a non-blank key, and ``check_backends`` enforces that at startup.
 ``BackendConnection`` can only be built with both a URL and a key, so no
 outbound request to a backend can be made without its key header.
+
+The balance intake endpoint (``POST /api/v1/balances``) is the one inbound
+machine route. Its shared key is read from ``BALANCE_INTAKE_API_KEY``; unset or
+blank means the endpoint is disabled and answers 404, and a key shorter than
+``MIN_INTAKE_KEY_LENGTH`` stops startup. The key is a ``SecretStr`` and is
+never logged or echoed.
 """
 
 from __future__ import annotations
@@ -31,6 +37,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = structlog.get_logger(__name__)
 
 _NO_API_KEY = SecretStr("")
+
+# Shortest accepted balance intake key; matches the sign-in secret floor.
+MIN_INTAKE_KEY_LENGTH = 32
 
 
 class BackendConfigError(ValueError):
@@ -143,6 +152,9 @@ class Settings(BaseSettings):
             labels shown to primary users.
         scheduler_enabled (bool): Start the refresh scheduler at startup.
             Set false for local template work without backends.
+        balance_intake_api_key (SecretStr): Shared key a collector sends as
+            ``X-API-Key`` to ``POST /api/v1/balances``. Unset or blank
+            disables the endpoint. Never shown in ``repr``.
     """
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
@@ -159,6 +171,23 @@ class Settings(BaseSettings):
     backend_timeout_seconds: float = 10.0
     display_timezone: str = "UTC"
     scheduler_enabled: bool = True
+    balance_intake_api_key: SecretStr = _NO_API_KEY
+
+    def balance_intake_key(self) -> str:
+        """Return the stripped balance intake key, or empty when unset.
+
+        Returns:
+            str: The key without surrounding whitespace; empty when unset.
+        """
+        return self.balance_intake_api_key.get_secret_value().strip()
+
+    def balance_intake_enabled(self) -> bool:
+        """Say whether the balance intake endpoint has a key and so is on.
+
+        Returns:
+            bool: True when a non-blank key is set.
+        """
+        return bool(self.balance_intake_key())
 
     def backend_url(self, name: str) -> str:
         """Return the stripped base URL of one backend, or empty when unset.
@@ -256,4 +285,26 @@ def check_backends(settings: Settings) -> None:
             )
     if problems:
         msg = "; ".join(problems)
+        raise BackendConfigError(msg)
+
+
+def check_balance_intake(settings: Settings) -> None:
+    """Validate the optional balance intake key at startup.
+
+    An unset or blank key is fine: the endpoint is then disabled. A key that
+    is set must be at least ``MIN_INTAKE_KEY_LENGTH`` characters.
+
+    Args:
+        settings (Settings): Settings to check.
+
+    Raises:
+        BackendConfigError: If the key is set but too short. The message names
+            the variable and never includes the value.
+    """
+    key = settings.balance_intake_key()
+    if key and len(key) < MIN_INTAKE_KEY_LENGTH:
+        msg = (
+            "BALANCE_INTAKE_API_KEY must be at least "
+            f"{MIN_INTAKE_KEY_LENGTH} characters"
+        )
         raise BackendConfigError(msg)

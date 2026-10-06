@@ -73,6 +73,7 @@ app/
   templating.py        # Jinja2 environment, plain-English filters, render helper
   cache.py             # Async SQLite readers called by route handlers
   scheduler.py         # APScheduler setup; refresh job definitions
+  balances.py          # Balance intake storage: cents, provider replace, daily snapshot
   db.py                # SQLite connection factory, schema init (WAL + busy_timeout)
 templates/
   base.html            # Shared layout and five-section navigation
@@ -187,8 +188,11 @@ The Authentik middleware must:
 4. Map the `groups` claim to a role: `FO_ADMIN_GROUP` (default `fo-admin`) is
    Admin, `FO_VIEWER_GROUP` (default `fo-viewer`) is Viewer, anything else is 403.
    Store the principal on `request.state.principal`.
-5. Fail closed with 403. Only `/health` and `/static/` are public; `/admin/*`
-   requires Admin. Log the reason category only, never the token.
+5. Fail closed with 403. `/health` and `/static/` are public, and
+   `POST /api/v1/balances` (exact method and path) skips the identity check
+   because it requires its own `X-API-Key` (ADR-005 amendment 2026-10-05);
+   everything else is still 403 without a valid token. `/admin/*` requires
+   Admin. Log the reason category only, never the token.
 
 The document routes, not the middleware, hide documents marked confidential
 from Viewers; only Admins see them.
@@ -198,6 +202,9 @@ Never implement password-based auth, OAuth flows, or session cookies.
 ## Data layer rules
 
 - Route handlers read from SQLite only. They never call backend HTTP services.
+  The one exception to read-only is the balance intake route, the only handler
+  that writes: it goes through the process-wide write lock in a worker thread
+  (ADR-003 amendment 2026-10-05).
 - Refresh jobs (APScheduler) call backend services and write to SQLite. They never
   serve HTTP responses.
 - Every cached dataset has a `fetched_at` ISO8601 timestamp column.
@@ -232,7 +239,9 @@ key with no URL is allowed and logged at info level. A backend with no URL is
 
 Other optional variables, with documented defaults: `FO_ADMIN_GROUP`
 (`fo-admin`), `FO_VIEWER_GROUP` (`fo-viewer`), `BACKEND_TIMEOUT_SECONDS` (10),
-`DISPLAY_TIMEZONE` (`UTC`), `SCHEDULER_ENABLED` (`true`).
+`DISPLAY_TIMEZONE` (`UTC`), `SCHEDULER_ENABLED` (`true`). Also optional:
+`BALANCE_INTAKE_API_KEY` (at least 32 characters when set; the balance intake
+answers 404 when it is unset).
 
 ## Frontend conventions
 

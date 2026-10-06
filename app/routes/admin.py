@@ -25,6 +25,7 @@ _SERVICE_DATASETS: dict[str, str] = {
     "pp-security-master": "holdings",
     "xero_crypto": "positions",
     "llc-manager-documents": "documents",
+    "balances": "balances",
 }
 
 

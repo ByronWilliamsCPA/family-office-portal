@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: 2026 Byron Williams
+# SPDX-License-Identifier: MIT
+"""Tests for the optional balance intake key setting.
+
+The key is read from ``BALANCE_INTAKE_API_KEY``. Unset or blank means the
+intake is disabled. A set key must be at least 32 characters, which is
+checked at startup; the value never appears in an error, a ``repr`` or a log.
+All keys here are generated inside the tests.
+"""
+
+from __future__ import annotations
+
+import importlib
+import secrets
+
+import pytest
+
+from app.config import (
+    MIN_INTAKE_KEY_LENGTH,
+    BackendConfigError,
+    check_balance_intake,
+    load_settings,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(  # pyright: ignore[reportUnusedFunction]
+    portal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start with no intake key set."""
+    del portal_env
+    monkeypatch.delenv("BALANCE_INTAKE_API_KEY", raising=False)
+
+
+def test_unset_key_disables_the_intake() -> None:
+    """No variable: disabled, empty key, startup check passes."""
+    settings = load_settings()
+    assert settings.balance_intake_key() == ""
+    assert settings.balance_intake_enabled() is False
+    check_balance_intake(settings)
+
+
+@pytest.mark.parametrize("blank", ["", " ", "   ", "\t", "\n"])
+def test_blank_key_disables_the_intake(
+    monkeypatch: pytest.MonkeyPatch, blank: str
+) -> None:
+    """An empty or whitespace key is the same as unset."""
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", blank)
+    settings = load_settings()
+    assert settings.balance_intake_enabled() is False
+    check_balance_intake(settings)
+
+
+def test_strong_key_enables_the_intake_and_is_stripped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long key enables the intake; surrounding whitespace is dropped."""
+    key = secrets.token_urlsafe(MIN_INTAKE_KEY_LENGTH)
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", f" {key}\n")
+    settings = load_settings()
+    assert settings.balance_intake_key() == key
+    assert settings.balance_intake_enabled() is True
+    check_balance_intake(settings)
+
+
+def test_short_key_is_refused_without_echoing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short key fails the startup check; the message names only the variable."""
+    short = secrets.token_hex(8)
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", short)
+    with pytest.raises(BackendConfigError) as exc_info:
+        check_balance_intake(load_settings())
+    message = str(exc_info.value)
+    assert "BALANCE_INTAKE_API_KEY" in message
+    assert str(MIN_INTAKE_KEY_LENGTH) in message
+    assert short not in message
+
+
+def test_key_length_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """31 characters fail and 32 pass."""
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", "k" * (MIN_INTAKE_KEY_LENGTH - 1))
+    with pytest.raises(BackendConfigError):
+        check_balance_intake(load_settings())
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", "k" * MIN_INTAKE_KEY_LENGTH)
+    check_balance_intake(load_settings())
+
+
+def test_settings_repr_hides_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neither ``repr`` nor ``str`` of the settings shows the key."""
+    key = secrets.token_urlsafe(MIN_INTAKE_KEY_LENGTH)
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", key)
+    settings = load_settings()
+    assert key not in repr(settings)
+    assert key not in str(settings)
+    assert key not in repr(settings.balance_intake_api_key)
+
+
+def test_app_refuses_to_start_with_a_short_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A short key stops startup with exit 1 and no value in the message."""
+    short = secrets.token_hex(4)
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", short)
+    with pytest.raises(SystemExit) as exc_info:
+        importlib.reload(importlib.import_module("app.main"))
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "BALANCE_INTAKE_API_KEY" in err
+    assert short not in err
+
+
+def test_app_starts_without_the_key() -> None:
+    """The setting is optional: the app loads when it is absent."""
+    importlib.reload(importlib.import_module("app.main"))

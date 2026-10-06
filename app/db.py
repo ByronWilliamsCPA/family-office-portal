@@ -154,6 +154,12 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         ALTER TABLE balances_daily ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
         """,
     ),
+    (
+        2,
+        """
+        ALTER TABLE account_balances ADD COLUMN reconciled_through TEXT;
+        """,
+    ),
 )
 
 

@@ -3,6 +3,7 @@
 > **Status**: Accepted
 > **Date**: 2026-05-06
 > **Amended**: 2026-09-30 (optional, keyed backend connections; see "Amendment 2026-09-30" below)
+> **Amended**: 2026-10-05 (balance intake writer; see "Amendment 2026-10-05" below)
 
 ## TL;DR
 
@@ -245,3 +246,50 @@ the request with no key header when the key was unset is removed.
 - Local template work needs no backend variables at all.
 - #ASSUME each backend checks `X-API-Key`. #VERIFY with each backend before
   its URL and key are set in the deployment.
+
+## Amendment 2026-10-05: the balance intake is the one HTTP writer
+
+> **Status**: Accepted
+> **Amends**: the original text and the 2026-09-30 amendment above, which are
+> left intact for the record. Where they differ, this amendment takes
+> precedence for account balances.
+
+### What changed
+
+Route handlers read SQLite only, and writes belong to the scheduled refresh
+jobs. Account balances are delivered to the portal by a collector instead of
+being fetched by it, so the portal cannot pull them on a schedule.
+
+### Decision
+
+- `POST /api/v1/balances` is the single HTTP handler allowed to write. Every
+  page route still reads SQLite only and calls no backend. Authentication for
+  this route is described in the ADR-005 amendment of the same date.
+- The write goes through the same process-wide write lock as the scheduler's
+  writes, in a worker thread so the event loop is never blocked, in a single
+  all-or-nothing transaction. Any failure rolls the whole delivery back and
+  answers 503 with a fixed message.
+- Per-provider replace semantics: a provider is the part of an account
+  identifier before its first colon. Each provider present in a delivery has
+  its stored rows replaced by the delivered rows, and a provider absent from
+  the delivery keeps its previous rows. Section staleness for balances is the
+  oldest provider's latest delivery time, so one provider that stops reporting
+  shows the existing "may be out of date" label.
+- The same transaction upserts today's row per account into `balances_daily`,
+  and removes today's rows for accounts that the delivery replaced away, so the
+  day's total matches the headline total. History for earlier days is never
+  deleted. A scheduled job also snapshots once every 24 hours.
+- Amounts are decimal strings, stored as integer cents (rounded half to
+  even) with their currency. At most 12 digits before the decimal point are
+  accepted, so a full delivery of the largest value cannot overflow SQLite's
+  64-bit sum.
+
+### Consequences of the amendment
+
+- There is no way yet to retire a provider that has stopped reporting: its last
+  rows stay in the totals and the section stays labelled out of date.
+  #ASSUME the owner will decide whether a retire action or an age limit is
+  wanted. #VERIFY before any provider is switched off for good.
+- The "route handlers never write" rule now has this one named exception, which
+  is covered by tests for authentication, atomicity and the per-provider
+  behavior.

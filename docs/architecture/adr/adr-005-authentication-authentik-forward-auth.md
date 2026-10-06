@@ -4,6 +4,7 @@
 > **Date**: 2026-09-29
 > **Supersedes**: [ADR-002](adr-002-authentication-cloudflare-zero-trust.md)
 > **Amended**: 2026-09-29 (HS256 forward-auth token; see "Amendment 2026-09-29" below)
+> **Amended**: 2026-10-05 (balance intake key; see "Amendment 2026-10-05" below)
 
 ## TL;DR
 
@@ -482,3 +483,49 @@ shared secret from the token check. It was rejected because:
 - The portal has no outbound dependency on Authentik for authentication, so
   an Authentik outage no longer changes token validation (new sign-ins still
   need Authentik).
+
+## Amendment 2026-10-05: balance intake authenticates with a shared key
+
+> **Status**: Accepted
+> **Amends**: the original text and the 2026-09-29 amendment above, which are
+> left intact for the record. Where they differ, this amendment takes
+> precedence for the one route it names.
+
+### What changed
+
+The original text has two classes of path: public (`/health` and `/static/`),
+which need no identity, and everything else, which needs a valid signed
+`X-authentik-jwt`. A machine collector that delivers account balances runs on
+the internal network and cannot sign in through Authentik, so it cannot present
+that token. A third class is added.
+
+### Decision
+
+- `POST /api/v1/balances` is not judged by the identity check. It
+  authenticates with its own shared key, sent in the `X-API-Key` header and
+  compared in constant time with the optional `BALANCE_INTAKE_API_KEY` setting.
+- The middleware exemption is an exact match on method and path. It is judged
+  on the routed path with any ASGI `root_path` prefix stripped, like the public
+  and admin checks. Any other method, any other path, a trailing slash, a
+  different letter case and every websocket connection still need a valid
+  token, and a failure is the same plain 403.
+- The endpoint is disabled when no key is set: it answers 404 and accepts
+  nothing. A key shorter than 32 characters stops the portal at startup, naming
+  the variable and never the value.
+- A missing or wrong key is a 401 with a fixed message. The key is checked
+  before the request body is read, and the key, the submitted values, account
+  identifiers and balances are never logged or echoed.
+- A signed token sent to this route is ignored: it neither grants access nor
+  sets a principal. A request with a valid token and no key is a 401.
+
+### Consequences of the amendment
+
+- The collector must reach the portal directly on the internal network. A
+  forward-auth route in front of the portal would refuse the collector, because
+  it carries no Authentik session, so the route must not be published through
+  the proxy that enforces forward auth.
+- The portal holds one more stack-injected secret. `SECURITY.md` should record
+  how to handle and rotate it, as for `AUTHENTIK_JWT_SECRET`.
+- #ASSUME the internal network path to the portal is reachable only by the
+  collector and other trusted services. #VERIFY with homelab-infra that no
+  public route forwards `/api/v1/balances` to the portal.

@@ -9,7 +9,19 @@ have a response_model; see ADR-001 for the rendering decision.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import re
+from datetime import date
+from typing import Annotated, Any, Literal
+from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 class HealthResponse(BaseModel):
@@ -86,3 +98,269 @@ class RefreshTriggerResponse(BaseModel):
         description="True when the staleness check was bypassed.",
         examples=[False],
     )
+
+
+# --------------------------------------------------------------------------- #
+# Balance intake (``POST /api/v1/balances``)
+# --------------------------------------------------------------------------- #
+
+BALANCE_CATEGORIES = Literal[
+    "Investments", "Retirement", "Cash", "Digital currency", "Alternatives"
+]
+# Most rows one delivery may carry, and the most bytes its body may hold.
+MAX_DELIVERY_ROWS = 2000
+# Bank-style rows that may carry a reconciled-through date.
+_RECONCILED_PROVIDER = "xero"
+_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def provider_of(account_id: str) -> str:
+    """Return the provider part of an account id, the text before the first colon.
+
+    Args:
+        account_id (str): Provider-prefixed account id such as ``pp:example``.
+
+    Returns:
+        str: The prefix, or an empty string when the id has no colon.
+    """
+    prefix, separator, _rest = account_id.partition(":")
+    return prefix if separator else ""
+
+
+def _parse_date(value: str) -> str:
+    """Check that text is a real ``YYYY-MM-DD`` date and return it unchanged.
+
+    Args:
+        value (str): Candidate date text.
+
+    Returns:
+        str: The same text.
+
+    Raises:
+        ValueError: If the text is not a real calendar date in that form.
+    """
+    if not re.fullmatch(_DATE_PATTERN, value):
+        msg = "not a YYYY-MM-DD date"
+        raise ValueError(msg)
+    date.fromisoformat(value)
+    return value
+
+
+class BalanceRow(BaseModel):
+    """One account balance in a delivery.
+
+    Validation is strict: ``value`` must be a JSON string (a number is
+    rejected), and no field is coerced from another type. Error messages never
+    contain the submitted value.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    account_id: Annotated[
+        str,
+        StringConstraints(pattern=r"^(pp|xero|crypto):[A-Za-z0-9._:-]{1,100}$"),
+    ] = Field(
+        description=(
+            "Stable account id prefixed with its provider (pp:, xero: or "
+            "crypto:). Never a full account number."
+        ),
+        examples=["pp:example-brokerage"],
+    )
+    account_name: Annotated[str, StringConstraints(min_length=1, max_length=200)] = (
+        Field(
+            description="Plain-English account name shown to people.",
+            examples=["Example Brokerage"],
+        )
+    )
+    entity_id: str = Field(
+        description="Entity UUID that owns the account. Never null.",
+        json_schema_extra={"format": "uuid"},
+        examples=["11111111-2222-4333-8444-555555555555"],
+    )
+    category: BALANCE_CATEGORIES = Field(description="Account category.")
+    source: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,39}$")] = (
+        Field(
+            description="Feed name, for example broker_report or manual_mark.",
+            examples=["broker_report"],
+        )
+    )
+    value: Annotated[
+        str, StringConstraints(pattern=r"^-?[0-9]{1,12}(\.[0-9]{1,4})?$")
+    ] = Field(
+        description=(
+            "Decimal amount as a JSON string, never a number: an optional "
+            "minus sign, at most 12 digits before the point and at most 4 "
+            "after it (rounded half to even to whole cents when stored)."
+        ),
+        examples=["1234.56"],
+    )
+    currency: Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")] = Field(
+        description="Three-letter currency code.", examples=["USD"]
+    )
+    as_of: str = Field(
+        description="Date the value is true for, YYYY-MM-DD.",
+        json_schema_extra={"format": "date"},
+        examples=["2026-09-26"],
+    )
+    reconciled_through: str | None = Field(
+        default=None,
+        description=(
+            "Bank rows only: latest date with no unreconciled statement lines."
+        ),
+        json_schema_extra={"format": "date"},
+    )
+
+    @field_validator("account_name")
+    @classmethod
+    def _no_control_characters(cls, value: str) -> str:
+        """Reject names with control characters.
+
+        Args:
+            value (str): Account name.
+
+        Returns:
+            str: The same name.
+
+        Raises:
+            ValueError: If the name has a control character.
+        """
+        if _CONTROL_CHARACTERS.search(value):
+            msg = "contains a control character"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("entity_id")
+    @classmethod
+    def _canonical_uuid(cls, value: str) -> str:
+        """Check the entity id is a UUID and return it in lower-case form.
+
+        Args:
+            value (str): Entity id text.
+
+        Returns:
+            str: Canonical lower-case hyphenated UUID.
+
+        Raises:
+            ValueError: If the text is not a UUID.
+        """
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", value):
+            msg = "not a UUID"
+            raise ValueError(msg)
+        return str(UUID(value))
+
+    @field_validator("as_of", "reconciled_through")
+    @classmethod
+    def _real_date(cls, value: str | None) -> str | None:
+        """Check a date field is a real ``YYYY-MM-DD`` date.
+
+        Args:
+            value (str | None): Date text, or None where the field is optional.
+
+        Returns:
+            str | None: The same value.
+        """
+        return None if value is None else _parse_date(value)
+
+    @model_validator(mode="after")
+    def _check_reconciled_through(self) -> BalanceRow:
+        """Allow ``reconciled_through`` only on bank rows, and not after ``as_of``.
+
+        Returns:
+            BalanceRow: This row.
+
+        Raises:
+            ValueError: If the field is set on a non-bank row or is later
+                than ``as_of``.
+        """
+        if self.reconciled_through is None:
+            return self
+        if self.provider != _RECONCILED_PROVIDER:
+            msg = "reconciled_through is only allowed on bank rows"
+            raise ValueError(msg)
+        if self.reconciled_through > self.as_of:
+            msg = "reconciled_through is later than as_of"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def provider(self) -> str:
+        """Return the provider prefix of the account id."""
+        return provider_of(self.account_id)
+
+
+class BalanceDelivery(BaseModel):
+    """A full delivery of balance rows: ``{"items": [...], "total": n}``."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    items: list[BalanceRow] = Field(
+        max_length=MAX_DELIVERY_ROWS,
+        description="Every balance row in this delivery.",
+    )
+    total: Annotated[int, Field(strict=True, ge=0)] = Field(
+        description="Number of rows; must equal the length of items.",
+    )
+
+    @model_validator(mode="after")
+    def _check_total_and_duplicates(self) -> BalanceDelivery:
+        """Require ``total`` to match the rows and every account id to be unique.
+
+        Returns:
+            BalanceDelivery: This delivery.
+
+        Raises:
+            ValueError: If ``total`` differs from the row count or an account
+                id appears twice. The message never includes an id.
+        """
+        if self.total != len(self.items):
+            msg = "total does not match the number of items"
+            raise ValueError(msg)
+        ids = [row.account_id for row in self.items]
+        if len(set(ids)) != len(ids):
+            msg = "an account appears more than once"
+            raise ValueError(msg)
+        return self
+
+    def providers(self) -> list[str]:
+        """Return the sorted providers that have at least one row.
+
+        Returns:
+            list[str]: Provider prefixes present in the delivery.
+        """
+        return sorted({row.provider for row in self.items})
+
+
+class BalanceReceipt(BaseModel):
+    """Response for an accepted delivery."""
+
+    accepted: int = Field(description="Number of rows stored.", examples=[3])
+    providers: list[str] = Field(
+        description="Providers whose rows were replaced.", examples=[["pp", "xero"]]
+    )
+
+
+def validation_problems(errors: list[Any]) -> list[dict[str, str]]:
+    """Reduce pydantic errors to field paths and error codes only.
+
+    Pydantic's own messages and ``input`` fields can contain the submitted
+    value, so neither is copied. Unknown field names from the sender are shown
+    as ``?``, so text from the request is never echoed.
+
+    Args:
+        errors (list[Any]): Result of ``ValidationError.errors()``.
+
+    Returns:
+        list[dict[str, str]]: At most 20 ``{"field", "problem"}`` entries.
+    """
+    known = {"items", "total", *BalanceRow.model_fields}
+    problems: list[dict[str, str]] = []
+    for error in errors[:20]:
+        parts = [
+            str(part) if isinstance(part, int) or part in known else "?"
+            for part in error.get("loc", ())
+        ]
+        problems.append(
+            {"field": ".".join(parts) or "body", "problem": str(error.get("type", ""))}
+        )
+    return problems
