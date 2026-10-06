@@ -43,6 +43,8 @@ if TYPE_CHECKING:
     from app.retrieval.settings import EmbeddingConnection
 
 STAMP = "2026-01-02T03:04:05+00:00"
+# Generated per run so no credential-shaped literal sits in the source.
+USERINFO_SECRET = secrets.token_urlsafe(9)
 
 # In-process Qdrant warns that payload indexes have no effect; that is expected.
 pytestmark = pytest.mark.filterwarnings(
@@ -730,6 +732,29 @@ def test_main_refuses_a_url_without_its_key(
         assert main() == 2
     assert logs[0]["event"] == "indexer_misconfigured"
     assert "QDRANT_API_KEY" in logs[0]["reason"]
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("QDRANT_URL", "ftp://qdrant.test"),
+        ("QDRANT_URL", "qdrant.test:6333"),
+        ("QDRANT_URL", f"http://user:{USERINFO_SECRET}@qdrant.test:99999"),
+        ("EMBED_BASE_URL", "embed.test"),
+    ],
+)
+def test_main_refuses_a_malformed_url_with_the_real_client_factory(
+    command_env: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    """A malformed URL exits 2 naming the variable, never raising or echoing it."""
+    command_env.setattr(indexer_module, "make_client", qdrant_store.make_client)
+    command_env.setenv(variable, value)
+    with capture_logs() as logs:
+        assert main() == 2
+    assert logs[0]["event"] == "indexer_misconfigured"
+    assert variable in logs[0]["reason"]
+    assert USERINFO_SECRET not in repr(logs)
+    assert value not in repr(logs)
 
 
 def test_main_stops_when_the_directory_is_missing(

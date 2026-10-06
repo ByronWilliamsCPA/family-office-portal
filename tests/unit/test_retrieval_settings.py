@@ -28,6 +28,9 @@ from app.retrieval.settings import (
     load_retrieval_settings,
 )
 
+# Generated per run so no credential-shaped literal sits in the source.
+USERINFO_SECRET = secrets.token_urlsafe(9)
+
 RETRIEVAL_VARS = (
     "EMBED_BASE_URL",
     "EMBED_API_KEY",
@@ -187,6 +190,58 @@ def test_qdrant_connection_rejects_blank_values(
     api_key = SecretStr(key)
     with pytest.raises(RetrievalConfigError, match=message):
         QdrantConnection(url=url, api_key=api_key)
+
+
+BAD_URLS = [
+    "ftp://host.test",
+    "host.test:6333",
+    "http://",
+    "http://host.test:99999",
+    "http://host.test:bad",
+    "http://[host.test",
+    f"http://user:{USERINFO_SECRET}@host.test:99999",
+]
+
+
+@pytest.mark.parametrize("url", BAD_URLS)
+def test_qdrant_connection_rejects_a_malformed_url_without_echoing_it(
+    url: str,
+) -> None:
+    """A URL that is not http or https with a host and port names the variable."""
+    with pytest.raises(RetrievalConfigError, match="QDRANT_URL") as caught:
+        QdrantConnection(url=url, api_key=SecretStr("k"))
+    assert url not in str(caught.value)
+    assert USERINFO_SECRET not in str(caught.value)
+
+
+@pytest.mark.parametrize("url", [*BAD_URLS, "embed.test/v1"])
+def test_embedding_connection_rejects_a_malformed_url_without_echoing_it(
+    url: str,
+) -> None:
+    """A malformed embedding base URL names the variable, never its value."""
+    with pytest.raises(RetrievalConfigError, match="EMBED_BASE_URL") as caught:
+        EmbeddingConnection(base_url=url, api_key=SecretStr("k"), model="m")
+    assert url not in str(caught.value)
+    assert USERINFO_SECRET not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://q", "https://q.test:6333", "http://q.test:6333/prefix"]
+)
+def test_qdrant_connection_accepts_http_and_https_urls(url: str) -> None:
+    """Valid http and https URLs, with or without a port or path, are kept."""
+    assert QdrantConnection(url=url, api_key=SecretStr("k")).url == url
+
+
+def test_a_malformed_url_in_the_environment_is_not_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bad URL makes search not connected instead of failing a later client."""
+    _set_all(monkeypatch)
+    monkeypatch.setenv("QDRANT_URL", "ftp://qdrant.test")
+    with pytest.raises(RetrievalConfigError, match="QDRANT_URL"):
+        load_retrieval_settings().qdrant_connection()
+    assert load_retrieval_settings().search_connected() is False
 
 
 @pytest.mark.parametrize("value", ["abc", "", "nan", "inf", "0", "-1"])

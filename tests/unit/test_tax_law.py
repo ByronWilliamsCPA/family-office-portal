@@ -22,8 +22,14 @@ from structlog.testing import capture_logs
 
 from app.retrieval import tax_law as tax_law_module
 from app.retrieval.embeddings import QUERY_PREFIX, EmbeddingClient
-from app.retrieval.qdrant_store import DENSE_VECTOR, SPARSE_VECTOR, VectorStoreError
+from app.retrieval.qdrant_store import (
+    DENSE_VECTOR,
+    SPARSE_VECTOR,
+    VectorStoreError,
+    make_client,
+)
 from app.retrieval.tax_law import (
+    REMOVAL_GUARD_MIN,
     TAX_LAW_COLLECTION,
     KnowledgeBaseError,
     TaxLawIndexer,
@@ -42,6 +48,8 @@ if TYPE_CHECKING:
 
 STAMP = "2026-01-02T03:04:05+00:00"
 MARKER_TEXT = "zebra quokka marmot"
+# Generated per run so no credential-shaped literal sits in the source.
+USERINFO_SECRET = secrets.token_urlsafe(9)
 
 
 def knowledge_base(
@@ -67,6 +75,13 @@ BASE = knowledge_base(
     ("1.2", "Widget credit limits", "The widget credit has a yearly cap."),
     ("1.3", "Placeholder", "   "),
 )
+
+
+def numbered(count: int) -> dict[str, Any]:
+    """Return a one-topic knowledge base with ``count`` subtopics, ids n1..."""
+    return knowledge_base(
+        *((f"n{i}", f"Title {i}", f"Text number {i}.") for i in range(1, count + 1))
+    )
 
 
 @pytest.fixture
@@ -126,6 +141,19 @@ def test_parse_keeps_subtopics_with_content_in_file_order() -> None:
     assert parsed.skipped_blank == 1
     assert parsed.subtopics[0].topic == "Widget Credits"
     assert parsed.subtopics[0].topic_id == "topic-1"
+
+
+def test_subtopic_ids_are_trimmed() -> None:
+    """Surrounding whitespace is not part of a subtopic id."""
+    parsed = parse_knowledge_base(knowledge_base((" 1.1 ", "A", "text")))
+    assert parsed.subtopics[0].subtopic_id == "1.1"
+
+
+def test_ids_that_differ_only_by_whitespace_are_duplicates() -> None:
+    """The duplicate check runs on trimmed ids."""
+    data = knowledge_base((" 4.1", "A", "one"), ("4.1 ", "B", "two"))
+    with pytest.raises(KnowledgeBaseError, match=r"duplicate subtopic ids: 4\.1"):
+        parse_knowledge_base(data)
 
 
 def test_duplicate_ids_are_rejected_even_across_topics() -> None:
@@ -207,6 +235,41 @@ def test_malformed_files_are_rejected(data: object, message: str) -> None:
         parse_knowledge_base(data)
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        [MARKER_TEXT],
+        {"knowledgeBase": {MARKER_TEXT: 1}},
+        {"knowledgeBase": [{"id": {MARKER_TEXT: 1}, "topic": "T", "subtopics": []}]},
+        {"knowledgeBase": [{"id": "t", "topic": [MARKER_TEXT], "subtopics": []}]},
+        {"knowledgeBase": [{"id": "t", "topic": "T", "subtopics": [MARKER_TEXT]}]},
+        {
+            "knowledgeBase": [
+                {
+                    "id": "t",
+                    "topic": "T",
+                    "subtopics": [{"id": "1", "title": [MARKER_TEXT], "content": "c"}],
+                }
+            ]
+        },
+        {
+            "knowledgeBase": [
+                {
+                    "id": "t",
+                    "topic": "T",
+                    "subtopics": [{"id": "1", "title": "x", "content": [MARKER_TEXT]}],
+                }
+            ]
+        },
+    ],
+)
+def test_shape_errors_never_echo_the_offending_value(data: object) -> None:
+    """A wrong-typed value is named by position only; its content is not shown."""
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        parse_knowledge_base(data)
+    assert MARKER_TEXT not in str(excinfo.value)
+
+
 def test_unreadable_file_is_rejected_without_its_content(tmp_path: Path) -> None:
     """A missing or broken file raises a typed error with no content."""
     with pytest.raises(KnowledgeBaseError, match="FileNotFoundError"):
@@ -225,6 +288,11 @@ def test_point_ids_are_stable_per_subtopic() -> None:
     other = subtopic_point_id("1.2")
     assert first == again
     assert first != other
+
+
+def test_point_ids_are_pinned() -> None:
+    """A change to the namespace or derivation would orphan every stored point."""
+    assert subtopic_point_id("1.1") == "1d56a936-43ba-5a46-8d4e-9960dc530361"
 
 
 # --------------------------------------------------------------------------- #
@@ -247,6 +315,30 @@ def test_indexes_one_point_per_subtopic_with_its_payload(
     assert first["text"] == "A widget credit applies per widget."
     assert first["embedding_model"] == MODEL
     assert first["embedded_at"] == STAMP
+
+
+def test_each_point_carries_its_own_topic(
+    indexer: TaxLawIndexer, qdrant: QdrantClient, tmp_path: Path
+) -> None:
+    """Points from different topics keep their own topic name and id."""
+    data = knowledge_base(("1.1", "First", "one"), topic="Alpha")
+    data["knowledgeBase"].append(
+        {
+            "id": "topic-2",
+            "topic": "Beta",
+            "subtopics": [{"id": "2.1", "title": "Second", "content": "two"}],
+        }
+    )
+    indexer.run(write_kb(tmp_path, data))
+    payloads = stored(qdrant)
+    assert (payloads["1.1"]["topic"], payloads["1.1"]["topic_id"]) == (
+        "Alpha",
+        "topic-1",
+    )
+    assert (payloads["2.1"]["topic"], payloads["2.1"]["topic_id"]) == (
+        "Beta",
+        "topic-2",
+    )
 
 
 def test_collection_has_dense_and_sparse_slots(
@@ -343,6 +435,96 @@ def test_embedding_failure_keeps_points_and_hides_text(
     assert set(stored(qdrant)) == {"1.1", "1.2"}
 
 
+def _qdrant_refusal(*_args: object, **_kwargs: object) -> None:
+    """Fail like a Qdrant server error."""
+    raise UnexpectedResponse(500, "error", b"", httpx.Headers())
+
+
+def test_failed_upsert_leaves_the_old_points(
+    indexer: TaxLawIndexer,
+    qdrant: QdrantClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New points go in before any delete, so a failed write loses nothing."""
+    indexer.run(write_kb(tmp_path, BASE))
+    changed = knowledge_base(
+        ("1.1", "Basic widget credit", "Revised widget credit text."),
+        ("1.4", "New widget rule", "A new widget rule."),
+    )
+    monkeypatch.setattr(qdrant, "upsert", _qdrant_refusal)
+    with pytest.raises(UnexpectedResponse):
+        indexer.run(write_kb(tmp_path, changed))
+    payloads = stored(qdrant)
+    assert set(payloads) == {"1.1", "1.2"}
+    assert payloads["1.1"]["text"] == "A widget credit applies per widget."
+
+
+def test_failed_delete_keeps_the_new_points(
+    indexer: TaxLawIndexer,
+    qdrant: QdrantClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed delete leaves new and old points mixed; a rerun cleans up."""
+    indexer.run(write_kb(tmp_path, BASE))
+    changed = write_kb(
+        tmp_path,
+        knowledge_base(
+            ("1.1", "Basic widget credit", "Revised widget credit text."),
+            ("1.4", "New widget rule", "A new widget rule."),
+        ),
+    )
+    monkeypatch.setattr(qdrant, "delete", _qdrant_refusal)
+    with pytest.raises(UnexpectedResponse):
+        indexer.run(changed)
+    payloads = stored(qdrant)
+    assert set(payloads) == {"1.1", "1.2", "1.4"}
+    assert payloads["1.1"]["text"] == "Revised widget credit text."
+    monkeypatch.undo()
+    report = indexer.run(changed)
+    assert report.removed == 1
+    assert set(stored(qdrant)) == {"1.1", "1.4"}
+
+
+@pytest.mark.parametrize(("before", "after"), [(10, 2), (REMOVAL_GUARD_MIN + 1, 1)])
+def test_file_that_would_remove_most_points_is_refused(
+    indexer: TaxLawIndexer,
+    qdrant: QdrantClient,
+    tmp_path: Path,
+    before: int,
+    after: int,
+) -> None:
+    """A valid file that would delete most stored points changes nothing."""
+    indexer.run(write_kb(tmp_path, numbered(before)))
+    shrunk = write_kb(tmp_path, numbered(after))
+    removing = before - after
+    with pytest.raises(
+        KnowledgeBaseError, match=rf"would remove {removing} of {before}"
+    ) as excinfo:
+        indexer.run(shrunk)
+    assert "delete the tax-law collection" in str(excinfo.value)
+    assert len(stored(qdrant)) == before
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [(10, 5), (REMOVAL_GUARD_MIN, 1), (3, 1)],
+)
+def test_removals_at_or_under_the_guard_go_through(
+    indexer: TaxLawIndexer,
+    qdrant: QdrantClient,
+    tmp_path: Path,
+    before: int,
+    after: int,
+) -> None:
+    """Half the points, or fewer than the minimum, can still be removed."""
+    indexer.run(write_kb(tmp_path, numbered(before)))
+    report = indexer.run(write_kb(tmp_path, numbered(after)))
+    assert report.removed == before - after
+    assert len(stored(qdrant)) == after
+
+
 # --------------------------------------------------------------------------- #
 # Command
 # --------------------------------------------------------------------------- #
@@ -376,6 +558,8 @@ def command_env(
     monkeypatch.setenv("QDRANT_API_KEY", secrets.token_urlsafe(16))
     monkeypatch.setenv("TAX_LAW_PATH", str(write_kb(tmp_path, BASE)))
     monkeypatch.setattr(tax_law_module, "make_client", lambda _connection: qdrant)
+    # main() closes its client; keep the in-process one open for assertions.
+    monkeypatch.setattr(qdrant, "close", lambda: None)
     real_client = tax_law_module.EmbeddingClient
 
     def fake_embedding_client(connection: EmbeddingConnection) -> EmbeddingClient:
@@ -386,11 +570,15 @@ def command_env(
     return monkeypatch
 
 
-def test_main_indexes_and_exits_zero(command_env: pytest.MonkeyPatch) -> None:
+def test_main_indexes_and_exits_zero(
+    command_env: pytest.MonkeyPatch, qdrant: QdrantClient
+) -> None:
     """Main indexes the configured file, exits zero and closes the client."""
-    del command_env
+    closed: list[bool] = []
+    command_env.setattr(qdrant, "close", lambda: closed.append(True))
     with capture_logs() as logs:
         assert main() == 0
+    assert closed == [True]
     finished = logs[-1]
     assert finished["event"] == "tax_law_index_finished"
     assert (finished["indexed"], finished["skipped_blank"]) == (2, 1)
@@ -402,6 +590,7 @@ def test_main_is_off_without_the_path(command_env: pytest.MonkeyPatch) -> None:
     with capture_logs() as logs:
         assert main() == 2
     assert logs[0]["event"] == "tax_law_not_connected"
+    assert logs[0]["log_level"] == "warning"
 
 
 def test_main_is_off_without_qdrant(command_env: pytest.MonkeyPatch) -> None:
@@ -443,6 +632,74 @@ def test_main_exits_one_when_embedding_fails(
     assert logs[-1]["reason"] == "Embedding service returned HTTP 503"
 
 
+def test_main_exits_one_without_leaking_content_when_embedding_fails(
+    command_env: pytest.MonkeyPatch, service: FakeEmbeddingService, tmp_path: Path
+) -> None:
+    """The fake echoes its input in the error body; neither logs nor result show it."""
+    marked = write_kb(tmp_path, knowledge_base(("9.9", "Hidden", MARKER_TEXT)))
+    command_env.setenv("TAX_LAW_PATH", str(marked))
+    service.fail_with = 500
+    with capture_logs() as logs:
+        assert main() == 1
+    assert MARKER_TEXT in json.dumps(service.requests)
+    assert MARKER_TEXT not in repr(logs)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_main_stops_when_the_embedding_key_is_refused(
+    command_env: pytest.MonkeyPatch,
+    service: FakeEmbeddingService,
+    qdrant: QdrantClient,
+    status: int,
+) -> None:
+    """A refused key exits two like the document indexer, and writes nothing."""
+    del command_env
+    service.fail_with = status
+    with capture_logs() as logs:
+        assert main() == 2
+    assert logs[-1]["event"] == "tax_law_index_stopped"
+    assert logs[-1]["reason"] == f"Embedding service returned HTTP {status}"
+    assert stored(qdrant) == {}
+
+
+def test_main_exits_one_for_a_file_that_would_remove_most_points(
+    command_env: pytest.MonkeyPatch, qdrant: QdrantClient, tmp_path: Path
+) -> None:
+    """A refused shrink exits one and leaves the collection alone."""
+    command_env.setenv("TAX_LAW_PATH", str(write_kb(tmp_path, numbered(10))))
+    assert main() == 0
+    command_env.setenv("TAX_LAW_PATH", str(write_kb(tmp_path, numbered(2))))
+    with capture_logs() as logs:
+        assert main() == 1
+    assert logs[-1]["event"] == "tax_law_index_failed"
+    assert len(stored(qdrant)) == 10
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("QDRANT_URL", "ftp://qdrant.test"),
+        ("QDRANT_URL", "qdrant.test:6333"),
+        ("QDRANT_URL", f"http://user:{USERINFO_SECRET}@qdrant.test:99999"),
+        ("QDRANT_URL", f"http://user:{USERINFO_SECRET}@qdrant.test:bad"),
+        ("EMBED_BASE_URL", "embed.test"),
+        ("EMBED_BASE_URL", f"http://user:{USERINFO_SECRET}@embed.test:99999"),
+    ],
+)
+def test_main_refuses_a_malformed_url_with_the_real_client_factory(
+    command_env: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    """A malformed URL exits two naming the variable, never raising or echoing it."""
+    command_env.setattr(tax_law_module, "make_client", make_client)
+    command_env.setenv(variable, value)
+    with capture_logs() as logs:
+        assert main() == 2
+    assert logs[0]["event"] == "tax_law_misconfigured"
+    assert variable in logs[0]["reason"]
+    assert USERINFO_SECRET not in repr(logs)
+    assert value not in repr(logs)
+
+
 def test_main_stops_when_qdrant_fails(command_env: pytest.MonkeyPatch) -> None:
     """A Qdrant error exits two."""
 
@@ -464,10 +721,12 @@ def test_stale_points_are_found_across_scroll_pages(
 ) -> None:
     """Removal reads every page of stored points, not just the first."""
     monkeypatch.setattr(tax_law_module, "_SCROLL_PAGE", 1)
-    indexer.run(write_kb(tmp_path, BASE))
-    report = indexer.run(write_kb(tmp_path, knowledge_base(("1.2", "L", "cap"))))
-    assert report.removed == 1
-    assert set(stored(qdrant)) == {"1.2"}
+    indexer.run(write_kb(tmp_path, numbered(6)))
+    # Four of six points are stale; with one point per page, a reader that
+    # stops after the first page can find at most one of them.
+    report = indexer.run(write_kb(tmp_path, numbered(2)))
+    assert report.removed == 4
+    assert set(stored(qdrant)) == {"n1", "n2"}
 
 
 def test_main_refuses_a_timeout_that_cannot_be_parsed(

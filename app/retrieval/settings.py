@@ -28,9 +28,11 @@ Variables (names only; values come from the deployment environment):
 
 A value that cannot be parsed (for example a non-numeric timeout) makes
 ``load_retrieval_settings`` raise ``RetrievalConfigError`` naming the variable,
-never its value. Unlike the backend pairs in ``app.config``, these settings are
-not checked at startup: the web process treats a bad value as "not connected"
-and logs a warning, and the indexer command exits 2.
+never its value. So does a URL that is not http or https with a host and a
+valid port, which the connection objects reject before any client is built.
+Unlike the backend pairs in ``app.config``, these settings are not checked at
+startup: the web process treats a bad value as "not connected" and logs a
+warning, and the indexer command exits 2.
 
 #ASSUME: security: the embedding service and Qdrant are reached over a
 private network, so an ``http://`` URL does not expose the keys. #VERIFY:
@@ -42,6 +44,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import structlog
 from pydantic import Field, SecretStr, ValidationError
@@ -58,6 +61,33 @@ _reported_problems: set[str] = set()
 
 class RetrievalConfigError(ValueError):
     """Retrieval settings are set but cannot form a usable connection."""
+
+
+def _require_http_url(url: str, name: str) -> None:
+    """Check that a URL is http or https with a host and a usable port.
+
+    The client libraries raise on a malformed URL with a message that can
+    echo it, userinfo included, so the check happens here and the error names
+    only the variable.
+
+    Args:
+        url (str): The configured URL.
+        name (str): The variable it came from, for the error message.
+
+    Raises:
+        RetrievalConfigError: If the scheme is not http or https, the host is
+            missing, or the port is not a number from 0 to 65535. The message
+            never includes the URL.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        usable = parts.scheme in {"http", "https"} and bool(parts.hostname)
+        _ = parts.port  # raises ValueError for a port that is not 0-65535
+    except ValueError:
+        usable = False
+    if not usable:
+        msg = f"{name} must be an http or https URL with a host and a valid port"
+        raise RetrievalConfigError(msg)
 
 
 @dataclass(frozen=True)
@@ -80,13 +110,15 @@ class EmbeddingConnection:
         """Reject blank values and a timeout that is not a positive number.
 
         Raises:
-            RetrievalConfigError: If the URL, key or model is blank, or the
-                timeout is not a finite number above zero. The message never
-                includes the key.
+            RetrievalConfigError: If the URL, key or model is blank, the URL
+                is not an http or https URL with a host and a valid port, or
+                the timeout is not a finite number above zero. The message
+                never includes the URL or the key.
         """
         if not self.base_url.strip():
             msg = "the embedding service needs a base URL"
             raise RetrievalConfigError(msg)
+        _require_http_url(self.base_url, "EMBED_BASE_URL")
         if not self.api_key.get_secret_value().strip():
             msg = "the embedding service needs a non-blank API key"
             raise RetrievalConfigError(msg)
@@ -111,14 +143,17 @@ class QdrantConnection:
     api_key: SecretStr
 
     def __post_init__(self) -> None:
-        """Reject a blank URL or key.
+        """Reject a blank or malformed URL and a blank key.
 
         Raises:
-            RetrievalConfigError: If the URL or the key is blank.
+            RetrievalConfigError: If the URL is blank or is not an http or
+                https URL with a host and a valid port, or the key is blank.
+                The message never includes the URL or the key.
         """
         if not self.url.strip():
             msg = "Qdrant needs a URL"
             raise RetrievalConfigError(msg)
+        _require_http_url(self.url, "QDRANT_URL")
         if not self.api_key.get_secret_value().strip():
             msg = "Qdrant needs a non-blank API key"
             raise RetrievalConfigError(msg)

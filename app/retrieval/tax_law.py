@@ -14,9 +14,10 @@ is a contract shared with the repository that maintains it::
             {"id": ..., "title": ..., "content": ...}]}]}
 
 Each subtopic with non-blank content becomes one point. The payload carries
-the subtopic ``id`` and ``title`` (what chat cites), the ``topic``, the
-``text`` that search returns, and ``embedding_model`` and ``embedded_at``.
-The embedded text is the title and content, with no query prefix.
+the subtopic ``id`` and ``title`` (what chat cites), the ``topic`` and
+``topic_id``, the ``text`` that search returns, and ``embedding_model`` and
+``embedded_at``. The embedded text is the title and content, with no query
+prefix.
 
 Rules:
 
@@ -27,11 +28,29 @@ Rules:
 * Every subtopic is embedded before any write, so an embedding failure leaves
   the collection as it was. New points are written first, then points whose
   subtopic is no longer in the file are deleted.
+* A file that would delete at least ``REMOVAL_GUARD_MIN`` points and more
+  than half of those stored is refused before anything is written: it looks
+  like a truncated or wrong file. When the knowledge base really did shrink
+  that much, delete the ``tax-law`` collection and run again.
 * Logs and errors carry subtopic ids and counts, never content.
 
 Exit status: 0 when the collection matches the file, 1 when the file cannot
 be used or embedding failed (the collection is unchanged), 2 when the command
-is not configured or Qdrant stops answering.
+is not configured, a setting is misconfigured, the embedding service refuses
+the key, or Qdrant stops answering. Exit 2 matches the document indexer, so
+an alert keyed on it also catches a revoked key.
+
+#ASSUME: concurrency: runs never overlap, and nothing but this command
+writes the ``tax-law`` collection, because the stale sweep deletes every
+stored point whose subtopic is not in the file. #VERIFY: the schedule starts
+one run at a time and finishes inside its interval, and no other job or
+person writes to the collection.
+
+#EDGE: data integrity: the upserts and the delete are separate calls, so a
+failure between them leaves new and old points mixed, never none. #VERIFY:
+the next run rewrites every point and deletes the leftovers; see
+tests/unit/test_tax_law.py::test_failed_upsert_leaves_the_old_points and
+test_failed_delete_keeps_the_new_points.
 """
 
 from __future__ import annotations
@@ -72,6 +91,10 @@ logger = structlog.get_logger(__name__)
 
 TAX_LAW_COLLECTION = "tax-law"
 _SCROLL_PAGE = 256
+
+# A run is refused when it would delete at least this many stored points and
+# more than half of them: a truncated or wrong file, not a real clean-up.
+REMOVAL_GUARD_MIN = 5
 
 # Fixed namespace: the same subtopic id always gives the same point ID.
 _POINT_NAMESPACE = uuid.UUID("6f1d2a9c-4b7e-4c3a-8e51-0d9b7a2c5f18")
@@ -285,6 +308,11 @@ class TaxLawIndexer:
     def run(self, path: Path) -> TaxLawReport:
         """Index the file and drop points for subtopics it no longer has.
 
+        Failures of the embedding service (``EmbeddingError``, raised before
+        any write), a collection with the wrong vector slots
+        (``VectorStoreError``) and Qdrant itself (``ApiException`` or
+        ``QdrantException``) propagate unchanged.
+
         Args:
             path (Path): The knowledge-base file.
 
@@ -292,8 +320,9 @@ class TaxLawIndexer:
             TaxLawReport: What the run did.
 
         Raises:
-            KnowledgeBaseError: If the file cannot be used or has nothing to
-                index. Nothing is written in that case.
+            KnowledgeBaseError: If the file cannot be used, has nothing to
+                index, or would delete most of the stored points. Nothing is
+                written in that case.
         """
         knowledge_base = read_knowledge_base(path)
         if not knowledge_base.subtopics:
@@ -307,8 +336,40 @@ class TaxLawIndexer:
             [sub.embedding_text for sub in subtopics]
         )
         ensure_collection(self._client, self.collection)
+        points = self._points(subtopics, vectors)
+        stale = self._stale_point_ids({str(point.id) for point in points})
+        for start in range(0, len(points), UPSERT_BATCH_SIZE):
+            self._client.upsert(
+                collection_name=self.collection,
+                points=points[start : start + UPSERT_BATCH_SIZE],
+                wait=True,
+            )
+        if stale:
+            self._client.delete(
+                collection_name=self.collection,
+                points_selector=models.PointIdsList(points=stale),
+                wait=True,
+            )
+        return TaxLawReport(
+            indexed=len(points),
+            removed=len(stale),
+            skipped_blank=knowledge_base.skipped_blank,
+        )
+
+    def _points(
+        self, subtopics: tuple[Subtopic, ...], vectors: list[list[float]]
+    ) -> list[models.PointStruct]:
+        """Build one point per subtopic from its vector.
+
+        Args:
+            subtopics (tuple[Subtopic, ...]): Subtopics to write.
+            vectors (list[list[float]]): One vector per subtopic, in order.
+
+        Returns:
+            list[models.PointStruct]: Points ready to upsert.
+        """
         embedded_at = self._clock()
-        points = [
+        return [
             models.PointStruct(
                 id=subtopic_point_id(sub.subtopic_id),
                 vector={DENSE_VECTOR: vector},
@@ -324,25 +385,34 @@ class TaxLawIndexer:
             )
             for sub, vector in zip(subtopics, vectors, strict=True)
         ]
-        for start in range(0, len(points), UPSERT_BATCH_SIZE):
-            self._client.upsert(
-                collection_name=self.collection,
-                points=points[start : start + UPSERT_BATCH_SIZE],
-                wait=True,
+
+    def _stale_point_ids(self, keep: set[str]) -> list[models.ExtendedPointId]:
+        """Return the stored points the file no longer has, or refuse.
+
+        Args:
+            keep (set[str]): IDs of the points this run writes.
+
+        Returns:
+            list[models.ExtendedPointId]: IDs to delete after the upsert.
+
+        Raises:
+            KnowledgeBaseError: If the delete would remove at least
+                ``REMOVAL_GUARD_MIN`` points and more than half of those
+                stored.
+        """
+        stored = self._stored_point_ids()
+        stale = [pid for pid in stored if str(pid) not in keep]
+        if len(stale) >= REMOVAL_GUARD_MIN and len(stale) * 2 > len(stored):
+            # #EDGE: data integrity: a truncated but valid file would delete
+            # most of the collection. #VERIFY: tests/unit/test_tax_law.py::
+            # test_file_that_would_remove_most_points_is_refused.
+            msg = (
+                f"the file would remove {len(stale)} of {len(stored)} stored "
+                f"points; if the knowledge base really shrank, delete the "
+                f"{self.collection} collection and run again"
             )
-        keep = {str(point.id) for point in points}
-        stale = [pid for pid in self._stored_point_ids() if str(pid) not in keep]
-        if stale:
-            self._client.delete(
-                collection_name=self.collection,
-                points_selector=models.PointIdsList(points=stale),
-                wait=True,
-            )
-        return TaxLawReport(
-            indexed=len(points),
-            removed=len(stale),
-            skipped_blank=knowledge_base.skipped_blank,
-        )
+            raise KnowledgeBaseError(msg)
+        return stale
 
     def _stored_point_ids(self) -> list[models.ExtendedPointId]:
         """Return the ID of every point in the collection.
@@ -384,7 +454,7 @@ def _connections() -> tuple[EmbeddingConnection, QdrantConnection, Path] | None:
         path = settings.tax_law_file()
         if embedding is not None and qdrant is not None and path is not None:
             return embedding, qdrant, path
-        logger.info(
+        logger.warning(
             "tax_law_not_connected",
             detail="EMBED_BASE_URL, QDRANT_URL and TAX_LAW_PATH must all be set",
         )
@@ -404,19 +474,26 @@ def run_tax_law_indexer(
         path (Path): Knowledge-base file.
 
     Returns:
-        int: Process exit status.
+        int: Process exit status: 0 on success, 1 when the file or embedding
+        failed, 2 when the embedding service refused the key or Qdrant
+        stopped answering.
     """
-    failure = ""
-    stopped = ""
+    exit_code = EXIT_FAILURES
+    event = "tax_law_index_failed"
     try:
         with EmbeddingClient(embedding) as embedder:
             report = TaxLawIndexer(embedder, client).run(path)
-    except (KnowledgeBaseError, EmbeddingError) as exc:
-        failure = str(exc)
+    except KnowledgeBaseError as exc:
+        reason = str(exc)
+    except EmbeddingError as exc:
+        reason = str(exc)
+        if exc.refused_key:
+            exit_code, event = EXIT_NOT_READY, "tax_law_index_stopped"
     except VectorStoreError as exc:
-        stopped = str(exc)
+        exit_code, event, reason = EXIT_NOT_READY, "tax_law_index_stopped", str(exc)
     except (ApiException, QdrantException) as exc:
-        stopped = f"Qdrant request failed: {type(exc).__name__}"
+        exit_code, event = EXIT_NOT_READY, "tax_law_index_stopped"
+        reason = f"Qdrant request failed: {type(exc).__name__}"
     else:
         logger.info(
             "tax_law_index_finished",
@@ -426,11 +503,8 @@ def run_tax_law_indexer(
         )
         return EXIT_OK
     # Logged without a traceback, which could carry file content.
-    if stopped:
-        logger.error("tax_law_index_stopped", reason=stopped)
-        return EXIT_NOT_READY
-    logger.error("tax_law_index_failed", reason=failure)
-    return EXIT_FAILURES
+    logger.error(event, reason=reason)
+    return exit_code
 
 
 def main() -> int:
@@ -438,7 +512,8 @@ def main() -> int:
 
     Returns:
         int: Process exit status: 0 on success, 1 when the file or embedding
-        failed, 2 when the command is not configured or Qdrant failed.
+        failed, 2 when the command is not configured or misconfigured, the
+        embedding service refused the key, or Qdrant failed.
     """
     connections = _connections()
     if connections is None:
