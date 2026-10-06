@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""APScheduler refresh jobs: pull backend data into the SQLite cache.
+"""APScheduler jobs and the process-wide SQLite write path.
 
-Each job fetches one dataset with a synchronous ``httpx.Client``, replaces the
-cached rows in a single transaction, and records the outcome in
+Each refresh job fetches one dataset with a synchronous ``httpx.Client``,
+replaces the cached rows in a single transaction, and records the outcome in
 ``refresh_log``. On any failure the transaction is not started, so the
 previous cached rows stay in place and the section shows stale data rather
 than a blank screen (ADR-003).
+
+Account balances are not pulled: the intake route delivers them and calls
+``store_balance_delivery`` here, so its write shares ``_WRITE_LOCK`` with the
+jobs. ``snapshot_balances_daily`` copies stored balances into the daily
+history and calls no backend.
 
 #ASSUME: external resources: backends may be down or return 5xx at any time
 (pp-security-master is alpha). #VERIFY: every job catches transport, HTTP,
@@ -17,7 +22,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
@@ -25,13 +30,29 @@ import structlog
 from apscheduler.schedulers.background import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
     BackgroundScheduler,
 )
+from apscheduler.triggers.cron import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
+    CronTrigger,
+)
+from apscheduler.triggers.interval import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
+    IntervalTrigger,
+)
 
 from app import balances
-from app.config import BackendConfigError, BackendConnection, Settings, load_settings
+from app.config import (
+    BackendConfigError,
+    BackendConnection,
+    Settings,
+    display_zone,
+    load_settings,
+)
 from app.db import connect_sync
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from apscheduler.triggers.base import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
+        BaseTrigger,
+    )
 
     from app.models import BalanceDelivery
 
@@ -50,17 +71,22 @@ JOB_MISFIRE_GRACE_SECONDS: dict[str, int] = {"snapshot_balances_daily": 3600}
 
 # Refresh cadences in hours. Each is shorter than the staleness threshold in
 # ``app.cache.STALENESS_HOURS`` so one missed run does not mark data stale.
-# ``snapshot_balances_daily`` is not a refresh: it copies the balances already
-# cached into the durable daily history once every 24 hours (and once at
-# startup); a balance delivery also snapshots, so a day is covered even when
-# the job is late.
-JOB_INTERVAL_HOURS: dict[str, float] = {
+JOB_INTERVAL_HOURS: dict[str, int] = {
     "refresh_entities": 4,
     "refresh_holdings": 2,
     "refresh_positions": 2,
     "refresh_documents": 12,
-    "snapshot_balances_daily": 24,
 }
+
+# ``snapshot_balances_daily`` is not a refresh: it copies the balances already
+# stored into the durable daily history. It runs once at startup and then
+# every day at this local wall-clock time in the display zone. A fixed local
+# time, unlike a 24 hour interval, cannot drift across midnight when daylight
+# saving time starts or ends, so no local date is skipped. Midday is used
+# because no zone changes its clocks then; APScheduler 3 skips the day after
+# the spring change for a time just after midnight. A balance delivery also
+# snapshots, so a day is covered even when the job is late.
+DAILY_SNAPSHOT_TIME: tuple[int, int] = (12, 0)
 
 # llc-manager document types mapped to the portal's document categories.
 _DOCUMENT_CATEGORIES: dict[str, str] = {
@@ -486,11 +512,13 @@ def store_balance_delivery(delivery: BalanceDelivery) -> list[str]:
 
 
 def snapshot_balances_daily() -> None:
-    """Copy today's cached balances into the durable daily history.
+    """Copy today's stored balances into the durable daily history.
 
-    Runs once a day. It never raises: a database error is recorded in
-    ``refresh_log`` (error class only) and the next run tries again. A run is
-    skipped when the previous one is still going.
+    Runs once at startup and then daily at ``DAILY_SNAPSHOT_TIME`` local. A
+    database error is recorded in ``refresh_log`` (error class only) and not
+    raised, so the next run tries again; any other error is left to the
+    scheduler, which logs it. A run is skipped when the previous one is still
+    going.
     """
     lock = _service_lock(_BALANCES_DAILY_SERVICE)
     if not lock.acquire(blocking=False):
@@ -539,24 +567,42 @@ TRIGGERS: dict[str, Callable[[], None]] = {
 }
 
 
-def build_scheduler(settings: Settings | None = None) -> BackgroundScheduler:
-    """Create a scheduler with every refresh job, each run once at startup.
+def _trigger(name: str, zone: tzinfo) -> BaseTrigger:
+    """Build the trigger for one job.
 
     Args:
-        settings (Settings | None): Unused today; accepted for future cadence
-            configuration.
+        name (str): Job name from ``JOBS``.
+        zone (tzinfo): Display zone for the daily snapshot's local time.
+
+    Returns:
+        BaseTrigger: A daily trigger at ``DAILY_SNAPSHOT_TIME`` in ``zone`` for
+        the snapshot job, otherwise an interval trigger from
+        ``JOB_INTERVAL_HOURS``.
+    """
+    if name == "snapshot_balances_daily":
+        hour, minute = DAILY_SNAPSHOT_TIME
+        return CronTrigger(hour=hour, minute=minute, timezone=zone)
+    return IntervalTrigger(hours=JOB_INTERVAL_HOURS[name], timezone=timezone.utc)
+
+
+def build_scheduler(settings: Settings | None = None) -> BackgroundScheduler:
+    """Create a scheduler with every job, each run once at startup.
+
+    Args:
+        settings (Settings | None): Settings that name the display zone used
+            for the daily snapshot's local time. When omitted, the snapshot
+            runs at that time in UTC.
 
     Returns:
         BackgroundScheduler: Configured, not yet started.
     """
-    del settings
+    zone: tzinfo = display_zone(settings) if settings is not None else timezone.utc
     scheduler = BackgroundScheduler(timezone="UTC")
     start = datetime.now(timezone.utc)
     for name, job in JOBS.items():
         scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
             job,
-            "interval",
-            hours=JOB_INTERVAL_HOURS[name],
+            _trigger(name, zone),
             id=name,
             next_run_time=start,
             max_instances=1,

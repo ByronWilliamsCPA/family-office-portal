@@ -3,15 +3,17 @@
 """Pydantic models for the family office portal API surface.
 
 These models describe the JSON-shaped responses and request bodies used by the
-admin and health endpoints. Page routes return server-rendered HTML and do not
-have a response_model; see ADR-001 for the rendering decision.
+admin, health and balance intake endpoints. Page routes return
+server-rendered HTML and do not have a response_model; see ADR-001 for the
+rendering decision.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -22,6 +24,11 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pydantic_core import ErrorDetails
 
 
 class HealthResponse(BaseModel):
@@ -107,12 +114,24 @@ class RefreshTriggerResponse(BaseModel):
 BALANCE_CATEGORIES = Literal[
     "Investments", "Retirement", "Cash", "Digital currency", "Alternatives"
 ]
-# Most rows one delivery may carry, and the most bytes its body may hold.
+# Most rows one delivery may carry. The body byte cap is sized from this in
+# ``app.routes.balances.MAX_BODY_BYTES``.
 MAX_DELIVERY_ROWS = 2000
+# Providers a delivery may name, as account id prefixes. This tuple is the one
+# place the set is written down; the account id pattern is built from it.
+BALANCE_PROVIDERS: tuple[str, ...] = ("pp", "xero", "crypto")
 # Bank-style rows that may carry a reconciled-through date.
 _RECONCILED_PROVIDER = "xero"
+_ACCOUNT_ID_PATTERN = rf"^({'|'.join(BALANCE_PROVIDERS)}):[A-Za-z0-9._:-]{{1,100}}$"
+_PROVIDER_LIST = ", ".join(f"{name}:" for name in BALANCE_PROVIDERS)
 _DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
-_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+_UUID_PATTERN = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+# Unicode categories refused in an account name: control (C0 and C1),
+# format (bidirectional overrides and isolates, zero-width marks), and the
+# line and paragraph separators.
+_REFUSED_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
 def provider_of(account_id: str) -> str:
@@ -159,11 +178,11 @@ class BalanceRow(BaseModel):
 
     account_id: Annotated[
         str,
-        StringConstraints(pattern=r"^(pp|xero|crypto):[A-Za-z0-9._:-]{1,100}$"),
+        StringConstraints(pattern=_ACCOUNT_ID_PATTERN),
     ] = Field(
         description=(
-            "Stable account id prefixed with its provider (pp:, xero: or "
-            "crypto:). Never a full account number."
+            f"Stable account id prefixed with its provider ({_PROVIDER_LIST}). "
+            "Never a full account number."
         ),
         examples=["pp:example-brokerage"],
     )
@@ -213,8 +232,11 @@ class BalanceRow(BaseModel):
 
     @field_validator("account_name")
     @classmethod
-    def _no_control_characters(cls, value: str) -> str:
-        """Reject names with control characters.
+    def _printable_name(cls, value: str) -> str:
+        """Reject blank names and names with control or format characters.
+
+        Format characters include the bidirectional overrides that can make a
+        name display differently from how it is stored.
 
         Args:
             value (str): Account name.
@@ -223,10 +245,14 @@ class BalanceRow(BaseModel):
             str: The same name.
 
         Raises:
-            ValueError: If the name has a control character.
+            ValueError: If the name is only whitespace or has a control,
+                format, or line or paragraph separator character.
         """
-        if _CONTROL_CHARACTERS.search(value):
-            msg = "contains a control character"
+        if not value.strip():
+            msg = "is blank"
+            raise ValueError(msg)
+        if any(unicodedata.category(ch) in _REFUSED_NAME_CATEGORIES for ch in value):
+            msg = "contains a control or format character"
             raise ValueError(msg)
         return value
 
@@ -244,7 +270,7 @@ class BalanceRow(BaseModel):
         Raises:
             ValueError: If the text is not a UUID.
         """
-        if not re.fullmatch(r"[0-9a-fA-F-]{36}", value):
+        if not _UUID_PATTERN.fullmatch(value):
             msg = "not a UUID"
             raise ValueError(msg)
         return str(UUID(value))
@@ -334,13 +360,15 @@ class BalanceDelivery(BaseModel):
 class BalanceReceipt(BaseModel):
     """Response for an accepted delivery."""
 
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     accepted: int = Field(description="Number of rows stored.", examples=[3])
     providers: list[str] = Field(
         description="Providers whose rows were replaced.", examples=[["pp", "xero"]]
     )
 
 
-def validation_problems(errors: list[Any]) -> list[dict[str, str]]:
+def validation_problems(errors: Sequence[ErrorDetails]) -> list[dict[str, str]]:
     """Reduce pydantic errors to field paths and error codes only.
 
     Pydantic's own messages and ``input`` fields can contain the submitted
@@ -348,7 +376,7 @@ def validation_problems(errors: list[Any]) -> list[dict[str, str]]:
     as ``?``, so text from the request is never echoed.
 
     Args:
-        errors (list[Any]): Result of ``ValidationError.errors()``.
+        errors (Sequence[ErrorDetails]): Result of ``ValidationError.errors()``.
 
     Returns:
         list[dict[str, str]]: At most 20 ``{"field", "problem"}`` entries.
@@ -358,9 +386,7 @@ def validation_problems(errors: list[Any]) -> list[dict[str, str]]:
     for error in errors[:20]:
         parts = [
             str(part) if isinstance(part, int) or part in known else "?"
-            for part in error.get("loc", ())
+            for part in error["loc"]
         ]
-        problems.append(
-            {"field": ".".join(parts) or "body", "problem": str(error.get("type", ""))}
-        )
+        problems.append({"field": ".".join(parts) or "body", "problem": error["type"]})
     return problems

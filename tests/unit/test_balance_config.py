@@ -3,9 +3,10 @@
 """Tests for the optional balance intake key setting.
 
 The key is read from ``BALANCE_INTAKE_API_KEY``. Unset or blank means the
-intake is disabled. A set key must be at least 32 characters, which is
-checked at startup; the value never appears in an error, a ``repr`` or a log.
-All keys here are generated inside the tests.
+intake is disabled. A set key must be at least 32 characters of printable
+ASCII and must differ from the sign-in secret, which is checked at startup;
+the value never appears in an error, a ``repr`` or a log. All keys here are
+generated inside the tests.
 """
 
 from __future__ import annotations
@@ -113,3 +114,47 @@ def test_app_refuses_to_start_with_a_short_key(
 def test_app_starts_without_the_key() -> None:
     """The setting is optional: the app loads when it is absent."""
     importlib.reload(importlib.import_module("app.main"))
+
+
+@pytest.mark.parametrize(
+    "suffix", ["é", "☃", "\x7f", "\t"], ids=["latin", "symbol", "del", "tab"]
+)
+def test_non_printable_ascii_key_is_refused(
+    monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    """A key a header could never carry intact stops startup, unechoed."""
+    key = secrets.token_hex(MIN_INTAKE_KEY_LENGTH) + suffix + "k"
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", key)
+    with pytest.raises(BackendConfigError) as exc_info:
+        check_balance_intake(load_settings())
+    message = str(exc_info.value)
+    assert "printable ASCII" in message
+    assert key not in message
+
+
+def test_key_equal_to_the_sign_in_secret_is_refused(
+    monkeypatch: pytest.MonkeyPatch, portal_env: dict[str, str]
+) -> None:
+    """Reusing the sign-in secret as the intake key stops startup."""
+    secret = portal_env["AUTHENTIK_JWT_SECRET"]
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", secret)
+    with pytest.raises(BackendConfigError) as exc_info:
+        check_balance_intake(load_settings(), jwt_secret=secret)
+    message = str(exc_info.value)
+    assert "AUTHENTIK_JWT_SECRET" in message
+    assert secret not in message
+    check_balance_intake(load_settings(), jwt_secret=secret + "x")
+
+
+def test_app_refuses_to_start_when_the_key_reuses_the_sign_in_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    portal_env: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Startup passes the sign-in secret to the check."""
+    secret = portal_env["AUTHENTIK_JWT_SECRET"]
+    monkeypatch.setenv("BALANCE_INTAKE_API_KEY", secret)
+    with pytest.raises(SystemExit) as exc_info:
+        importlib.reload(importlib.import_module("app.main"))
+    assert exc_info.value.code == 1
+    assert secret not in capsys.readouterr().err

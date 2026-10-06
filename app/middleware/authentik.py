@@ -8,7 +8,10 @@ portal. This middleware trusts only the signed ``X-authentik-jwt`` header: it
 verifies the HS256 signature with the proxy provider's client secret, checks
 ``iss``, ``aud``, ``exp`` (plus ``nbf`` and ``iat`` when present) with a
 ``JWT_LEEWAY_SECONDS`` clock-skew allowance, and maps the ``groups`` claim
-to a portal role. Every failure returns 403 (fail closed).
+to a portal role. Every failure returns 403 (fail closed). ``/health`` and
+``/static/`` are public, and ``POST /api/v1/balances`` (exact method and
+path) is passed to its route, which answers 401 or 404 by its own key check
+instead (ADR-005 amendment 2026-10-05).
 
 #CRITICAL: security: the plain ``X-authentik-username``,
 ``X-authentik-groups`` and ``X-authentik-email`` headers are never read,
@@ -449,7 +452,10 @@ def _is_public(route_path: str) -> bool:
 
 
 def is_intake_request(method: str, route_path: str) -> bool:
-    """Say whether a request is the balance intake call, the only JWT-free route.
+    """Say whether a request is the balance intake call.
+
+    Besides the public ``/health`` and ``/static/`` paths, this is the only
+    request the middleware passes without a JWT; the route checks its own key.
 
     Args:
         method (str): HTTP method as the server reports it.

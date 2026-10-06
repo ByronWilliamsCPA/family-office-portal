@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import date
+from datetime import date, timezone
 from pathlib import Path
+from unittest.mock import patch
+from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
+from pydantic import ValidationError
+from structlog.testing import capture_logs
 
-from app import balances
+from app import balances, config
 from app.db import connect_sync, init_schema
 from app.models import BalanceRow
 
@@ -186,6 +190,29 @@ def test_snapshot_upserts_one_row_per_account_per_day(
     assert rows[0]["as_of"] == "2026-09-26"
 
 
+def test_same_day_snapshot_updates_every_column(conn: sqlite3.Connection) -> None:
+    """A same-day re-delivery that changes every column rewrites the day's row."""
+    with conn:
+        balances.replace_balances(conn, [_row()], "2026-09-27T08:00:00+00:00")
+        balances.snapshot_daily(conn, "2026-09-27")
+        changed = _row(
+            entity_id=ENTITY_B,
+            category="Cash",
+            value="77.00",
+            currency="EUR",
+            as_of="2026-09-27",
+        )
+        balances.replace_balances(conn, [changed], "2026-09-27T18:00:00+00:00")
+        balances.snapshot_daily(conn, "2026-09-27")
+    rows = conn.execute(
+        "SELECT date, account_id, entity_id, category, value_cents, as_of, currency "
+        "FROM balances_daily"
+    ).fetchall()
+    assert [tuple(r) for r in rows] == [
+        ("2026-09-27", "pp:example-1", ENTITY_B, "Cash", 7700, "2026-09-27", "EUR")
+    ]
+
+
 def test_snapshot_never_deletes_history(conn: sqlite3.Connection) -> None:
     """An account that disappears keeps its earlier daily rows."""
     with conn:
@@ -298,8 +325,38 @@ def test_local_today_uses_the_display_zone(
         assert balances.local_today() == date(2026, 9, 27)
 
 
-def test_connection_helper_closes(tmp_db_path: Path) -> None:
-    """Sanity check that the fixture schema has the new column."""
+@pytest.mark.parametrize(
+    "error",
+    [IsADirectoryError("America"), ValueError("bad"), ZoneInfoNotFoundError("x")],
+    ids=["directory", "malformed", "unknown"],
+)
+def test_unusable_display_zone_falls_back_to_utc_with_one_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    portal_env: dict[str, str],
+    error: Exception,
+) -> None:
+    """Any zone lookup failure, including an OSError, means UTC, warned once."""
+    del portal_env
+    monkeypatch.setenv("DISPLAY_TIMEZONE", "Unusable/Zone-For-Test")
+    monkeypatch.setattr(config, "_WARNED_ZONES", set())
+    with patch.object(config, "ZoneInfo", side_effect=error), capture_logs() as logs:
+        assert config.display_zone() is timezone.utc
+        assert config.display_zone() is timezone.utc
+    warnings = [e for e in logs if e["event"] == "display_timezone_unusable"]
+    assert len(warnings) == 1
+
+
+def test_a_settings_error_is_not_mistaken_for_a_bad_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid settings raise instead of quietly falling back to UTC."""
+    monkeypatch.delenv("SQLITE_PATH", raising=False)
+    with pytest.raises(ValidationError):
+        balances.local_today()
+
+
+def test_fresh_schema_has_reconciled_through(tmp_db_path: Path) -> None:
+    """A newly created schema has the migration 2 column."""
     init_schema(str(tmp_db_path))
     with closing(sqlite3.connect(tmp_db_path)) as raw:
         columns = {r[1] for r in raw.execute("PRAGMA table_info(account_balances)")}

@@ -219,6 +219,8 @@ def test_migration_two_adds_reconciled_through_to_an_older_database(
         row = conn.execute(
             "SELECT value_cents, reconciled_through FROM account_balances"
         ).fetchone()
-        assert db.schema_version(conn) == db.MIGRATIONS[-1][0] >= 2
+        version = db.schema_version(conn)
+    assert version == db.MIGRATIONS[-1][0]
+    assert version >= 2
     assert "reconciled_through" in columns
     assert row == (5, None)

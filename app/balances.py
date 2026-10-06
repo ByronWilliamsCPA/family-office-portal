@@ -14,12 +14,11 @@ negative amounts, and no ``float(`` call appears in this module.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.config import load_settings
+from app.config import display_zone
 from app.models import provider_of
 
 if TYPE_CHECKING:
@@ -63,13 +62,16 @@ def replace_balances(
     """Replace the stored balances of every provider present in ``rows``.
 
     A provider with no row in the delivery is left alone, so its last values
-    stay on screen (and show as stale) rather than vanishing.
+    stay stored, with their own ``fetched_at``, rather than vanishing.
 
     #ASSUME: product: there is no way to retire a provider that has stopped
-    reporting. Its last rows stay in the totals and the section stays labelled
-    out of date until a delivery names that provider again. #VERIFY: the owner
-    decides whether a retire action (or an expiry age) is wanted before any
-    provider is switched off for good.
+    reporting. Its last rows stay in the stored balances and the daily
+    history until a delivery names that provider again. The balance pages
+    (a follow-up change) judge staleness per provider from ``fetched_at``,
+    so a silent provider is labelled out of date there; until those pages
+    land, nothing shows balances to people. #VERIFY: the owner decides
+    whether a retire action (or an expiry age) is wanted before any provider
+    is switched off for good.
 
     #ASSUME: data integrity: an account id's text before the first colon names
     its provider, and one delivery carries all of a provider's rows. If a
@@ -178,7 +180,8 @@ def snapshot_daily(conn: sqlite3.Connection, day: str) -> int:
 def local_today() -> date:
     """Return today's date in the configured display time zone.
 
-    Falls back to UTC when ``DISPLAY_TIMEZONE`` is not a known zone.
+    Falls back to UTC when ``DISPLAY_TIMEZONE`` is not a usable zone (see
+    ``app.config.display_zone``).
 
     #ASSUME: timing: the family reads "today" in the display zone, so a
     snapshot taken in the evening there still carries that local date.
@@ -187,8 +190,4 @@ def local_today() -> date:
     Returns:
         date: Local calendar date.
     """
-    try:
-        zone: ZoneInfo | timezone = ZoneInfo(load_settings().display_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        zone = timezone.utc
-    return datetime.now(zone).date()
+    return datetime.now(display_zone()).date()

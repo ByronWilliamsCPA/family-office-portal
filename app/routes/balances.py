@@ -41,8 +41,13 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["balances"])
 
-# Largest body accepted, in bytes. 2000 rows of about 400 bytes is under 1 MiB.
-MAX_BODY_BYTES = 2 * 1024 * 1024
+# Largest body accepted, in bytes. Sized so every delivery the model accepts
+# fits: 2000 rows that each use every field at its longest, with a 200
+# character name written entirely as JSON ``\u`` escape pairs and indented by
+# two spaces, come to about 5.5 MiB (about 2.8 KB a row). Typical rows are
+# about 400 bytes, so a real delivery is well under 1 MiB.
+# ``tests/unit/test_balance_intake.py`` checks that worst case fits.
+MAX_BODY_BYTES = 6 * 1024 * 1024
 
 # Status codes spelled as numbers: Starlette renamed the 413 and 422 constants
 # between releases, and the project supports a range of them.
@@ -69,8 +74,26 @@ _REQUEST_BODY: dict[str, Any] = {
 }
 
 
-def _detail(status_code: int, detail: str, **extra: Any) -> JSONResponse:  # noqa: ANN401
-    return JSONResponse({"detail": detail, **extra}, status_code=status_code)
+def _detail(
+    status_code: int,
+    detail: str,
+    errors: list[dict[str, str]] | None = None,
+) -> JSONResponse:
+    """Build a JSON error response with a fixed ``detail`` message.
+
+    Args:
+        status_code (int): HTTP status code.
+        detail (str): Fixed message; never contains submitted text.
+        errors (list[dict[str, str]] | None): Field paths and error codes for
+            a validation failure, added as ``errors`` when given.
+
+    Returns:
+        JSONResponse: The error body.
+    """
+    body: dict[str, object] = {"detail": detail}
+    if errors is not None:
+        body["errors"] = errors
+    return JSONResponse(body, status_code=status_code)
 
 
 def _key_matches(request: Request, expected: str) -> bool:
@@ -134,9 +157,9 @@ async def receive_balances(request: Request) -> Response:
     written in the same transaction.
 
     #CRITICAL: security: the key is checked before the body is read or parsed.
-    #VERIFY: tests/unit/test_balance_intake.py sends a bad key with a broken
-    body and expects 401, and checks the key is compared with
-    ``hmac.compare_digest``.
+    #VERIFY: tests/unit/test_balance_intake.py sends a missing or wrong key
+    with a body over ``MAX_BODY_BYTES`` (declared and streamed) and expects
+    401, not 413, and checks the key is compared with ``hmac.compare_digest``.
 
     Args:
         request (Request): Current request; the body is read here so the key is

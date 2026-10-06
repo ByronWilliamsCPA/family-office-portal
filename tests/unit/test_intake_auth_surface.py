@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""The one unauthenticated-by-JWT path: ``POST /api/v1/balances``.
+"""The JWT-free intake exemption: ``POST /api/v1/balances``.
 
-A machine collector cannot present a signed-in identity, so the middleware
-lets exactly one method and path through without it; the route itself then
+Besides the public ``/health`` and ``/static/`` paths, this is the only
+request the middleware passes without a JWT. A machine collector cannot
+present a signed-in identity, so the middleware lets exactly one method and
+path through without it; the route itself then
 demands the intake key. These tests drive the middleware directly with raw
 ASGI scopes, so the path reaches it exactly as written (a test client would
 tidy dot segments first), and record which requests reach the inner app.

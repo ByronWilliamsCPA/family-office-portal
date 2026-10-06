@@ -3,8 +3,10 @@
 """FastAPI application: startup checks, lifespan, middleware, and routes.
 
 Identity comes from the Authentik forward-auth middleware described in
-ADR-005. Route handlers read only from the SQLite cache (ADR-003); the
-APScheduler refresh jobs fill it.
+ADR-005. Page route handlers read only from the SQLite cache (ADR-003); the
+APScheduler refresh jobs fill it. The one exception is the balance intake
+route, which authenticates with its own key and writes delivered balances
+(ADR-003 and ADR-005 amendments of 2026-10-05).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from app.config import (
     BackendConfigError,
     check_backends,
     check_balance_intake,
+    display_zone,
     load_settings,
 )
 from app.db import init_schema
@@ -70,10 +73,14 @@ except AuthConfigError as _exc:
 try:
     _SETTINGS = load_settings()
     check_backends(_SETTINGS)
-    check_balance_intake(_SETTINGS)
+    check_balance_intake(_SETTINGS, jwt_secret=_AUTH_SETTINGS.jwt_secret)
 except BackendConfigError as _exc:
     sys.stderr.write(f"Invalid backend configuration: {_exc}\n")
     sys.exit(1)
+
+# Resolve the display zone once now, so an unusable DISPLAY_TIMEZONE is
+# reported at startup (one warning, then UTC) rather than on first use.
+display_zone(_SETTINGS)
 
 
 @asynccontextmanager
@@ -141,7 +148,8 @@ async def http_error_page(request: Request, exc: StarletteHTTPException) -> Resp
         exc (StarletteHTTPException): The raised HTTP error.
 
     Returns:
-        Response: HTML for page routes, JSON for ``/admin`` and ``/health``.
+        Response: HTML for page routes, JSON for ``/admin``, ``/health`` and
+        ``/api/``.
     """
     path = request.url.path
     if path.startswith(("/admin", "/health", "/api/")):

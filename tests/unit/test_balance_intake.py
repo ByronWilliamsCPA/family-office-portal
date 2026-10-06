@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+from collections.abc import AsyncIterator
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -26,13 +27,15 @@ from httpx import AsyncClient
 from starlette.concurrency import run_in_threadpool
 from structlog.testing import capture_logs
 
+from app.routes.balances import MAX_BODY_BYTES
+
 URL = "/api/v1/balances"
 ENTITY_A = "11111111-2222-4333-8444-555555555555"
 ENTITY_B = "66666666-7777-4888-8999-aaaaaaaaaaaa"
 SENTINEL = "ZZ-sentinel-42"
 
 
-def _row(account_id: str = "pp:example-1", **overrides: Any) -> dict[str, Any]:  # noqa: ANN401
+def _row(account_id: str = "pp:example-1", **overrides: object) -> dict[str, Any]:
     return {
         "account_id": account_id,
         "account_name": "Example Brokerage",
@@ -70,6 +73,14 @@ def _stored(path: Path) -> dict[str, tuple[Any, ...]]:
             "source, as_of, reconciled_through, account_name FROM account_balances"
         ).fetchall()
     return {r[0]: r for r in rows}
+
+
+def _history(path: Path) -> list[tuple[Any, ...]]:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute(
+            "SELECT date, account_id, entity_id, category, value_cents, as_of, "
+            "currency FROM balances_daily ORDER BY date, account_id"
+        ).fetchall()
 
 
 def _count(path: Path, table: str) -> int:
@@ -151,16 +162,39 @@ async def test_wrong_key_is_401(
     assert _count(tmp_db_path, "account_balances") == 0
 
 
+async def _oversized_stream() -> AsyncIterator[bytes]:
+    """Yield a body larger than ``MAX_BODY_BYTES`` with no declared length."""
+    chunk = b" " * (1024 * 1024)
+    for _ in range(MAX_BODY_BYTES // len(chunk) + 1):
+        yield chunk
+
+
+@pytest.mark.parametrize("key", [None, "wrong-key"], ids=["missing", "wrong"])
+@pytest.mark.parametrize("body", ["broken", "declared-oversize", "streamed-oversize"])
 async def test_key_is_checked_before_the_body_is_read(
-    anon_client: AsyncClient, intake_key: str
+    anon_client: AsyncClient, intake_key: str, key: str | None, body: str
 ) -> None:
-    """A bad key with a broken body is 401, not 422, so shape is not probed."""
+    """A missing or wrong key is 401 whatever the body, never 413 or 422.
+
+    A body over the size limit would be 413 if it were read first, and a
+    broken one 422 if it were parsed first, so a 401 for both proves the key
+    is checked before the body is touched.
+    """
     del intake_key
+    headers = {"Content-Type": "application/json"}
+    if key is not None:
+        headers["X-API-Key"] = key
+    content: bytes | AsyncIterator[bytes]
+    if body == "broken":
+        content = b"{not json"
+    elif body == "declared-oversize":
+        content = b" " * (MAX_BODY_BYTES + 1)
+    else:
+        content = _oversized_stream()
     async with anon_client as ac:
-        response = await ac.post(
-            URL, content=b"{not json", headers={"Content-Type": "application/json"}
-        )
+        response = await ac.post(URL, content=content, headers=headers)
     assert response.status_code == 401
+    assert response.json() == {"detail": "A valid API key is required."}
 
 
 async def test_valid_jwt_alone_does_not_authorise_intake(
@@ -216,6 +250,18 @@ async def test_other_methods_are_not_allowed(
         with_jwt = await ac.get(URL, headers=admin_headers)
     assert no_jwt.status_code == 403
     assert with_jwt.status_code == 405
+    assert with_jwt.json() == {"detail": "Method Not Allowed"}
+
+
+async def test_unknown_api_path_errors_are_json(
+    anon_client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """Errors under ``/api/`` are JSON for machine callers, not an HTML page."""
+    async with anon_client as ac:
+        response = await ac.get("/api/v1/unknown", headers=admin_headers)
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"detail": "Not Found"}
 
 
 # --------------------------------------------------------------------------- #
@@ -351,6 +397,7 @@ async def test_storage_failure_rolls_everything_back(
             json=_body([_row("pp:keep", value="9.00")]),
             headers=_post_headers(intake_key),
         )
+        history_before = _history(tmp_db_path)
         with patch(
             "app.balances.snapshot_daily", side_effect=sqlite3.OperationalError("x")
         ):
@@ -364,6 +411,10 @@ async def test_storage_failure_rolls_everything_back(
     stored = _stored(tmp_db_path)
     assert set(stored) == {"pp:keep"}
     assert stored["pp:keep"][1] == 900
+    # The failed delivery's same-day correction would have removed pp:keep
+    # from today's history; the rollback must restore it.
+    assert len(history_before) == 1
+    assert _history(tmp_db_path) == history_before
     with closing(sqlite3.connect(tmp_db_path)) as conn:
         statuses = [r[0] for r in conn.execute("SELECT status FROM refresh_log")]
     assert statuses == ["success", "error"]
@@ -406,6 +457,14 @@ BAD_ROWS: list[tuple[str, dict[str, Any]]] = [
     ("empty name", {"account_name": ""}),
     ("long name", {"account_name": "n" * 500}),
     ("control character in name", {"account_name": "Example\x07 " + SENTINEL}),
+    ("blank name", {"account_name": "   "}),
+    ("c1 control in name", {"account_name": "Example\x85" + SENTINEL}),
+    ("bidi override in name", {"account_name": "Example\u202e" + SENTINEL}),
+    ("bidi isolate in name", {"account_name": "Example\u2066" + SENTINEL}),
+    ("zero width space in name", {"account_name": "Example\u200b" + SENTINEL}),
+    ("line separator in name", {"account_name": "Example\u2028" + SENTINEL}),
+    ("misplaced uuid hyphens", {"entity_id": "1111111-12222-4333-8444-555555555555"}),
+    ("trailing uuid hyphens", {"entity_id": "11111111222243338444555555555555----"}),
     ("bad source", {"source": "Bad Source " + SENTINEL}),
     ("extra field", {"balance_note": SENTINEL}),
     ("reconciled bad", {"reconciled_through": SENTINEL}),
@@ -551,7 +610,7 @@ async def test_too_many_rows_is_422(
 
 async def test_oversized_body_is_413(anon_client: AsyncClient, intake_key: str) -> None:
     """A body above the size limit is refused before it is parsed."""
-    big = b" " * (2 * 1024 * 1024 + 1)
+    big = b" " * (MAX_BODY_BYTES + 1)
     async with anon_client as ac:
         response = await ac.post(
             URL,
@@ -566,18 +625,38 @@ async def test_oversized_body_without_content_length_is_413(
     anon_client: AsyncClient, intake_key: str
 ) -> None:
     """A streamed body that outgrows the limit is refused too."""
-
-    async def chunks() -> Any:  # noqa: ANN401
-        for _ in range(3):
-            yield b" " * (1024 * 1024)
-
     async with anon_client as ac:
         response = await ac.post(
             URL,
-            content=chunks(),
+            content=_oversized_stream(),
             headers={**_post_headers(intake_key), "Content-Type": "application/json"},
         )
     assert response.status_code == 413
+
+
+def test_the_largest_valid_delivery_fits_the_body_limit() -> None:
+    """Every delivery the model accepts is under ``MAX_BODY_BYTES``.
+
+    Each of the most rows allowed uses every field at its longest, with a
+    name of characters outside the Basic Multilingual Plane written as JSON
+    escape pairs, and the body is pretty-printed.
+    """
+    from app.models import MAX_DELIVERY_ROWS, BalanceDelivery  # noqa: PLC0415
+
+    rows = [
+        _row(
+            f"xero:{index:06d}" + "a" * 94,
+            account_name="\U0001f600" * 200,
+            category="Digital currency",
+            source="a" * 40,
+            value="-999999999999.9999",
+            reconciled_through="2026-09-26",
+        )
+        for index in range(MAX_DELIVERY_ROWS)
+    ]
+    raw = json.dumps(_body(rows), ensure_ascii=True, indent=2).encode()
+    BalanceDelivery.model_validate_json(raw)
+    assert len(raw) <= MAX_BODY_BYTES
 
 
 # --------------------------------------------------------------------------- #

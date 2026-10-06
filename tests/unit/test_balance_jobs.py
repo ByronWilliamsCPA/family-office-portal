@@ -14,12 +14,13 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 from freezegun import freeze_time
 from structlog.testing import capture_logs
 
@@ -169,20 +170,55 @@ def test_daily_job_failure_is_recorded_not_raised(
     ]
 
 
-def test_daily_job_is_scheduled_once_every_24_hours() -> None:
-    """The job is registered with a 24 hour cadence and one instance at a time."""
-    assert scheduler.JOB_INTERVAL_HOURS["snapshot_balances_daily"] == 24
+def test_daily_job_runs_at_a_fixed_local_time_each_day(
+    portal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The job fires daily at one local time in the display zone, once at a time."""
+    del portal_env
+    monkeypatch.setenv("DISPLAY_TIMEZONE", "America/Chicago")
     assert (
         scheduler.JOBS["snapshot_balances_daily"] is scheduler.snapshot_balances_daily
     )
-    sched = scheduler.build_scheduler()
+    assert "snapshot_balances_daily" not in scheduler.JOB_INTERVAL_HOURS
+    sched = scheduler.build_scheduler(scheduler.load_settings())
     job = next(j for j in sched.get_jobs() if j.id == "snapshot_balances_daily")
     assert job.max_instances == 1
-    assert isinstance(job.trigger, IntervalTrigger)
-    assert job.trigger.interval == timedelta(hours=24)
+    assert isinstance(job.trigger, CronTrigger)
+    assert str(job.trigger.timezone) == "America/Chicago"
     assert job.misfire_grace_time == 3600
     assert job.coalesce is True
-    assert job.next_run_time is not None  # also runs once at startup
+    assert job.next_run_time is not None
+
+
+@pytest.mark.parametrize(
+    "zone_name", ["America/Chicago", "Europe/London", "Australia/Sydney"]
+)
+def test_daily_job_covers_every_local_date_across_daylight_saving(
+    portal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, zone_name: str
+) -> None:
+    """Across both clock changes the job fires once on every local date.
+
+    A 24 hour interval started near midnight skips a local date when the
+    clocks go forward; a fixed local time cannot. Each 40 day window below
+    contains a clock change in every zone listed.
+    """
+    del portal_env
+    monkeypatch.setenv("DISPLAY_TIMEZONE", zone_name)
+    zone = scheduler.display_zone(scheduler.load_settings())
+    trigger = scheduler._trigger("snapshot_balances_daily", zone)  # noqa: SLF001
+    for start in ("2026-03-01", "2026-09-28"):
+        previous = None
+        now = datetime.fromisoformat(f"{start}T00:00:00+00:00")
+        dates = []
+        for _ in range(40):
+            fire = trigger.get_next_fire_time(previous, now)
+            assert fire is not None
+            dates.append(fire.date())
+            assert (fire.hour, fire.minute) == scheduler.DAILY_SNAPSHOT_TIME
+            previous = fire
+            now = (fire + timedelta(minutes=1)).astimezone(timezone.utc)
+        gaps = {(b - a).days for a, b in pairwise(dates)}
+        assert gaps == {1}
 
 
 def test_a_same_day_account_swap_keeps_the_day_total_equal_to_the_headline(

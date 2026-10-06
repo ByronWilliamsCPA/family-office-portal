@@ -21,14 +21,17 @@ outbound request to a backend can be made without its key header.
 The balance intake endpoint (``POST /api/v1/balances``) is the one inbound
 machine route. Its shared key is read from ``BALANCE_INTAKE_API_KEY``; unset or
 blank means the endpoint is disabled and answers 404, and a key shorter than
-``MIN_INTAKE_KEY_LENGTH`` stops startup. The key is a ``SecretStr`` and is
+``MIN_INTAKE_KEY_LENGTH``, one that is not printable ASCII, or one equal to
+``AUTHENTIK_JWT_SECRET`` stops startup. The key is a ``SecretStr`` and is
 never logged or echoed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timezone
 from typing import cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from pydantic import SecretStr
@@ -257,6 +260,40 @@ def load_settings() -> Settings:
     return Settings()  # pyright: ignore[reportCallIssue]  # values come from env
 
 
+# Zone names already reported as unusable, so each is warned about only once.
+_WARNED_ZONES: set[str] = set()
+
+
+def display_zone(settings: Settings | None = None) -> ZoneInfo | timezone:
+    """Return the configured display time zone, falling back to UTC.
+
+    ``ZoneInfo`` raises ``ZoneInfoNotFoundError`` for an unknown name,
+    ``ValueError`` for a malformed one, and an ``OSError`` such as
+    ``IsADirectoryError`` for a name like ``America`` when the ``tzdata``
+    package is installed. All three fall back to UTC with one warning per
+    name. Settings are loaded outside that guard, so a settings error is never
+    mistaken for a bad zone name.
+
+    Args:
+        settings (Settings | None): Settings to read; loaded when omitted.
+
+    Returns:
+        ZoneInfo | timezone: The display zone, or UTC when it is unusable.
+    """
+    name = (settings or load_settings()).display_timezone
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        if name not in _WARNED_ZONES:
+            _WARNED_ZONES.add(name)
+            logger.warning(
+                "display_timezone_unusable",
+                variable="DISPLAY_TIMEZONE",
+                fallback="UTC",
+            )
+        return timezone.utc
+
+
 def check_backends(settings: Settings) -> None:
     """Validate every backend URL and key pair at startup.
 
@@ -288,23 +325,36 @@ def check_backends(settings: Settings) -> None:
         raise BackendConfigError(msg)
 
 
-def check_balance_intake(settings: Settings) -> None:
+def check_balance_intake(settings: Settings, *, jwt_secret: str = "") -> None:
     """Validate the optional balance intake key at startup.
 
     An unset or blank key is fine: the endpoint is then disabled. A key that
-    is set must be at least ``MIN_INTAKE_KEY_LENGTH`` characters.
+    is set must be at least ``MIN_INTAKE_KEY_LENGTH`` characters, printable
+    ASCII only (HTTP header values are decoded as Latin-1, so any other
+    character could never match), and different from the sign-in secret.
 
     Args:
         settings (Settings): Settings to check.
+        jwt_secret (str): ``AUTHENTIK_JWT_SECRET``; the intake key must not
+            reuse it, because that secret also signs sign-in tokens.
 
     Raises:
-        BackendConfigError: If the key is set but too short. The message names
-            the variable and never includes the value.
+        BackendConfigError: If the key is set but too short, not printable
+            ASCII, or equal to the sign-in secret. The message names the
+            variable and never includes the value.
     """
     key = settings.balance_intake_key()
-    if key and len(key) < MIN_INTAKE_KEY_LENGTH:
+    if not key:
+        return
+    if len(key) < MIN_INTAKE_KEY_LENGTH:
         msg = (
             "BALANCE_INTAKE_API_KEY must be at least "
             f"{MIN_INTAKE_KEY_LENGTH} characters"
         )
+        raise BackendConfigError(msg)
+    if not (key.isascii() and key.isprintable()):
+        msg = "BALANCE_INTAKE_API_KEY must be printable ASCII"
+        raise BackendConfigError(msg)
+    if jwt_secret and key == jwt_secret.strip():
+        msg = "BALANCE_INTAKE_API_KEY must differ from AUTHENTIK_JWT_SECRET"
         raise BackendConfigError(msg)
