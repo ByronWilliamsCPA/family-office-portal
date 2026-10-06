@@ -84,7 +84,8 @@ templates/
   partials/            # HTMX fragment templates and macros (not navigable directly)
 static/
   htmx.min.js          # Vendored HTMX 2.0.4 (0BSD); do not load from CDN
-  chart.umd.min.js     # Vendored Chart.js v4 (added with the first chart)
+  chart.umd.min.js     # Vendored Chart.js 4.5.1 (MIT); hash pinned by a test
+  balance_trend.js     # First-party script that draws the balance trend
   css/input.css        # Tailwind source; output.css is built in the Docker image
 tests/
   conftest.py          # SQLite fixture DB, httpx AsyncClient
@@ -136,9 +137,10 @@ Key documents to read before making architectural or data-model decisions:
   tool invocations and `uv add` for dependencies.
 - **Web framework**: FastAPI with Starlette's `Jinja2Templates`. Page route
   handlers return `TemplateResponse` (an HTMX partial returns an HTML
-  fragment). JSON is returned only by `/health`, the `/admin` endpoints, and
-  the balance intake `POST /api/v1/balances`, which a machine collector calls
-  with an `X-API-Key` instead of a signed-in identity.
+  fragment). JSON is returned only by `/health`, the `/admin` endpoints other
+  than the `GET /admin/manual-marks` HTML page, and the balance intake
+  `POST /api/v1/balances`, which a machine collector calls with an
+  `X-API-Key` instead of a signed-in identity.
 - **Templates**: Jinja2 in `templates/`. Full-page templates in `templates/pages/`;
   HTMX partial fragments in `templates/partials/`. Never return a partial from a
   route that a browser may navigate to directly.
@@ -231,8 +233,12 @@ Never implement password-based auth, OAuth flows, or session cookies.
   - `entities` (llc-manager): 8 hours
   - `holdings` / `performance` (pp-security-master): 4 hours
   - `positions` (xero_crypto): 4 hours
-  - `balances` (account balance snapshots, MVP): 24 hours
+  - `balances` (account balance snapshots, MVP): 24 hours, judged per provider:
+    the section is as fresh as the provider whose latest delivery is oldest
   - `documents` (llc-manager documents endpoint): 24 hours
+- Viewers and Admins see the same balance figures (totals, per-owner totals,
+  and cash account names). Only confidential documents and the `/admin` pages
+  are limited to Admin.
 - A stale section must show the last cached value plus a "last updated [time]" label.
   Never show a blank section or an unhandled error to a primary user.
 - `pp-security-master` is alpha-status. Treat its 500 responses as expected; surface
@@ -303,8 +309,10 @@ answers 404 when it is unset).
   users in list or detail views.
 - **Back button**: must always work. Never use `history.pushState` patterns that break
   standard browser navigation.
-- **JavaScript**: HTMX and Chart.js only. All content must be readable with JavaScript
-  disabled (HTMX degrades to full-page reload; this is acceptable).
+- **JavaScript**: HTMX, Chart.js, and small first-party scripts in `static/` that
+  only draw a chart from data already in the page (`static/balance_trend.js`).
+  No other libraries. All content must be readable with JavaScript disabled
+  (HTMX degrades to full-page reload; charts always have a table beside them).
 
 ## Testing requirements
 

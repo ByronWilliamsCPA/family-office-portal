@@ -389,6 +389,7 @@ or an error message visible to primary users. Backend errors during refresh are 
 | Holdings/Performance (`pp-security-master`) | 4 hours | "last updated [time]" |
 | Crypto positions (`xero_crypto`) | 4 hours | "last updated [time]" |
 | Documents (`family_office`) | 24 hours | "last updated [time]" |
+| Account balances (delivered to `POST /api/v1/balances`) | 24 hours, judged per provider: the oldest provider's latest delivery | "last updated [time]" |
 
 ### Logging
 

@@ -279,11 +279,11 @@ being fetched by it, so the portal cannot pull them on a schedule.
   its stored rows replaced by the delivered rows, and a provider absent from
   the delivery keeps its previous rows. Every stored row keeps its own
   delivery time (`fetched_at`), so staleness can be judged per provider. The
-  balance pages, a follow-up change, judge the balances section by the oldest
-  provider's latest delivery, so one provider that stops reporting shows the
-  existing "may be out of date" label. Until those pages land, no page shows
-  balances, and the admin refresh status for balances reflects the newest
-  delivery.
+  balance pages on Home and Finances, and the admin refresh status for
+  balances, judge the balances section by the oldest provider's latest
+  delivery (the oldest stored `fetched_at`, since one delivery gives all of a
+  provider's rows the same time), so one provider that stops reporting shows
+  the existing "may be out of date" label.
 - The same transaction upserts today's row per account into `balances_daily`,
   and removes today's rows for accounts that the delivery replaced away, so the
   day's total matches the headline total. History for earlier days is never
@@ -298,8 +298,8 @@ being fetched by it, so the portal cannot pull them on a schedule.
 ### Consequences of the amendment
 
 - There is no way yet to retire a provider that has stopped reporting: its last
-  rows stay stored, and once the balance pages land the section stays labelled
-  out of date.
+  rows stay stored and keep counting in the totals and the trend, and the
+  balances section and its admin refresh status stay labelled out of date.
   #ASSUME the owner will decide whether a retire action or an age limit is
   wanted. #VERIFY before any provider is switched off for good.
 - The "route handlers never write" rule now has this one named exception, which
