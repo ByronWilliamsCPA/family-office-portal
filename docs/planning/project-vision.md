@@ -3,6 +3,12 @@
 **Note (2026-09-28)**: Documents now come from llc-manager. Where this document
 says otherwise, `CLAUDE.md` takes precedence.
 
+**Note (2026-10-05)**: [ADR-006](../architecture/adr/adr-006-document-indexer.md)
+narrows the out-of-scope list below. The portal now owns a document index (chunk
+embeddings in Qdrant) and, later, the document search and Q&A that read it. The
+exclusions of full-text search, Q&A and LLM infrastructure apply only to v1 as
+first scoped; the other exclusions stand.
+
 > **Status**: Active | **Version**: 1.0 | **Updated**: 2026-05-06
 
 ## TL;DR

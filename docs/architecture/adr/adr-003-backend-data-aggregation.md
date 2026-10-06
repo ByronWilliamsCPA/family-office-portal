@@ -6,6 +6,8 @@
 > **Amended**: 2026-10-05 (balance intake writer; see "Amendment 2026-10-05" below)
 > **Related**: [ADR-007](adr-007-live-document-file-proxy.md) records a bounded exception:
 > document preview and download stream the file from llc-manager per request
+> **Narrowed by**: [ADR-006](./adr-006-document-indexer.md) (document search may call the
+> embedding service and Qdrant during a request; every other page still reads only SQLite)
 
 ## TL;DR
 
@@ -190,6 +192,8 @@ These endpoint contracts must be validated with each backend team before Phase 1
 - [Project Vision](../../planning/project-vision.md): Resilience
   requirement driving this decision
 - [Roadmap](../../planning/roadmap.md): Phase-by-phase backend integration order
+- [ADR-006](./adr-006-document-indexer.md): Document indexer; the document-search
+  carve-out from the SQLite-only read rule
 
 ## Amendment 2026-09-30: optional, keyed backend connections
 

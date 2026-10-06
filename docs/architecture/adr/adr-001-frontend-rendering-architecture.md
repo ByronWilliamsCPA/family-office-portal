@@ -139,4 +139,6 @@ hydration concerns, and a JavaScript build pipeline the project doesn't need.
   uses server-side session validation, consistent with server-rendered approach
 - [ADR-003](./adr-003-backend-data-aggregation.md): Data aggregation layer feeds
   template context directly
+- [ADR-006](./adr-006-document-indexer.md): Document indexer; a scheduled command,
+  outside the server-rendered request path
 - [Tech Spec](../../planning/tech-spec.md#2-architecture): Component diagram references this decision
