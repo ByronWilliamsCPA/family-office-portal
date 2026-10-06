@@ -274,8 +274,9 @@ def test_second_line_drops_every_flag_but_false(
 @pytest.mark.parametrize("value", [1, "yes", "false", None, 0])
 def test_include_confidential_must_be_a_bool(value: object) -> None:
     """A truthy non-bool never grants admin visibility; it is rejected."""
+    not_a_bool = cast("bool", value)
     with pytest.raises(ValueError, match="include_confidential"):
-        SearchRequest(query=QUERY, include_confidential=cast("bool", value))
+        SearchRequest(query=QUERY, include_confidential=not_a_bool)
 
 
 @pytest.mark.parametrize("value", [1, "yes", None])
@@ -378,7 +379,8 @@ def test_odd_page_and_section_values_become_none(
     add_doc(qdrant, "odd", MATCHING, page_range=page_range, section_hierarchy=section)
     citation = search.search(SearchRequest(query=QUERY)).results[0].citation
     assert isinstance(citation, DocumentCitation)
-    assert (citation.page_start, citation.page_end, citation.section) == expected
+    actual = (citation.page_start, citation.page_end, citation.section)
+    assert actual == expected
 
 
 def test_tax_law_result_cites_subtopic_id_and_title(
@@ -682,6 +684,22 @@ def test_build_returns_none_for_an_unparseable_value(
     clean_env.setenv("EMBED_TIMEOUT_SECONDS", "abc")
     clean_env.setenv("QDRANT_URL", "http://qdrant.test:6333")
     clean_env.setenv("QDRANT_API_KEY", secrets.token_urlsafe(16))
+    with capture_logs() as logs:
+        assert build_search_service() is None
+    assert logs[0]["event"] == "search_not_connected"
+
+
+@pytest.mark.parametrize("variable", ["EMBED_API_KEY", "QDRANT_API_KEY"])
+def test_build_returns_none_for_a_non_ascii_key(
+    clean_env: pytest.MonkeyPatch, variable: str
+) -> None:
+    """A key that cannot be an HTTP header means not connected, with no client."""
+    clean_env.setenv("EMBED_BASE_URL", "http://embed.test")
+    clean_env.setenv("EMBED_API_KEY", secrets.token_urlsafe(16))
+    clean_env.setenv("EMBEDDING_MODEL", MODEL)
+    clean_env.setenv("QDRANT_URL", "http://qdrant.test:6333")
+    clean_env.setenv("QDRANT_API_KEY", secrets.token_urlsafe(16))
+    clean_env.setenv(variable, "cl\u00e9")
     with capture_logs() as logs:
         assert build_search_service() is None
     assert logs[0]["event"] == "search_not_connected"
