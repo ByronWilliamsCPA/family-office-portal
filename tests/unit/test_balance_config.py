@@ -33,6 +33,11 @@ def _clean_env(  # pyright: ignore[reportUnusedFunction]
     monkeypatch.delenv("BALANCE_INTAKE_API_KEY", raising=False)
 
 
+def _reload_main() -> None:
+    """Re-run ``app.main`` at import, which runs the startup checks."""
+    importlib.reload(importlib.import_module("app.main"))
+
+
 def test_unset_key_disables_the_intake() -> None:
     """No variable: disabled, empty key, startup check passes."""
     settings = load_settings()
@@ -70,8 +75,9 @@ def test_short_key_is_refused_without_echoing_it(
     """A short key fails the startup check; the message names only the variable."""
     short = secrets.token_hex(8)
     monkeypatch.setenv("BALANCE_INTAKE_API_KEY", short)
+    settings = load_settings()
     with pytest.raises(BackendConfigError) as exc_info:
-        check_balance_intake(load_settings())
+        check_balance_intake(settings)
     message = str(exc_info.value)
     assert "BALANCE_INTAKE_API_KEY" in message
     assert str(MIN_INTAKE_KEY_LENGTH) in message
@@ -81,8 +87,9 @@ def test_short_key_is_refused_without_echoing_it(
 def test_key_length_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     """31 characters fail and 32 pass."""
     monkeypatch.setenv("BALANCE_INTAKE_API_KEY", "k" * (MIN_INTAKE_KEY_LENGTH - 1))
+    too_short = load_settings()
     with pytest.raises(BackendConfigError):
-        check_balance_intake(load_settings())
+        check_balance_intake(too_short)
     monkeypatch.setenv("BALANCE_INTAKE_API_KEY", "k" * MIN_INTAKE_KEY_LENGTH)
     check_balance_intake(load_settings())
 
@@ -104,7 +111,7 @@ def test_app_refuses_to_start_with_a_short_key(
     short = secrets.token_hex(4)
     monkeypatch.setenv("BALANCE_INTAKE_API_KEY", short)
     with pytest.raises(SystemExit) as exc_info:
-        importlib.reload(importlib.import_module("app.main"))
+        _reload_main()
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
     assert "BALANCE_INTAKE_API_KEY" in err
@@ -113,7 +120,7 @@ def test_app_refuses_to_start_with_a_short_key(
 
 def test_app_starts_without_the_key() -> None:
     """The setting is optional: the app loads when it is absent."""
-    importlib.reload(importlib.import_module("app.main"))
+    _reload_main()
 
 
 @pytest.mark.parametrize(
@@ -125,8 +132,9 @@ def test_non_printable_ascii_key_is_refused(
     """A key a header could never carry intact stops startup, unechoed."""
     key = secrets.token_hex(MIN_INTAKE_KEY_LENGTH) + suffix + "k"
     monkeypatch.setenv("BALANCE_INTAKE_API_KEY", key)
+    settings = load_settings()
     with pytest.raises(BackendConfigError) as exc_info:
-        check_balance_intake(load_settings())
+        check_balance_intake(settings)
     message = str(exc_info.value)
     assert "printable ASCII" in message
     assert key not in message
@@ -138,12 +146,13 @@ def test_key_equal_to_the_sign_in_secret_is_refused(
     """Reusing the sign-in secret as the intake key stops startup."""
     secret = portal_env["AUTHENTIK_JWT_SECRET"]
     monkeypatch.setenv("BALANCE_INTAKE_API_KEY", secret)
+    settings = load_settings()
     with pytest.raises(BackendConfigError) as exc_info:
-        check_balance_intake(load_settings(), jwt_secret=secret)
+        check_balance_intake(settings, jwt_secret=secret)
     message = str(exc_info.value)
     assert "AUTHENTIK_JWT_SECRET" in message
     assert secret not in message
-    check_balance_intake(load_settings(), jwt_secret=secret + "x")
+    check_balance_intake(settings, jwt_secret=secret + "x")
 
 
 def test_app_refuses_to_start_when_the_key_reuses_the_sign_in_secret(
@@ -155,6 +164,6 @@ def test_app_refuses_to_start_when_the_key_reuses_the_sign_in_secret(
     secret = portal_env["AUTHENTIK_JWT_SECRET"]
     monkeypatch.setenv("BALANCE_INTAKE_API_KEY", secret)
     with pytest.raises(SystemExit) as exc_info:
-        importlib.reload(importlib.import_module("app.main"))
+        _reload_main()
     assert exc_info.value.code == 1
     assert secret not in capsys.readouterr().err

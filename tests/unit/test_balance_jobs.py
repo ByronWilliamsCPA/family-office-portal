@@ -94,6 +94,7 @@ def test_store_delivery_failure_logs_class_only_and_reraises(
 ) -> None:
     """A database error is recorded without its text, then raised to the route."""
     del portal_env
+    delivery = _delivery("pp:a")
     with (
         capture_logs() as logs,
         patch(
@@ -102,7 +103,7 @@ def test_store_delivery_failure_logs_class_only_and_reraises(
         ),
         pytest.raises(sqlite3.OperationalError),
     ):
-        scheduler.store_balance_delivery(_delivery("pp:a"))
+        scheduler.store_balance_delivery(delivery)
     assert "123.45" not in str(logs)
     rows = _query(tmp_db_path, "SELECT service, status, message FROM refresh_log")
     assert rows == [("balances", "error", "OperationalError")]
@@ -214,7 +215,8 @@ def test_daily_job_covers_every_local_date_across_daylight_saving(
             fire = trigger.get_next_fire_time(previous, now)
             assert fire is not None
             dates.append(fire.date())
-            assert (fire.hour, fire.minute) == scheduler.DAILY_SNAPSHOT_TIME
+            fire_time = (fire.hour, fire.minute)
+            assert fire_time == scheduler.DAILY_SNAPSHOT_TIME
             previous = fire
             now = (fire + timedelta(minutes=1)).astimezone(timezone.utc)
         gaps = {(b - a).days for a, b in pairwise(dates)}

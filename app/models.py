@@ -124,7 +124,9 @@ BALANCE_PROVIDERS: tuple[str, ...] = ("pp", "xero", "crypto")
 _RECONCILED_PROVIDER = "xero"
 _ACCOUNT_ID_PATTERN = rf"^({'|'.join(BALANCE_PROVIDERS)}):[A-Za-z0-9._:-]{{1,100}}$"
 _PROVIDER_LIST = ", ".join(f"{name}:" for name in BALANCE_PROVIDERS)
-_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+# ``re.ASCII`` keeps ``\d`` to the digits 0 to 9; without it, other Unicode
+# decimal digits would pass the pattern.
+_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
 _UUID_PATTERN = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
@@ -159,7 +161,7 @@ def _parse_date(value: str) -> str:
     Raises:
         ValueError: If the text is not a real calendar date in that form.
     """
-    if not re.fullmatch(_DATE_PATTERN, value):
+    if not _DATE_PATTERN.fullmatch(value):
         msg = "not a YYYY-MM-DD date"
         raise ValueError(msg)
     date.fromisoformat(value)

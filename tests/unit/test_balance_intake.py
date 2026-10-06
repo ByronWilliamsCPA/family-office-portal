@@ -445,6 +445,7 @@ BAD_ROWS: list[tuple[str, dict[str, Any]]] = [
     ("bad date", {"as_of": "2026-02-30"}),
     ("us date", {"as_of": "09/26/2026"}),
     ("timestamp date", {"as_of": "2026-09-26T00:00:00"}),
+    ("non-ascii digit date", {"as_of": "\u0662\u0660\u0662\u0666-09-26"}),
     ("int date", {"as_of": 20260926}),
     ("null date", {"as_of": None}),
     ("null entity", {"entity_id": None}),
