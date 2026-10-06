@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Accounts valued by hand - Family Office{% endblock %}
+{% block content %}
+<h1 class="text-3xl font-semibold mb-2">Accounts valued by hand</h1>
+<p class="text-slate-600 mb-6">These values are typed in from statements, so they only change when someone updates them. The oldest are listed first.</p>
+<section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="marks-heading">
+  <h2 id="marks-heading" class="text-xl font-semibold mb-3">Oldest values first</h2>
+  {% if marks %}
+  <table class="w-full text-left">
+    <thead><tr class="text-slate-500">
+      <th scope="col" class="py-2">Account</th>
+      <th scope="col" class="py-2">Owner</th>
+      <th scope="col" class="py-2">Value from</th>
+      <th scope="col" class="py-2 text-right">Age</th>
+    </tr></thead>
+    <tbody>
+      {% for m in marks %}
+      <tr class="border-t border-stone-200">
+        <th scope="row" class="py-2 font-normal">{{ m.account_name }}</th>
+        <td class="py-2">{{ m.entity_name }}</td>
+        <td class="py-2">{{ m.as_of | friendly_date }}</td>
+        <td class="py-2 text-right">{% if m.in_future %}Dated after today; please check{% else %}{{ m.age_days }} day{{ 's' if m.age_days != 1 }} old{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="text-slate-600">No accounts are valued by hand right now.</p>
+  {% endif %}
+</section>
+{% endblock %}

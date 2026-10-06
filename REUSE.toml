@@ -18,3 +18,13 @@ path = "static/htmx.min.js"
 precedence = "override"
 SPDX-FileCopyrightText = "2020 Big Sky Software"
 SPDX-License-Identifier = "0BSD"
+
+# Vendored Chart.js 4.5.1 (dist/chart.umd.min.js from the npm tarball
+# https://registry.npmjs.org/chart.js/-/chart.js-4.5.1.tgz, verified against the
+# registry's published sha512 integrity value;
+# file sha256 48444a82d4edcb5bec0f1965faacdde18d9c17db3063d042abada2f705c9f54a).
+[[annotations]]
+path = "static/chart.umd.min.js"
+precedence = "override"
+SPDX-FileCopyrightText = "2014-2024 Chart.js Contributors"
+SPDX-License-Identifier = "MIT"

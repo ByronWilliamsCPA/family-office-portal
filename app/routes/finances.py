@@ -11,7 +11,12 @@ from starlette.responses import (
 )
 
 from app import cache
-from app.routes._context import balances_summary, freshness
+from app.routes._context import (
+    balance_breakdown,
+    balances_summary,
+    freshness,
+    is_admin,
+)
 from app.templating import render
 
 router = APIRouter(tags=["finances"])
@@ -43,4 +48,6 @@ async def finances(request: Request) -> Response:
         positions_updated=positions_state["updated"],
         positions_stale=positions_state["stale"],
         **(await balances_summary()),
+        is_admin=is_admin(request),
+        **(await balance_breakdown()),
     )

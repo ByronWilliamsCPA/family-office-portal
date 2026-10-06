@@ -211,6 +211,7 @@ CREATE TABLE refresh_log (
 | GET | `/entities/{id}` | Entity detail view | Viewer, Admin |
 | GET | `/admin/refresh-status` | Per-service refresh log | Admin only |
 | POST | `/admin/refresh/{service}` | Trigger manual refresh | Admin only |
+| GET | `/admin/manual-marks` | Accounts valued by hand, oldest first | Admin only |
 | POST | `/api/v1/balances` | Deliver account balances (collector) | `X-API-Key` header, not identity; disabled (404) when `BALANCE_INTAKE_API_KEY` is unset |
 
 ### Backend Service Contracts (Required from Backend Teams)
@@ -388,6 +389,7 @@ or an error message visible to primary users. Backend errors during refresh are 
 | Holdings/Performance (`pp-security-master`) | 4 hours | "last updated [time]" |
 | Crypto positions (`xero_crypto`) | 4 hours | "last updated [time]" |
 | Documents (`family_office`) | 24 hours | "last updated [time]" |
+| Account balances (delivered to `POST /api/v1/balances`) | 24 hours, judged per provider: the oldest provider's latest delivery | "last updated [time]" |
 
 ### Logging
 

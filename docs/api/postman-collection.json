@@ -12,13 +12,53 @@
   ],
   "info": {
     "_postman_id": "family-office-portal-collection",
-    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from internal backend services behind a SQLite read-through cache. Runs behind Authentik forward auth. Page routes return server-rendered HTML; admin and health routes return JSON. See docs/planning/tech-spec.md for the full contract.",
+    "description": "Private read-only family estate portal aggregating entity, document, finance, and portfolio data from internal backend services behind a SQLite read-through cache. Runs behind Authentik forward auth. Page routes and the admin manual-marks page return server-rendered HTML; the other admin routes and the health route return JSON. See docs/planning/tech-spec.md for the full contract.",
     "name": "Family Office Portal",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
     {
       "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const authed = Boolean(pm.variables.get('authentikJwt'));",
+                  "pm.test('status is in the expected range', function () {",
+                  "    const expected = authed ? [200] : [403];",
+                  "    pm.expect(expected).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Accounts valued by hand",
+          "request": {
+            "description": "List accounts whose value is entered by hand, oldest first.\n\nAuthentication: Admin only; the middleware refuses a Viewer with the\nstandard access-denied answer before this runs.\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered page with each account and the age of its value.",
+            "header": [
+              {
+                "key": "X-authentik-jwt",
+                "type": "text",
+                "value": "{{authentikJwt}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "manual-marks"
+              ],
+              "raw": "{{baseUrl}}/admin/manual-marks"
+            }
+          },
+          "response": []
+        },
         {
           "event": [
             {
@@ -657,6 +697,7 @@
       "value": "http://localhost:8000"
     },
     {
+      "description": "An Admin forward-auth token. Leave empty to check that every protected route fails closed with 403. Set it to an Admin token to check the success responses; a Viewer token is not supported, because the Admin-only items then answer 403.",
       "key": "authentikJwt",
       "type": "string",
       "value": ""

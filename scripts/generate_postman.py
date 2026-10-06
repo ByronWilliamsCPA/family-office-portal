@@ -197,7 +197,17 @@ def generate() -> Path:
         },
         "variable": [
             {"key": "baseUrl", "value": "http://localhost:8000", "type": "string"},
-            {"key": "authentikJwt", "value": "", "type": "string"},
+            {
+                "key": "authentikJwt",
+                "value": "",
+                "type": "string",
+                "description": (
+                    "An Admin forward-auth token. Leave empty to check that every "
+                    "protected route fails closed with 403. Set it to an Admin "
+                    "token to check the success responses; a Viewer token is not "
+                    "supported, because the Admin-only items then answer 403."
+                ),
+            },
         ],
         "event": [
             {

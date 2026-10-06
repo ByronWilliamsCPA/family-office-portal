@@ -112,8 +112,9 @@ app: FastAPI = FastAPI(
         "Private read-only family estate portal aggregating entity, document, "
         "finance, and portfolio data from internal backend services behind a "
         "SQLite read-through cache. Runs behind Authentik forward auth. "
-        "Page routes return server-rendered HTML; admin and health routes return "
-        "JSON. See docs/planning/tech-spec.md for the full contract."
+        "Page routes and the admin manual-marks page return server-rendered HTML; "
+        "the other admin routes and the health route return JSON. See "
+        "docs/planning/tech-spec.md for the full contract."
     ),
     version=__version__,
     contact={"name": "Byron Williams"},

@@ -6,7 +6,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, status
+from fastapi import APIRouter, BackgroundTasks, Request, status
+from fastapi.responses import HTMLResponse
+from starlette.responses import (
+    Response,  # noqa: TC002  # FastAPI reads return annotations at runtime
+)
 
 from app import cache
 from app.models import (
@@ -16,6 +20,7 @@ from app.models import (
     RefreshTriggerResponse,
 )
 from app.scheduler import TRIGGERS
+from app.templating import render
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -91,3 +96,29 @@ async def trigger_refresh(
     """
     background.add_task(TRIGGERS[service])
     return RefreshTriggerResponse(service=service, scheduled=True, forced=body.force)
+
+
+@router.get(
+    "/manual-marks",
+    summary="Accounts valued by hand",
+    response_class=HTMLResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def manual_marks(request: Request) -> Response:
+    """List accounts whose value is entered by hand, oldest first.
+
+    Authentication: Admin only; the middleware refuses a Viewer with the
+    standard access-denied answer before this runs.
+
+    Args:
+        request (Request): Current request.
+
+    Returns:
+        Response: Rendered page with each account and the age of its value.
+    """
+    return render(
+        request,
+        "pages/manual_marks.html",
+        section="admin",
+        marks=await cache.get_manual_marks(),
+    )
