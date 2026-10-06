@@ -4,8 +4,10 @@
 
 The embedding service is a fake on ``httpx.MockTransport`` and Qdrant runs
 in-process (``QdrantClient(":memory:")``). These prove the rules: consent
-fails closed, unchanged files are skipped only when hash, consent and model
-all match, removed files lose their points, and failures keep old points.
+fails closed, unchanged files are skipped only when hash, consent, model and
+content digest all match, removed files lose their points, failures keep old
+points (except an unreadable tax return), and one document's Qdrant failure
+does not stop the run.
 """
 
 from __future__ import annotations
@@ -16,10 +18,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 from qdrant_client import QdrantClient, models
-from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.common.client_exceptions import ResourceExhaustedResponse
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from structlog.testing import capture_logs
 
 from app.retrieval import indexer as indexer_module
+from app.retrieval import qdrant_store
 from app.retrieval.embeddings import EmbeddingClient
 from app.retrieval.indexer import DocumentIndexer, IndexerError, Outcome, main
 from app.retrieval.qdrant_store import FAMILY_DOCS_COLLECTION, FamilyDocsWriter
@@ -39,6 +43,15 @@ if TYPE_CHECKING:
     from app.retrieval.settings import EmbeddingConnection
 
 STAMP = "2026-01-02T03:04:05+00:00"
+
+# In-process Qdrant warns that payload indexes have no effect; that is expected.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Payload indexes have no effect:UserWarning"
+)
+
+
+def _no_wait(_seconds: float) -> None:
+    """Skip the retry delay in tests."""
 
 
 @pytest.fixture
@@ -66,7 +79,9 @@ def chunks_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def embedder(service: FakeEmbeddingService) -> Iterator[EmbeddingClient]:
     """Yield an embeddings client wired to the fake service."""
-    with EmbeddingClient(service.connection(), transport=service.transport()) as client:
+    with EmbeddingClient(
+        service.connection(), transport=service.transport(), sleep=_no_wait
+    ) as client:
         yield client
 
 
@@ -173,17 +188,66 @@ def test_consent_change_with_same_hash_is_not_skipped(
     assert all(p["consent_on_file"] is True for p in _payloads(qdrant, DOC_A))
 
 
+def test_confidentiality_change_with_same_hash_is_applied(
+    indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path
+) -> None:
+    """A confidentiality change with the same hash rewrites the points."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, is_confidential=False))
+    indexer.run(chunks_dir)
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, is_confidential=True))
+    report = indexer.run(chunks_dir)
+    assert report.counts[Outcome.INDEXED] == 1
+    assert [p["is_confidential"] for p in _payloads(qdrant, DOC_A)] == [True, True]
+
+
+def test_entity_change_with_same_hash_is_applied(
+    indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path
+) -> None:
+    """An entity change with the same hash rewrites the points."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+    indexer.run(chunks_dir)
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, entity_id="entity-2"))
+    assert indexer.run(chunks_dir).counts[Outcome.INDEXED] == 1
+    assert {p["entity_id"] for p in _payloads(qdrant, DOC_A)} == {"entity-2"}
+
+
+def test_rechunking_with_same_hash_is_applied(
+    indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path
+) -> None:
+    """New chunks with the same hash replace the old text and count."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, texts=("one", "two")))
+    indexer.run(chunks_dir)
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, texts=("uno", "dos", "tres")))
+    report = indexer.run(chunks_dir)
+    assert report.counts[Outcome.INDEXED] == 1
+    assert [p["text"] for p in _payloads(qdrant, DOC_A)] == ["uno", "dos", "tres"]
+    assert indexer.run(chunks_dir).counts[Outcome.UNCHANGED] == 1
+
+
+def test_shorter_rechunk_removes_the_extra_points(
+    indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path
+) -> None:
+    """A rechunk into fewer chunks leaves no stale points behind."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, texts=("one", "two", "three")))
+    indexer.run(chunks_dir)
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, texts=("only",)))
+    indexer.run(chunks_dir)
+    assert [p["text"] for p in _payloads(qdrant, DOC_A)] == ["only"]
+
+
 def test_model_change_reembeds(
     service: FakeEmbeddingService, qdrant: QdrantClient, chunks_dir: Path
 ) -> None:
     """Model change reembeds."""
     write_chunk_set(chunks_dir, chunk_set(DOC_A))
     writer = FamilyDocsWriter(qdrant)
-    with EmbeddingClient(service.connection(), transport=service.transport()) as one:
+    with EmbeddingClient(
+        service.connection(), transport=service.transport(), sleep=_no_wait
+    ) as one:
         DocumentIndexer(one, writer).run(chunks_dir)
     other = service.connection()
     other = type(other)(base_url=other.base_url, api_key=other.api_key, model="m2")
-    with EmbeddingClient(other, transport=service.transport()) as two:
+    with EmbeddingClient(other, transport=service.transport(), sleep=_no_wait) as two:
         report = DocumentIndexer(two, writer).run(chunks_dir)
     assert report.counts[Outcome.INDEXED] == 1
     assert _payloads(qdrant, DOC_A)[0]["embedding_model"] == "m2"
@@ -198,7 +262,16 @@ def test_missing_hash_is_never_skipped(
         del chunk["sha256"]
     write_chunk_set(chunks_dir, data)
     indexer.run(chunks_dir)
-    assert indexer.run(chunks_dir).counts[Outcome.INDEXED] == 1
+    with capture_logs() as logs:
+        assert indexer.run(chunks_dir).counts[Outcome.INDEXED] == 1
+    hashless = [log for log in logs if log["event"] == "document_has_no_sha256"]
+    assert hashless == [
+        {
+            "event": "document_has_no_sha256",
+            "document_id": DOC_A,
+            "log_level": "warning",
+        }
+    ]
 
 
 def test_incomplete_points_are_rewritten(
@@ -232,7 +305,9 @@ def test_set_with_no_text_removes_existing_points(
     """Set with no text removes existing points."""
     write_chunk_set(chunks_dir, chunk_set(DOC_A))
     indexer.run(chunks_dir)
-    write_chunk_set(chunks_dir, chunk_set(DOC_A, texts=(), sha256="c" * 64))
+    empty = chunk_set(DOC_A, texts=(), sha256="c" * 64)
+    empty["category"] = "LLCs"  # classified, so no consent is needed
+    write_chunk_set(chunks_dir, empty)
     report = indexer.run(chunks_dir)
     assert report.counts[Outcome.EMPTY] == 1
     assert _payloads(qdrant, DOC_A) == []
@@ -309,10 +384,12 @@ def test_withdrawal_written_as_an_empty_set_deletes_points(
     write_chunk_set(chunks_dir, tax)
     indexer.run(chunks_dir)
     empty = chunk_set(DOC_TAX, texts=())
+    empty["category"] = "Tax Returns"
     empty["consent_on_file"] = False
     write_chunk_set(chunks_dir, empty)
     report = indexer.run(chunks_dir)
-    assert report.counts[Outcome.EMPTY] == 1
+    assert report.counts[Outcome.NO_CONSENT] == 1
+    assert report.counts[Outcome.EMPTY] == 0
     assert _payloads(qdrant, DOC_TAX) == []
 
 
@@ -350,27 +427,86 @@ def test_empty_directory_deletes_nothing(
     assert any(log["event"] == "orphan_check_skipped_empty_directory" for log in logs)
 
 
+def test_too_many_missing_files_skip_the_orphan_sweep(
+    indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path
+) -> None:
+    """A sweep that would delete most documents at once is skipped."""
+    ids = [f"doc-{number}" for number in range(6)]
+    paths = [write_chunk_set(chunks_dir, chunk_set(doc)) for doc in ids]
+    indexer.run(chunks_dir)
+    for path in paths[1:]:
+        path.unlink()
+    with capture_logs() as logs:
+        report = indexer.run(chunks_dir)
+    assert report.orphan_check_skipped is True
+    assert report.counts[Outcome.REMOVED] == 0
+    assert all(len(_payloads(qdrant, doc)) == 2 for doc in ids)
+    skipped = [
+        log for log in logs if log["event"] == "orphan_check_skipped_too_many_missing"
+    ]
+    assert skipped[0]["missing"] == 5
+    assert skipped[0]["indexed"] == 6
+    finished = [log for log in logs if log["event"] == "index_run_finished"]
+    assert finished[0]["orphan_check_skipped"] is True
+
+
 def test_missing_directory_stops_before_any_change(
-    indexer: DocumentIndexer, tmp_path: Path
+    indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path, tmp_path: Path
 ) -> None:
     """Missing directory stops before any change."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+    indexer.run(chunks_dir)
     with pytest.raises(IndexerError, match="does not exist"):
         indexer.run(tmp_path / "absent")
+    assert len(_payloads(qdrant, DOC_A)) == 2
 
 
 def test_unreadable_file_keeps_its_points_and_fails(
     indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path
 ) -> None:
-    """Unreadable file keeps its points and fails."""
-    path = write_chunk_set(chunks_dir, chunk_set(DOC_A, texts=("secret words",)))
+    """Unreadable file keeps its points, fails, and logs no text."""
+    data = chunk_set(DOC_A, texts=("secret words",))
+    path = write_chunk_set(chunks_dir, data)
     indexer.run(chunks_dir)
-    path.write_text('{"document_id": "secret words"', encoding="utf-8")
+    # A shape error right next to the text: the sha256 is not a string.
+    data["chunks"][0]["sha256"] = ["secret words"]
+    write_chunk_set(chunks_dir, data)
     with capture_logs() as logs:
         report = indexer.run(chunks_dir)
     assert report.failed == 1
     assert report.counts[Outcome.REMOVED] == 0
     assert len(_payloads(qdrant, DOC_A)) == 1
-    assert "secret" not in repr(logs)
+    unreadable = [log for log in logs if log["event"] == "chunk_set_unreadable"]
+    assert unreadable == [
+        {
+            "event": "chunk_set_unreadable",
+            "document_id": DOC_A,
+            "reason": "sha256 is not a string",
+            "log_level": "error",
+        }
+    ]
+    for log in logs:
+        assert "exc_info" not in log
+        assert all("secret" not in repr(value) for value in log.values())
+    assert path.exists()
+
+
+def test_unreadable_tax_return_loses_its_points(
+    indexer: DocumentIndexer, qdrant: QdrantClient, chunks_dir: Path
+) -> None:
+    """An unreadable file whose points are a tax return loses them."""
+    tax = chunk_set(DOC_TAX, category="Tax Returns", consent=True)
+    path = write_chunk_set(chunks_dir, tax)
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+    indexer.run(chunks_dir)
+    assert len(_payloads(qdrant, DOC_TAX)) == 2
+    path.write_text('{"document_id": "', encoding="utf-8")
+    with capture_logs() as logs:
+        report = indexer.run(chunks_dir)
+    assert report.failed == 1
+    assert _payloads(qdrant, DOC_TAX) == []
+    assert len(_payloads(qdrant, DOC_A)) == 2
+    assert any(log["event"] == "unreadable_tax_return_removed" for log in logs)
 
 
 def test_embedding_failure_keeps_old_points_and_logs_no_text(
@@ -396,6 +532,97 @@ def test_embedding_failure_keeps_old_points_and_logs_no_text(
     assert "secret" not in repr(logs)
     failed = [log for log in logs if log["event"] == "document_embedding_failed"]
     assert failed[0]["document_id"] == DOC_A
+
+
+def test_one_documents_qdrant_failure_does_not_stop_the_run(
+    indexer: DocumentIndexer,
+    qdrant: QdrantClient,
+    chunks_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Qdrant refusal for one document fails it; later files still run."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+    write_chunk_set(chunks_dir, chunk_set(DOC_B))
+    stale = write_chunk_set(chunks_dir, chunk_set(DOC_TAX, sha256="f" * 64))
+    indexer.run(chunks_dir)
+    stale.unlink()
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, sha256="b" * 64))
+    write_chunk_set(chunks_dir, chunk_set(DOC_B, sha256="c" * 64))
+    real_replace = FamilyDocsWriter.replace_document
+
+    def refuse_doc_a(
+        self: FamilyDocsWriter, document_id: str, points: list[Any]
+    ) -> int:
+        """Refuse DOC_A like a server error; write the rest."""
+        if document_id == DOC_A:
+            raise UnexpectedResponse(400, "Bad Request", b"", httpx.Headers())
+        return real_replace(self, document_id, points)
+
+    monkeypatch.setattr(FamilyDocsWriter, "replace_document", refuse_doc_a)
+    with capture_logs() as logs:
+        report = indexer.run(chunks_dir)
+    assert report.failed == 1
+    assert report.counts[Outcome.INDEXED] == 1
+    assert report.counts[Outcome.REMOVED] == 1  # the sweep still ran
+    assert {p["sha256"] for p in _payloads(qdrant, DOC_A)} == {"a" * 64}
+    assert {p["sha256"] for p in _payloads(qdrant, DOC_B)} == {"c" * 64}
+    failed = [log for log in logs if log["event"] == "document_write_failed"]
+    assert failed == [
+        {
+            "event": "document_write_failed",
+            "document_id": DOC_A,
+            "reason": "Qdrant request failed: UnexpectedResponse",
+            "log_level": "error",
+        }
+    ]
+
+
+def test_failed_batch_keeps_points_and_next_run_repairs(
+    indexer: DocumentIndexer,
+    qdrant: QdrantClient,
+    chunks_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that fails after its first batch never leaves no points."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A, texts=("one", "two", "three")))
+    indexer.run(chunks_dir)
+    monkeypatch.setattr(qdrant_store, "UPSERT_BATCH_SIZE", 1)
+    real_upsert = qdrant.upsert
+    calls: list[int] = []
+
+    def fail_second_batch(**kwargs: object) -> object:
+        """Write the first batch, then fail like a timed-out request."""
+        calls.append(1)
+        if len(calls) == 2:
+            raise UnexpectedResponse(500, "error", b"", httpx.Headers())
+        return real_upsert(**kwargs)
+
+    monkeypatch.setattr(qdrant, "upsert", fail_second_batch)
+    write_chunk_set(
+        chunks_dir, chunk_set(DOC_A, texts=("uno", "dos", "tres"), sha256="b" * 64)
+    )
+    assert indexer.run(chunks_dir).failed == 1
+    texts = [p["text"] for p in _payloads(qdrant, DOC_A)]
+    assert texts == ["uno", "two", "three"]  # mixed, never empty
+    report = indexer.run(chunks_dir)
+    assert report.counts[Outcome.INDEXED] == 1
+    assert [p["text"] for p in _payloads(qdrant, DOC_A)] == ["uno", "dos", "tres"]
+
+
+def test_refused_embedding_key_stops_the_run(
+    indexer: DocumentIndexer,
+    service: FakeEmbeddingService,
+    qdrant: QdrantClient,
+    chunks_dir: Path,
+) -> None:
+    """A refused embedding key stops the run instead of failing every file."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+    write_chunk_set(chunks_dir, chunk_set(DOC_B))
+    service.key = "rotated"
+    with pytest.raises(IndexerError, match="refused the key"):
+        indexer.run(chunks_dir)
+    assert len(service.requests) == 1
+    assert _payloads(qdrant, DOC_A) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -434,19 +661,22 @@ def command_env(
 
     def fake_embedding_client(connection: EmbeddingConnection) -> EmbeddingClient:
         """Build the real client on the fake transport."""
-        return real_client(connection, transport=service.transport())
+        return real_client(connection, transport=service.transport(), sleep=_no_wait)
 
     monkeypatch.setattr(indexer_module, "EmbeddingClient", fake_embedding_client)
     return monkeypatch
 
 
 def test_main_runs_a_pass_and_exits_zero(
-    command_env: pytest.MonkeyPatch, chunks_dir: Path
+    command_env: pytest.MonkeyPatch, chunks_dir: Path, qdrant: QdrantClient
 ) -> None:
     """Main runs a pass and exits zero."""
-    del command_env
+    closed: list[bool] = []
+    command_env.setattr(qdrant, "close", lambda: closed.append(True))
     write_chunk_set(chunks_dir, chunk_set(DOC_A))
     assert main() == 0
+    assert closed == [True]
+    assert len(_payloads(qdrant, DOC_A)) == 2
 
 
 def test_main_exits_one_when_a_file_fails(
@@ -465,6 +695,30 @@ def test_main_is_off_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> Non
     with capture_logs() as logs:
         assert main() == 2
     assert logs[0]["event"] == "indexer_not_connected"
+    assert logs[0]["log_level"] == "warning"
+
+
+@pytest.mark.parametrize("unset", ["EMBED_BASE_URL", "QDRANT_URL", "CHUNKS_DIR"])
+def test_main_is_off_when_one_setting_is_missing(
+    command_env: pytest.MonkeyPatch, unset: str
+) -> None:
+    """Main exits 2 when any one of the three locations is unset."""
+    command_env.delenv(unset)
+    with capture_logs() as logs:
+        assert main() == 2
+    assert logs[0]["event"] == "indexer_not_connected"
+
+
+@pytest.mark.parametrize("value", ["abc", "", "nan", "inf", "0", "-5"])
+def test_main_refuses_a_bad_timeout_without_a_traceback(
+    command_env: pytest.MonkeyPatch, value: str
+) -> None:
+    """A bad timeout exits 2 and names the variable, never the value."""
+    command_env.setenv("EMBED_TIMEOUT_SECONDS", value)
+    with capture_logs() as logs:
+        assert main() == 2
+    assert logs[0]["event"] == "indexer_misconfigured"
+    assert logs[0]["reason"] == "invalid value for EMBED_TIMEOUT_SECONDS"
 
 
 def test_main_refuses_a_url_without_its_key(
@@ -502,3 +756,58 @@ def test_main_stops_when_qdrant_fails(
     with capture_logs() as logs:
         assert main() == 2
     assert logs[-1]["reason"] == "Qdrant request failed: UnexpectedResponse"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResponseHandlingException(httpx.ConnectError("refused")),
+        ResourceExhaustedResponse("rate limited", 5),
+    ],
+    ids=["transport", "rate-limited"],
+)
+def test_main_stops_when_qdrant_stops_answering_mid_run(
+    command_env: pytest.MonkeyPatch, chunks_dir: Path, error: Exception
+) -> None:
+    """A transport failure or a 429 mid-run stops the run with exit 2."""
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+
+    def broken(_self: FamilyDocsWriter, _document_id: str) -> None:
+        """Fail like Qdrant going away or rate-limiting."""
+        raise error
+
+    command_env.setattr(FamilyDocsWriter, "stored_document", broken)
+    with capture_logs() as logs:
+        assert main() == 2
+    assert logs[-1]["event"] == "index_run_stopped"
+    assert logs[-1]["reason"] == f"Qdrant request failed: {type(error).__name__}"
+
+
+def test_main_stops_on_a_collection_with_the_wrong_schema(
+    command_env: pytest.MonkeyPatch, chunks_dir: Path, qdrant: QdrantClient
+) -> None:
+    """An existing collection with the wrong vector size stops the run."""
+    del command_env
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+    qdrant.create_collection(
+        FAMILY_DOCS_COLLECTION,
+        vectors_config={
+            "dense": models.VectorParams(size=8, distance=models.Distance.COSINE)
+        },
+    )
+    with capture_logs() as logs:
+        assert main() == 2
+    assert "unexpected vector schema" in logs[-1]["reason"]
+
+
+def test_main_stops_when_the_embedding_key_is_refused(
+    command_env: pytest.MonkeyPatch, chunks_dir: Path
+) -> None:
+    """A refused embedding key exits 2 with the status, not the key."""
+    command_env.setenv("EMBED_API_KEY", "not-the-service-key")
+    write_chunk_set(chunks_dir, chunk_set(DOC_A))
+    with capture_logs() as logs:
+        assert main() == 2
+    assert logs[-1]["event"] == "index_run_stopped"
+    assert "HTTP 401" in logs[-1]["reason"]
+    assert "not-the-service-key" not in repr(logs)

@@ -16,6 +16,7 @@ import secrets
 from typing import Any
 
 import httpx
+from pydantic import SecretStr
 
 from app.retrieval.settings import EmbeddingConnection
 
@@ -42,17 +43,27 @@ class FakeEmbeddingService:
         self.requests: list[dict[str, Any]] = []
         self.dimensions = DIMENSIONS
         self.fail_with: int | None = None
+        self.fail_after = 0  # successful requests before ``fail_with`` applies
+        self.fail_limit: int | None = None  # failures before answering again
+        self.retry_after: str | None = None
         self.raise_error: httpx.HTTPError | None = None
+        self.failures = 0
 
     def connection(self, key: str | None = None) -> EmbeddingConnection:
         """Return a connection to this fake, optionally with another key."""
         return EmbeddingConnection(
-            base_url=BASE_URL, api_key=key or self.key, model=MODEL
+            base_url=BASE_URL, api_key=SecretStr(key or self.key), model=MODEL
         )
 
     def transport(self) -> httpx.MockTransport:
         """Return the transport that routes requests to this fake."""
         return httpx.MockTransport(self._handle)
+
+    def _should_fail(self) -> bool:
+        """Say whether the current request gets ``fail_with``."""
+        if not self.fail_with or len(self.requests) <= self.fail_after:
+            return False
+        return self.fail_limit is None or self.failures < self.fail_limit
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         """Answer one request like the embedding service would."""
@@ -68,9 +79,13 @@ class FakeEmbeddingService:
         )
         if request.headers.get("Authorization") != f"Bearer {self.key}":
             return httpx.Response(401, json={"error": "unauthorized"})
-        if self.fail_with:
+        if self._should_fail():
+            self.failures += 1
+            headers = {"Retry-After": self.retry_after} if self.retry_after else {}
             # A real server may echo input in its error; the client must not.
-            return httpx.Response(self.fail_with, json={"error": body["input"]})
+            return httpx.Response(
+                self.fail_with or 500, json={"error": body["input"]}, headers=headers
+            )
         inputs = body["input"] if isinstance(body["input"], list) else [body["input"]]
         data = [
             {

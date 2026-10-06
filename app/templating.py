@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import BACKENDS, display_zone, load_settings
 from app.document_files import document_url
-from app.retrieval.settings import load_retrieval_settings
+from app.retrieval.settings import document_search_connected
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -102,8 +102,9 @@ def render(
     Templates also get ``connected``, a mapping of backend key (for example
     ``llc_manager``) to whether its URL is set, so a page can say "not
     connected yet" instead of showing an empty or failed section. The
-    ``document_search`` key says whether the embedding service and Qdrant
-    are both configured.
+    ``document_search`` key is True only when the embedding service and
+    Qdrant each have a URL and key set and every retrieval setting parses;
+    a misconfigured setting makes it False rather than failing the page.
 
     Args:
         request (Request): Current request (carries ``state.principal``).
@@ -118,7 +119,7 @@ def render(
     principal = getattr(request.state, "principal", None)
     settings = load_settings()
     connected = {b.name: settings.is_connected(b.name) for b in BACKENDS}
-    connected["document_search"] = load_retrieval_settings().search_connected()
+    connected["document_search"] = document_search_connected()
     return templates.TemplateResponse(
         request,
         name,

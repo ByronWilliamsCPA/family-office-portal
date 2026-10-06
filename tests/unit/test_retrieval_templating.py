@@ -3,23 +3,30 @@
 """Pages learn whether document search is connected.
 
 Search needs both the embedding service and Qdrant; with either unset, or a
-URL without its key, templates see ``connected.document_search`` as false and
-can say "not connected yet".
+URL without its key, or a value that cannot be parsed, templates see
+``connected.document_search`` as false and can say "not connected yet". A
+bad value never turns a page into an error.
 """
 
 from __future__ import annotations
 
 import secrets
+from typing import TYPE_CHECKING
 
 import pytest
 from starlette.requests import Request
 
 from app import templating
+from app.retrieval import settings as settings_module
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
 
 RETRIEVAL_VARS = (
     "EMBED_BASE_URL",
     "EMBED_API_KEY",
     "EMBEDDING_MODEL",
+    "EMBED_TIMEOUT_SECONDS",
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "CHUNKS_DIR",
@@ -34,6 +41,7 @@ def captured(
     del portal_env
     for name in RETRIEVAL_VARS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(settings_module, "_reported_problems", set())
     seen: dict[str, object] = {}
 
     def fake_response(
@@ -92,3 +100,30 @@ def test_url_without_key_shows_not_connected(
     connected = captured["connected"]
     assert isinstance(connected, dict)
     assert connected["document_search"] is False
+
+
+@pytest.mark.parametrize("value", ["", "soon"])
+def test_bad_timeout_shows_not_connected(
+    captured: dict[str, object], monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A timeout that cannot be parsed shows not connected, not an error."""
+    _connect(monkeypatch)
+    monkeypatch.setenv("EMBED_TIMEOUT_SECONDS", value)
+    _render()
+    connected = captured["connected"]
+    assert isinstance(connected, dict)
+    assert connected["document_search"] is False
+
+
+async def test_bad_timeout_does_not_break_the_home_page(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The home page still renders with a timeout that cannot be parsed."""
+    monkeypatch.setattr(settings_module, "_reported_problems", set())
+    _connect(monkeypatch)
+    monkeypatch.setenv("EMBED_TIMEOUT_SECONDS", "soon")
+    async with client:
+        response = await client.get("/", headers=viewer_headers)
+    assert response.status_code == 200

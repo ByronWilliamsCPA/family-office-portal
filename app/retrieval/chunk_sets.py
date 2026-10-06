@@ -11,28 +11,47 @@ indexer decides on, and builds the payload kept on every Qdrant point.
 Fail-closed rules applied here:
 
 * Consent for a tax return is granted only when every ``consent_on_file``
-  value present (on the set and on every chunk) is exactly ``true``. A
-  missing value counts as false, so a set with no chunks and no set-level
-  value is not consented.
-* A set is a tax return when any ``category`` is ``Tax Returns`` or any
-  ``document_type`` is a tax-return type, on the set or on any chunk.
-* ``is_confidential`` is stored as given when it is a boolean; any other
-  value, including a missing one, is stored as ``true``.
+  value is exactly ``true``. Every chunk counts, and a chunk without the
+  field counts as false. A set-level value counts when present; when it is
+  absent the chunks decide. So a set with no chunks needs a set-level
+  ``true``, and a set with no chunks and no set-level value is not consented.
+* A set is a tax return when any ``category`` or ``document_type``, on the
+  set or on any chunk, names a tax return or tax election. Names are compared
+  without case, and spaces and hyphens count as underscores, so ``Tax
+  Returns``, ``tax-return`` and ``TAX_ELECTION`` all match. A value that is
+  present but not a string, or a set where neither field is given anywhere,
+  is also treated as a tax return, so it needs consent.
+* ``is_confidential`` is resolved for the whole document: it is stored as
+  ``false`` only when every value given (on the set and on every chunk) is
+  exactly ``false`` and each chunk has a value, its own or the set's. Any
+  other combination, including a missing value, stores ``true`` on every
+  point.
 * ``trust_score``, ``ocr_engine_provenance`` and ``hallucination_risk`` are
   copied as given. A null stays null ("not scored"); nothing is recomputed.
+* A ``sha256`` that is missing, null or blank counts as absent.
+
+#ASSUME: data integrity: the pipeline names tax documents with the category
+``Tax Returns`` or the document types ``tax_return`` and ``tax_election``,
+give or take case, spaces and hyphens. #VERIFY: compare
+``TAX_RETURN_CATEGORIES`` and ``TAX_RETURN_DOCUMENT_TYPES`` with the
+pipeline's classification vocabulary whenever that vocabulary changes.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
-TAX_RETURN_CATEGORY = "Tax Returns"
-TAX_RETURN_DOCUMENT_TYPES = frozenset({"tax_return", "tax_election"})
+TAX_RETURN_CATEGORIES = frozenset({"tax_returns", "tax_return"})
+TAX_RETURN_DOCUMENT_TYPES = frozenset(
+    {"tax_return", "tax_returns", "tax_election", "tax_elections"}
+)
 
 # Fields from the pipeline's chunk contract, kept on every point as given.
 CHUNK_CONTRACT_FIELDS = (
@@ -73,13 +92,13 @@ class Chunk:
     Attributes:
         index (int): Position of the chunk in the set.
         text (str): Chunk text to embed.
-        payload (dict[str, object]): Point payload without the embedding
-            fields, which the writer adds.
+        payload (Mapping[str, object]): Read-only point payload without the
+            ``text`` and embedding fields, which the indexer adds.
     """
 
     index: int
     text: str
-    payload: dict[str, object]
+    payload: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -91,8 +110,8 @@ class ChunkSet:
         sha256 (str | None): Document hash, or None when absent.
         consent_on_file (bool): True only when consent is exactly true
             everywhere it appears.
-        is_tax_return (bool): True when any category or document type marks
-            the set as a tax return.
+        is_tax_return (bool): True when the set is, or may be, a tax return.
+        is_confidential (bool): The document's resolved confidentiality.
         chunks (tuple[Chunk, ...]): Chunks with non-blank text, in order.
     """
 
@@ -100,6 +119,7 @@ class ChunkSet:
     sha256: str | None
     consent_on_file: bool
     is_tax_return: bool
+    is_confidential: bool
     chunks: tuple[Chunk, ...]
 
     @property
@@ -110,6 +130,16 @@ class ChunkSet:
             bool: False for a tax return without consent on file.
         """
         return self.consent_on_file or not self.is_tax_return
+
+
+@dataclass(frozen=True)
+class _DocumentValues:
+    """Document-level values copied onto every chunk payload."""
+
+    sha256: str | None
+    consent_on_file: bool
+    is_tax_return: bool
+    is_confidential: bool
 
 
 def _as_object(value: object, what: str) -> dict[str, object]:
@@ -123,11 +153,13 @@ def _resolve_sha256(document: JsonObject, chunks: list[JsonObject]) -> str | Non
     values: set[str] = set()
     for source in (document, *chunks):
         value = source.get("sha256")
-        if isinstance(value, str) and value.strip():
-            values.add(value.strip())
-        elif value is not None:
+        if value is None:
+            continue
+        if not isinstance(value, str):
             msg = "sha256 is not a string"
             raise ChunkSetError(msg)
+        if value.strip():
+            values.add(value.strip())
     if len(values) > 1:
         msg = "chunks disagree on sha256"
         raise ChunkSetError(msg)
@@ -135,9 +167,10 @@ def _resolve_sha256(document: JsonObject, chunks: list[JsonObject]) -> str | Non
 
 
 def _resolve_consent(document: JsonObject, chunks: list[JsonObject]) -> bool:
-    # #CRITICAL: security: consent fails closed; a missing value is false.
-    # #VERIFY: tests/unit/test_chunk_sets.py covers missing, null, string and
-    # mixed values.
+    # #CRITICAL: security: consent fails closed; a chunk without the field is
+    # false, and an empty set needs a set-level true. #VERIFY:
+    # tests/unit/test_chunk_sets.py covers missing, null, string and mixed
+    # values, and a missing set-level value.
     seen: list[object] = []
     set_value = document.get("consent_on_file", _MISSING)
     if set_value is not _MISSING:
@@ -146,31 +179,47 @@ def _resolve_consent(document: JsonObject, chunks: list[JsonObject]) -> bool:
     return bool(seen) and all(value is True for value in seen)
 
 
+def _normalized(value: str) -> str:
+    return value.strip().casefold().replace("-", "_").replace(" ", "_")
+
+
 def _is_tax_return(document: JsonObject, chunks: list[JsonObject]) -> bool:
+    # #CRITICAL: security: an unrecognized shape needs consent rather than
+    # bypassing it. #VERIFY: tests/unit/test_chunk_sets.py covers variants,
+    # non-string values and a set with no classification at all.
+    classified = False
     for source in (document, *chunks):
-        category = source.get("category")
-        if (
-            isinstance(category, str)
-            and category.strip().casefold() == TAX_RETURN_CATEGORY.casefold()
+        for name, names in (
+            ("category", TAX_RETURN_CATEGORIES),
+            ("document_type", TAX_RETURN_DOCUMENT_TYPES),
         ):
-            return True
-        document_type = source.get("document_type")
-        if (
-            isinstance(document_type, str)
-            and document_type.strip().casefold() in TAX_RETURN_DOCUMENT_TYPES
-        ):
-            return True
-    return False
+            value = source.get(name)
+            if value is None:
+                continue
+            if not isinstance(value, str) or _normalized(value) in names:
+                return True
+            classified = classified or bool(value.strip())
+    return not classified
+
+
+def _resolve_confidential(document: JsonObject, chunks: list[JsonObject]) -> bool:
+    # #CRITICAL: security: anything but an all-false answer is confidential,
+    # so viewers never see a document one value marks private. #VERIFY:
+    # tests/unit/test_chunk_sets.py::test_is_confidential_fails_closed and
+    # the mixed-set tests.
+    set_value = document.get("is_confidential", _MISSING)
+    values = [] if set_value is _MISSING else [set_value]
+    values.extend(chunk.get("is_confidential", set_value) for chunk in chunks)
+    return not values or not all(value is False for value in values)
 
 
 def _chunk_payload(
     document_id: str,
-    document: dict[str, object],
-    chunk: dict[str, object],
+    document: JsonObject,
+    chunk: JsonObject,
     index: int,
-    resolved: tuple[str | None, bool],
-) -> dict[str, object]:
-    sha256, consent = resolved
+    resolved: _DocumentValues,
+) -> Mapping[str, object]:
     payload: dict[str, object] = {
         "document_id": document_id,
         "chunk_index": index,
@@ -179,16 +228,11 @@ def _chunk_payload(
         payload[name] = chunk.get(name, document.get(name))
     for name in DOCUMENT_FIELDS:
         payload[name] = chunk.get(name, document.get(name))
-    confidential = chunk.get("is_confidential", document.get("is_confidential"))
-    # #CRITICAL: security: anything but a real boolean is stored as
-    # confidential, so viewers never see it. #VERIFY:
-    # tests/unit/test_chunk_sets.py::test_is_confidential_fails_closed.
-    payload["is_confidential"] = (
-        confidential if isinstance(confidential, bool) else True
-    )
-    payload["sha256"] = sha256
-    payload["consent_on_file"] = consent
-    return payload
+    payload["is_confidential"] = resolved.is_confidential
+    payload["is_tax_return"] = resolved.is_tax_return
+    payload["sha256"] = resolved.sha256
+    payload["consent_on_file"] = resolved.consent_on_file
+    return MappingProxyType(payload)
 
 
 def parse_chunk_set(raw: object, document_id: str) -> ChunkSet:
@@ -203,7 +247,8 @@ def parse_chunk_set(raw: object, document_id: str) -> ChunkSet:
 
     Raises:
         ChunkSetError: If the shape is wrong, an ID does not match the file
-            name, or the chunks disagree on the document hash.
+            name, a ``sha256`` is not a string, or the chunks disagree on the
+            document hash.
     """
     document = _as_object(raw, "the chunk set")
     set_id = document.get("document_id")
@@ -227,24 +272,27 @@ def parse_chunk_set(raw: object, document_id: str) -> ChunkSet:
             msg = f"chunk {position} text is not a string"
             raise ChunkSetError(msg)
 
-    sha256 = _resolve_sha256(document, chunks)
-    consent = _resolve_consent(document, chunks)
+    resolved = _DocumentValues(
+        sha256=_resolve_sha256(document, chunks),
+        consent_on_file=_resolve_consent(document, chunks),
+        is_tax_return=_is_tax_return(document, chunks),
+        is_confidential=_resolve_confidential(document, chunks),
+    )
     parsed = tuple(
         Chunk(
             index=position,
             text=cast("str", chunk.get("text", "")),
-            payload=_chunk_payload(
-                document_id, document, chunk, position, (sha256, consent)
-            ),
+            payload=_chunk_payload(document_id, document, chunk, position, resolved),
         )
         for position, chunk in enumerate(chunks)
         if cast("str", chunk.get("text", "")).strip()
     )
     return ChunkSet(
         document_id=document_id,
-        sha256=sha256,
-        consent_on_file=consent,
-        is_tax_return=_is_tax_return(document, chunks),
+        sha256=resolved.sha256,
+        consent_on_file=resolved.consent_on_file,
+        is_tax_return=resolved.is_tax_return,
+        is_confidential=resolved.is_confidential,
         chunks=parsed,
     )
 
@@ -264,7 +312,9 @@ def read_chunk_set(path: Path) -> ChunkSet:
     """
     try:
         raw: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
+        # ValueError covers UnicodeDecodeError and JSONDecodeError;
+        # RecursionError is raised for very deeply nested JSON.
         msg = f"cannot read the file: {type(exc).__name__}"
         raise ChunkSetError(msg) from exc
     return parse_chunk_set(raw, path.stem)

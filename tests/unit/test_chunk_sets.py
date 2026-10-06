@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -114,6 +114,45 @@ def test_missing_is_confidential_is_stored_as_confidential() -> None:
     assert chunk.payload["is_confidential"] is True
 
 
+def test_chunk_false_does_not_override_a_set_level_true() -> None:
+    """A chunk-level false never overrides a set-level true."""
+    data = chunk_set(is_confidential=False)
+    data["is_confidential"] = True
+    parsed = parse_chunk_set(data, DOC_A)
+    assert parsed.is_confidential is True
+    assert all(c.payload["is_confidential"] is True for c in parsed.chunks)
+
+
+def test_one_confidential_chunk_makes_the_document_confidential() -> None:
+    """One chunk marked confidential makes every point confidential."""
+    data = chunk_set(is_confidential=False)
+    data["chunks"][0]["is_confidential"] = True
+    parsed = parse_chunk_set(data, DOC_A)
+    assert [c.payload["is_confidential"] for c in parsed.chunks] == [True, True]
+
+
+def test_set_level_false_fills_in_for_chunks_without_a_value() -> None:
+    """A set-level false covers chunks that carry no value of their own."""
+    data = chunk_set(is_confidential=...)
+    data["is_confidential"] = False
+    assert parse_chunk_set(data, DOC_A).is_confidential is False
+
+
+def test_one_chunk_without_any_value_makes_the_document_confidential() -> None:
+    """A chunk with no value and no set-level value fails closed."""
+    data = chunk_set(is_confidential=False)
+    del data["chunks"][1]["is_confidential"]
+    parsed = parse_chunk_set(data, DOC_A)
+    assert all(c.payload["is_confidential"] is True for c in parsed.chunks)
+
+
+def test_payload_is_read_only() -> None:
+    """The parsed payload cannot be changed in place."""
+    chunk = parse_chunk_set(chunk_set(), DOC_A).chunks[0]
+    with pytest.raises(TypeError):
+        cast("dict[str, object]", chunk.payload)["is_confidential"] = False
+
+
 # --------------------------------------------------------------------------- #
 # Consent and tax returns
 # --------------------------------------------------------------------------- #
@@ -151,6 +190,13 @@ def test_set_level_consent_must_agree_with_chunks() -> None:
     assert parse_chunk_set(data, DOC_A).consent_on_file is False
 
 
+def test_missing_set_level_consent_lets_the_chunks_decide() -> None:
+    """With no set-level value, every chunk true grants consent."""
+    data = chunk_set(consent=True)
+    assert "consent_on_file" not in data
+    assert parse_chunk_set(data, DOC_A).consent_on_file is True
+
+
 def test_empty_set_without_set_level_consent_is_not_consented() -> None:
     """Empty set without set level consent is not consented."""
     assert parse_chunk_set(chunk_set(texts=()), DOC_A).consent_on_file is False
@@ -169,7 +215,13 @@ def test_empty_set_with_set_level_consent_is_consented() -> None:
         ("  tax returns ", "other", True),
         ("Other", "tax_return", True),
         ("Other", "tax_election", True),
+        ("Tax Return", "other", True),
+        ("tax-returns", "other", True),
+        ("Other", "Tax Return", True),
+        ("Other", "TAX-ELECTION", True),
+        ("Other", "tax_elections", True),
         ("LLCs", "operating_agreement", False),
+        ("Taxes", "tax_summary", False),
     ],
 )
 def test_tax_returns_are_recognized(
@@ -189,6 +241,37 @@ def test_set_level_tax_category_counts_even_with_no_chunks() -> None:
     parsed = parse_chunk_set(data, DOC_A)
     assert parsed.is_tax_return is True
     assert parsed.may_be_indexed is False
+
+
+@pytest.mark.parametrize("value", [5, ["Tax Returns"], {"name": "x"}, True])
+def test_non_string_classification_needs_consent(value: object) -> None:
+    """A category or type that is not a string is treated as a tax return."""
+    assert parse_chunk_set(chunk_set(category=value), DOC_A).is_tax_return is True
+    data = chunk_set(document_type=value)
+    assert parse_chunk_set(data, DOC_A).is_tax_return is True
+
+
+def test_missing_classification_needs_consent() -> None:
+    """A set with no category or type anywhere is treated as a tax return."""
+    data = chunk_set(category=..., document_type=...)
+    parsed = parse_chunk_set(data, DOC_A)
+    assert parsed.is_tax_return is True
+    assert parsed.may_be_indexed is False
+
+
+def test_blank_classification_needs_consent() -> None:
+    """Blank strings do not count as a classification."""
+    data = chunk_set(category="  ", document_type="")
+    assert parse_chunk_set(data, DOC_A).is_tax_return is True
+
+
+def test_tax_flag_is_stored_on_every_point() -> None:
+    """The resolved tax-return flag is stored on every point."""
+    data = chunk_set(category="Tax Returns", consent=True)
+    parsed = parse_chunk_set(data, DOC_A)
+    assert all(c.payload["is_tax_return"] is True for c in parsed.chunks)
+    other = parse_chunk_set(chunk_set(), DOC_A)
+    assert all(c.payload["is_tax_return"] is False for c in other.chunks)
 
 
 def test_consented_tax_return_may_be_indexed() -> None:
@@ -228,6 +311,27 @@ def test_non_string_sha256_is_an_error() -> None:
     """Non string sha256 is an error."""
     with pytest.raises(ChunkSetError, match="sha256"):
         parse_chunk_set(chunk_set() | {"sha256": 12}, DOC_A)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_sha256_counts_as_absent(blank: str) -> None:
+    """A blank sha256 counts as absent rather than as a type error."""
+    assert parse_chunk_set(chunk_set(sha256=blank), DOC_A).sha256 is None
+
+
+def test_set_level_sha256_is_used_when_chunks_have_none() -> None:
+    """A set-level sha256 is used when the chunks carry none."""
+    data = chunk_set(sha256=...)
+    data["sha256"] = "e" * 64
+    assert parse_chunk_set(data, DOC_A).sha256 == "e" * 64
+
+
+def test_set_level_sha256_must_agree_with_chunks() -> None:
+    """A set-level sha256 that differs from the chunks' is an error."""
+    data = chunk_set()
+    data["sha256"] = "e" * 64
+    with pytest.raises(ChunkSetError, match="disagree"):
+        parse_chunk_set(data, DOC_A)
 
 
 def test_missing_sha256_is_none() -> None:
@@ -278,6 +382,14 @@ def test_unreadable_json_is_an_error(tmp_path: Path) -> None:
     path = tmp_path / f"{DOC_A}.json"
     path.write_text("{not json", encoding="utf-8")
     with pytest.raises(ChunkSetError, match="JSONDecodeError"):
+        read_chunk_set(path)
+
+
+def test_deeply_nested_json_is_an_error(tmp_path: Path) -> None:
+    """JSON nested too deeply to decode is an error, not a crash."""
+    path = tmp_path / f"{DOC_A}.json"
+    path.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+    with pytest.raises(ChunkSetError, match="RecursionError"):
         read_chunk_set(path)
 
 
