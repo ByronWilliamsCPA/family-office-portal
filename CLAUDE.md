@@ -250,8 +250,10 @@ Never implement password-based auth, OAuth flows, or session cookies.
   (ADR-006).
 - Every retrieval setting name lives in `app/retrieval/settings.py`. All are
   optional: `EMBED_BASE_URL`, `EMBED_API_KEY`, `EMBEDDING_MODEL`,
-  `EMBED_TIMEOUT_SECONDS` (60), `QDRANT_URL`, `QDRANT_API_KEY`, `CHUNKS_DIR`.
-  A URL without its key, or a value that cannot be parsed, is an error naming
+  `EMBED_TIMEOUT_SECONDS` (60), `QDRANT_URL`, `QDRANT_API_KEY`, `CHUNKS_DIR`,
+  `TAX_LAW_PATH`.
+  A URL without its key, a URL that is not http or https with a host and a
+  valid port, or a value that cannot be parsed, is an error naming
   the variable; unset means off and "not connected". These are not startup
   checks: pages use `document_search_connected()`, which never raises, and the
   indexer exits 2. Keys stay `SecretStr` until the header or client is built.

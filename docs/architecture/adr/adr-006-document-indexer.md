@@ -5,6 +5,7 @@
 > **Amends**: [ADR-003](./adr-003-backend-data-aggregation.md) (one carve-out,
 > see "Relation to earlier decisions") and the out-of-scope list in the
 > [project vision](../../planning/project-vision.md)
+> **Amended**: 2026-10-06 (tax-law collection; see "Amendment 2026-10-06" below)
 
 ## TL;DR
 
@@ -14,6 +15,9 @@ on a schedule; the web process never indexes. Settings for the embedding
 service, Qdrant and the chunk directory are optional, and with them unset the
 feature is off and pages say "not connected". Tax returns are indexed only
 when consent is on file, and the rule fails closed.
+
+A second command indexes the tax-law knowledge base into its own collection,
+`tax-law` (see "Amendment 2026-10-06" below).
 
 ## Context
 
@@ -181,38 +185,12 @@ on the connection objects, and never logged.
 These settings are deliberately not checked at startup, unlike the backend
 pairs in ADR-003's amendment (where a URL without its key exits 1). The web
 process does not need them to serve any page, so a bad value (a URL without
-its key, or a timeout that cannot be parsed) makes
+its key, a URL that is not http or https with a host and a valid port, or a
+timeout that cannot be parsed) makes
 `connected.document_search` false and logs one warning naming the variable,
 never the value. The indexer command reports the same problem and exits 2.
 Whether to fail the web process at startup instead is left for when search
 lands and the setting becomes part of serving pages.
-
-### Tax-law collection
-
-`python -m app.retrieval.tax_law` indexes the tax-law knowledge base, one
-JSON file at `TAX_LAW_PATH`, into its own collection, `tax-law`, created
-through the same `ensure_collection` (so it also has the `sparse` slot). The
-file's shape is a contract with the repository that maintains it:
-`{"knowledgeBase": [{"id", "topic", "subtopics": [{"id", "title",
-"content"}]}]}`.
-
-- One point per subtopic with non-blank content. The payload is the subtopic
-  `id` and `title` (what chat cites), `topic`, `topic_id`, `text`,
-  `embedding_model` and `embedded_at`. The embedded text is the title and
-  content, with no query prefix. Point IDs derive from the subtopic `id`.
-- The whole file is checked first. A subtopic `id` used twice anywhere
-  rejects the file, and so does a file with nothing to index, so a bad or
-  empty file never empties the collection.
-- Every subtopic is embedded before any write. New points are upserted, then
-  points whose subtopic left the file are deleted.
-- It is a separate command, not part of the document indexer, because the
-  file changes rarely and its settings differ: with `TAX_LAW_PATH`, the
-  embedding URL or the Qdrant URL unset it exits 2 and logs one line. It
-  exits 1 when the file cannot be used or embedding fails, leaving the
-  collection unchanged.
-
-The knowledge base is licensed material: it lives outside this repository
-and tests use a small synthetic file.
 
 ## Options Considered
 
@@ -238,6 +216,8 @@ and tests use a small synthetic file.
 - **Logs.** Logs carry document IDs, counts, status codes and exception type
   names only, never chunk text, embedding input, response bodies, setting
   values or tracebacks of request failures.
+- **Tax-law collection.** The same rules apply to `tax-law`; its content is
+  licensed text rather than family data. See the amendment below.
 - **Fail closed.** Missing consent, classification or confidentiality values
   resolve to the stricter reading.
 - **Dependencies.** `qdrant-client` (Apache-2.0) brings in `grpcio`, `numpy`,
@@ -277,3 +257,70 @@ latency target.
 - [ADR-005: Authentik Forward Auth](./adr-005-authentication-authentik-forward-auth.md)
 - [Project Vision](../../planning/project-vision.md)
 - [Technical Implementation Spec](../../planning/tech-spec.md)
+
+## Amendment 2026-10-06: tax-law collection
+
+> **Status**: Accepted
+> **Amends**: the original text above, which is left intact for the record.
+> It adds a second command and a second collection; nothing above changes.
+
+### Decision
+
+`python -m app.retrieval.tax_law` indexes the tax-law knowledge base, one
+JSON file at `TAX_LAW_PATH`, into its own collection, `tax-law`, created
+through the same `ensure_collection` (so it also has the `sparse` slot). The
+file's shape is a contract with the repository that maintains it:
+`{"knowledgeBase": [{"id", "topic", "subtopics": [{"id", "title",
+"content"}]}]}`.
+
+- One point per subtopic with non-blank content. The payload is the subtopic
+  `id` and `title` (what chat cites), `topic`, `topic_id`, `text`,
+  `embedding_model` and `embedded_at`. The embedded text is the title and
+  content, with no query prefix. Point IDs derive from the subtopic `id`.
+- The whole file is checked first. A subtopic `id` used twice anywhere
+  rejects the file, and so does a file with nothing to index, so a bad or
+  empty file never empties the collection.
+- Every subtopic is embedded before any write. New points are upserted, then
+  points whose subtopic left the file are deleted.
+- A file that would delete at least five stored points and more than half of
+  them is refused before anything is written, because it looks like a
+  truncated or wrong file. When the knowledge base really did shrink that
+  much, delete the `tax-law` collection and run again.
+- It is a separate command, not part of the document indexer, because the
+  file changes rarely and its settings differ.
+
+### Exit status
+
+| Status | Meaning |
+| --- | --- |
+| 0 | The collection matches the file |
+| 1 | The file cannot be used, would remove most points, or embedding failed; the collection is unchanged |
+| 2 | `TAX_LAW_PATH`, the embedding URL or the Qdrant URL is unset (one warning), a setting is misconfigured, the embedding service refused the key (401 or 403), or Qdrant stopped answering |
+
+Status 2 means the same as for the document indexer, so an alert keyed on it
+also catches a revoked embedding key. Logs and errors carry subtopic ids,
+counts, status codes and exception type names, never content.
+
+### Security of the amendment
+
+- The knowledge base is licensed material: it lives outside this repository
+  and tests use a small synthetic file.
+- Qdrant now holds that licensed text as well as family documents, so the
+  controls in the Security section above (private network, key required,
+  disk encryption, backups) cover it.
+- A malformed `QDRANT_URL` or `EMBED_BASE_URL` (wrong scheme, no host, bad
+  port) is a configuration error naming the variable, for both commands. The
+  client libraries would otherwise raise with a message that can echo the URL.
+
+### Consequences of the amendment
+
+- A failed run can leave new and old points mixed (the upserts and the
+  delete are separate calls); the next run rewrites every point and deletes
+  the leftovers.
+- Re-running re-embeds every subtopic. The file changes rarely, so this is
+  accepted.
+
+Open assumptions: #ASSUME runs never overlap and nothing else writes the
+`tax-law` collection, because the stale sweep deletes every stored point whose
+subtopic is not in the file. #VERIFY the schedule starts one run at a time
+and no other job or person writes to the collection.

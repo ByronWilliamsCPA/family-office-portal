@@ -106,6 +106,9 @@ Server-rendered monolith with a background refresh scheduler. See [ADR-001](../a
                              ▼
                      embedding service
                      (/v1/embeddings)
+                             ▲
+  knowledge-base file ──► python -m app.retrieval.tax_law ──► Qdrant
+  (read-only mount)                                         (tax-law)
 ```
 
 ### Component Responsibilities
@@ -362,7 +365,8 @@ requires Admin. The principal (username, email, name, role) is stored on
   summaries; disk encryption at host level is the operator's responsibility
 - **Document index**: the Qdrant `family-docs` collection holds the full chunk text of
   every indexed document, with confidentiality, entity and tax-return flags on each
-  point (ADR-006). Treat Qdrant access as access to the documents themselves: a private
+  point, and the `tax-law` collection holds the licensed knowledge-base text (ADR-006).
+  Treat Qdrant access as access to the documents themselves: a private
   network, its API key required, host-level disk encryption and backups under the same
   controls as the document store. The embedding service sees chunk text in transit and
   must keep no copy. Embedding and Qdrant keys are deployment secrets, never logged
