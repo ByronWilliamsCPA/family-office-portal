@@ -1,4 +1,7 @@
-{% if query %}
+{% from "partials/not_connected.html" import not_connected %}
+{% if not connected.llc_manager %}
+  {{ not_connected("Documents") }}
+{% elif query %}
   {% if documents %}
   <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200">
     {% for doc in documents %}

@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import gzip
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import httpx
 import pytest
 from structlog.testing import capture_logs
@@ -45,6 +48,7 @@ class _Upstream:
         self, respond: Callable[[httpx.Request], httpx.Response] | None = None
     ) -> None:
         self.requests: list[httpx.Request] = []
+        self.clients: list[httpx.AsyncClient] = []
         self._respond = respond or (
             lambda _request: httpx.Response(
                 200, content=PDF_BYTES, headers={"Content-Type": "application/pdf"}
@@ -75,6 +79,25 @@ class _ChunkStream(httpx.AsyncByteStream):
         self.closed = True
 
 
+class _SlowStream(httpx.AsyncByteStream):
+    """An upstream body that trickles small chunks with a pause before each."""
+
+    def __init__(self, chunks: int, *, pause: float) -> None:
+        self._chunks = chunks
+        self._pause = pause
+        self.sent = 0
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for _ in range(self._chunks):
+            await asyncio.sleep(self._pause)
+            self.sent += 1
+            yield b"x"
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 @pytest.fixture
 def upstream(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _Upstream]:
     """Install a fake upstream behind the proxy's HTTP client.
@@ -93,9 +116,11 @@ def upstream(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _Upstream]:
         transport = httpx.MockTransport(fake.handler)
 
         def _client(timeout: httpx.Timeout) -> httpx.AsyncClient:
-            return httpx.AsyncClient(
+            made = httpx.AsyncClient(
                 transport=transport, timeout=timeout, follow_redirects=False
             )
+            fake.clients.append(made)
+            return made
 
         monkeypatch.setattr(document_files, "new_client", _client)
         return fake
@@ -222,6 +247,9 @@ async def test_preview_streams_pdf_inline_with_safe_headers(
     )
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["content-security-policy"] == "frame-ancestors 'self'"
+    assert response.headers["x-frame-options"] == "SAMEORIGIN"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
     assert response.headers["content-length"] == str(len(PDF_BYTES))
 
     (sent,) = fake.requests
@@ -522,18 +550,70 @@ async def test_transfer_past_the_deadline_aborts_the_stream(
     seeded_upstream: Callable[..., _Upstream],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An upstream that trickles bytes cannot hold the connection forever."""
-    monkeypatch.setattr(document_files, "MAX_TRANSFER_SECONDS", -1.0)
-    stream = _ChunkStream([b"a" * 10])
+    """An upstream that trickles one byte at a time is cut off at the limit.
+
+    Each byte arrives well inside the read timeout, so only the whole-response
+    limit can stop it. Without that limit this transfer would take 4 s.
+    """
+    monkeypatch.setattr(document_files, "MAX_TRANSFER_SECONDS", 0.3)
+    stream = _SlowStream(80, pause=0.05)
     seeded_upstream(
         lambda _r: httpx.Response(
             200, stream=stream, headers={"Content-Type": "application/pdf"}
         )
     )
-    async with client as ac:
-        with pytest.raises(document_files.DocumentStreamAbortedError):
-            await ac.get("/documents/doc-1/preview", headers=viewer_headers)
+    started = time.monotonic()
+    with capture_logs() as logs:
+        async with client as ac:
+            with pytest.raises(document_files.DocumentStreamAbortedError):
+                await ac.get("/documents/doc-1/preview", headers=viewer_headers)
+    assert time.monotonic() - started < 2.0
+    assert 0 < stream.sent < 80
     assert stream.closed
+    assert any(e["event"] == "document_stream_too_slow" for e in logs)
+
+
+async def test_stalled_browser_is_cut_off_at_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A browser that stops reading cannot hold the upstream open forever.
+
+    The server's ``send`` blocks on flow control; the limit still fires and
+    the upstream file is closed.
+    """
+    monkeypatch.setattr(document_files, "MAX_TRANSFER_SECONDS", 0.2)
+    stream = _ChunkStream([b"a" * 10, b"b" * 10])
+    upstream_client, request = _upstream_file(stream)
+    response = await upstream_client.send(request, stream=True)
+    upstream = document_files.UpstreamFile(
+        client=upstream_client,
+        response=response,
+        content_type="application/pdf",
+        content_length=None,
+    )
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "method": "GET",
+        "path": "/documents/doc-1/preview",
+        "headers": [],
+    }
+
+    async def receive() -> Message:
+        await asyncio.sleep(3600)
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.body":
+            await asyncio.sleep(3600)
+
+    file_response = document_files.UpstreamFileResponse(upstream, headers={})
+    started = time.monotonic()
+    with pytest.raises(document_files.DocumentStreamAbortedError):
+        await file_response(scope, receive, send)
+    assert time.monotonic() - started < 2.0
+    assert stream.closed
+    assert upstream_client.is_closed
 
 
 @pytest.mark.parametrize("status_code", [200, 404, 500])
@@ -543,9 +623,13 @@ async def test_upstream_is_closed_after_success_and_failure(
     seeded_upstream: Callable[..., _Upstream],
     status_code: int,
 ) -> None:
-    """The upstream response is closed whether the file was sent or refused."""
+    """The upstream response and its client close whether sent or refused.
+
+    httpx closes an exhausted response stream by itself, so the client is
+    what proves the proxy's own close ran on the success path.
+    """
     stream = _ChunkStream([b"a" * 10])
-    seeded_upstream(
+    fake = seeded_upstream(
         lambda _r: httpx.Response(
             status_code, stream=stream, headers={"Content-Type": "application/pdf"}
         )
@@ -553,6 +637,8 @@ async def test_upstream_is_closed_after_success_and_failure(
     async with client as ac:
         await ac.get("/documents/doc-1/download", headers=viewer_headers)
     assert stream.closed
+    (upstream_client,) = fake.clients
+    assert upstream_client.is_closed
 
 
 async def test_api_key_never_reaches_logs_or_responses(
@@ -666,6 +752,299 @@ async def test_cancelled_request_closes_the_client(
     assert created[0].is_closed
 
 
+@pytest.mark.parametrize(
+    "case",
+    [(100, 200), (101, 502)],
+    ids=["at-cap", "over-cap"],
+)
+async def test_declared_length_cap_boundary(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    seeded_upstream: Callable[..., _Upstream],
+    monkeypatch: pytest.MonkeyPatch,
+    case: tuple[int, int],
+) -> None:
+    """A declared size equal to the cap is served; one byte more is refused."""
+    declared, status_code = case
+    monkeypatch.setattr(document_files, "MAX_DOCUMENT_BYTES", 100)
+    seeded_upstream(
+        lambda _r: httpx.Response(
+            200, content=b"x" * declared, headers={"Content-Type": "application/pdf"}
+        )
+    )
+    async with client as ac:
+        response = await ac.get("/documents/doc-1/download", headers=viewer_headers)
+    assert response.status_code == status_code
+
+
+async def test_streamed_size_at_the_cap_is_served(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    seeded_upstream: Callable[..., _Upstream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a declared length, exactly the cap streams in full."""
+    monkeypatch.setattr(document_files, "MAX_DOCUMENT_BYTES", 100)
+    stream = _ChunkStream([b"x" * 50, b"x" * 50])
+    seeded_upstream(
+        lambda _r: httpx.Response(
+            200, stream=stream, headers={"Content-Type": "application/pdf"}
+        )
+    )
+    async with client as ac:
+        response = await ac.get("/documents/doc-1/download", headers=viewer_headers)
+    assert response.status_code == 200
+    assert response.content == b"x" * 100
+
+
+async def test_streamed_size_one_over_the_cap_aborts(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    seeded_upstream: Callable[..., _Upstream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a declared length, one byte over the cap aborts the stream."""
+    monkeypatch.setattr(document_files, "MAX_DOCUMENT_BYTES", 100)
+    stream = _ChunkStream([b"x" * 50, b"x" * 51])
+    seeded_upstream(
+        lambda _r: httpx.Response(
+            200, stream=stream, headers={"Content-Type": "application/pdf"}
+        )
+    )
+    async with client as ac:
+        with pytest.raises(document_files.DocumentStreamAbortedError):
+            await ac.get("/documents/doc-1/download", headers=viewer_headers)
+    assert stream.closed
+
+
+@pytest.mark.parametrize(
+    ("status_code", "reason"),
+    [
+        (401, "upstream_auth_rejected"),
+        (403, "upstream_auth_rejected"),
+        (404, "upstream_not_found"),
+        (500, "upstream_error"),
+    ],
+)
+async def test_upstream_refusals_log_their_reason(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    seeded_upstream: Callable[..., _Upstream],
+    status_code: int,
+    reason: str,
+) -> None:
+    """Each refusal logs its reason category, which is what operators search.
+
+    ``upstream_auth_rejected`` is the signal to look for after a key rotation.
+    """
+    seeded_upstream(lambda _r: httpx.Response(status_code, text="detail"))
+    with capture_logs() as logs:
+        async with client as ac:
+            await ac.get("/documents/doc-1/preview", headers=viewer_headers)
+    failures = [e for e in logs if e["event"] == "document_file_failed"]
+    assert failures == [
+        {
+            "event": "document_file_failed",
+            "reason": reason,
+            "upstream_status": status_code,
+            "log_level": "warning",
+        }
+    ]
+
+
+async def test_failure_building_response_headers_closes_upstream(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    seeded_upstream: Callable[..., _Upstream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the headers cannot be built, the open upstream file is still closed."""
+    stream = _ChunkStream([b"a" * 10])
+    fake = seeded_upstream(
+        lambda _r: httpx.Response(
+            200, stream=stream, headers={"Content-Type": "application/pdf"}
+        )
+    )
+
+    def _broken(*_args: object, **_kwargs: object) -> dict[str, str]:
+        msg = "header bug"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(document_files, "response_headers", _broken)
+    async with client as ac:
+        with pytest.raises(RuntimeError, match="header bug"):
+            await ac.get("/documents/doc-1/preview", headers=viewer_headers)
+    assert stream.closed
+    assert fake.clients[0].is_closed
+
+
+@pytest.mark.parametrize("document_id", [".", ".."])
+async def test_dot_segment_id_is_404_with_no_upstream_call(
+    upstream: Callable[..., _Upstream],
+    portal_env: dict[str, str],
+    document_id: str,
+) -> None:
+    """An ID httpx would drop as a dot segment never reaches upstream."""
+    del portal_env
+    fake = upstream()
+    connection = load_settings().backend_connection("llc_manager")
+    assert connection is not None
+    with pytest.raises(document_files.FileProxyError) as caught:
+        await document_files.open_upstream(connection, document_id, timeout_seconds=1.0)
+    assert caught.value.status_code == 404
+    assert fake.requests == []
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        ("BACKEND_LLC_MANAGER_URL", "http://[::1"),
+        ("BACKEND_LLC_MANAGER_API_KEY", "k\u00e9y-not-ascii"),
+    ],
+    ids=["bad-url", "non-ascii-key"],
+)
+async def test_unusable_backend_settings_are_503_and_close_the_client(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    seeded_upstream: Callable[..., _Upstream],
+    monkeypatch: pytest.MonkeyPatch,
+    setting: tuple[str, str],
+) -> None:
+    """A URL or key that cannot form a request is a 503, not an unmapped 500."""
+    env, value = setting
+    fake = seeded_upstream()
+    async with client as ac:
+        monkeypatch.setenv(env, value)
+        with capture_logs() as logs:
+            response = await ac.get("/documents/doc-1/preview", headers=viewer_headers)
+    assert response.status_code == 503
+    assert fake.requests == []
+    assert all(c.is_closed for c in fake.clients)
+    assert value not in repr(logs)
+    assert any(e.get("reason") == "backend_misconfigured" for e in logs)
+
+
+class _FailingCloseStream(_ChunkStream):
+    """An upstream body whose close fails, as a broken connection can."""
+
+    async def aclose(self) -> None:
+        self.closed = True
+        msg = "close failed"
+        raise httpx.ReadError(msg)
+
+
+async def test_a_failing_close_is_logged_not_raised() -> None:
+    """A close error cannot replace the outcome the caller is reporting."""
+    stream = _FailingCloseStream([b"a"])
+    upstream_client, request = _upstream_file(stream)
+    response = await upstream_client.send(request, stream=True)
+    upstream = document_files.UpstreamFile(
+        client=upstream_client,
+        response=response,
+        content_type="application/pdf",
+        content_length=None,
+    )
+    with capture_logs() as logs:
+        await upstream.aclose()
+    assert stream.closed
+    assert upstream_client.is_closed
+    assert {
+        "event": "document_upstream_close_failed",
+        "error": "ReadError",
+        "log_level": "warning",
+    } in logs
+
+
+class _SlowCloseStream(_ChunkStream):
+    """An upstream body whose close takes a moment, so it can be cancelled."""
+
+    async def aclose(self) -> None:
+        await asyncio.sleep(0.05)
+        self.closed = True
+
+
+async def _open_slow_close() -> tuple[
+    document_files.UpstreamFile, _SlowCloseStream, httpx.AsyncClient
+]:
+    stream = _SlowCloseStream([b"a"])
+    upstream_client, request = _upstream_file(stream)
+    response = await upstream_client.send(request, stream=True)
+    upstream = document_files.UpstreamFile(
+        client=upstream_client,
+        response=response,
+        content_type="application/pdf",
+        content_length=None,
+    )
+    return upstream, stream, upstream_client
+
+
+async def test_scope_cancelled_close_still_closes_everything() -> None:
+    """The time limit or a disconnect cancelling mid-close cannot leak upstream.
+
+    Both reach ``aclose`` as cancel-scope cancellation; the shielded scope
+    lets the close finish. Without the shield the slow response close would
+    be interrupted and the client never reached.
+    """
+    upstream, stream, upstream_client = await _open_slow_close()
+    async with anyio.create_task_group() as group:
+        group.start_soon(upstream.aclose)
+        await asyncio.sleep(0.01)
+        group.cancel_scope.cancel()
+    assert stream.closed
+    assert upstream_client.is_closed
+
+
+async def test_task_cancelled_close_still_closes_the_client() -> None:
+    """A direct task.cancel() mid-close still closes the client, then re-raises."""
+    upstream, _stream, upstream_client = await _open_slow_close()
+    task = asyncio.ensure_future(upstream.aclose())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert upstream_client.is_closed
+
+
+def test_file_proxy_error_can_be_copied() -> None:
+    """The error keeps its status and reason through copy, and prints the reason."""
+    error = document_files.FileProxyError(502, "upstream_error")
+    copied = copy.copy(error)
+    assert copied.status_code == 502
+    assert copied.reason == "upstream_error"
+    assert str(copied) == "upstream_error"
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Content-Length": "12"}, 12),
+        ({"Content-Length": "12", "Content-Encoding": "identity"}, 12),
+        ({"Content-Length": "12", "Content-Encoding": " IDENTITY "}, 12),
+        ({"Content-Length": "12", "Content-Encoding": "br"}, None),
+        ({"Content-Length": ""}, None),
+        ({"Content-Length": "1\u0662"}, None),
+        ({"Content-Length": "+12"}, None),
+        ({"Content-Length": "9" * 30}, int("9" * 30)),
+        ({}, None),
+    ],
+    ids=[
+        "plain",
+        "identity",
+        "identity-padded",
+        "brotli",
+        "empty",
+        "non-ascii-digit",
+        "signed",
+        "very-large",
+        "missing",
+    ],
+)
+def test_declared_length(headers: dict[str, str], expected: int | None) -> None:
+    """Only a plain ASCII whole number for an uncompressed body is trusted."""
+    raw = httpx.Headers([(k.encode(), v.encode("utf-8")) for k, v in headers.items()])
+    assert document_files._declared_length(raw) == expected  # noqa: SLF001
+
+
 # --------------------------------------------------------------------------- #
 # Backend not connected or misconfigured
 # --------------------------------------------------------------------------- #
@@ -739,6 +1118,16 @@ def test_allowed_content_type(raw: str | None, expected: str) -> None:
     assert document_files.allowed_content_type(raw) == expected
 
 
+def test_inline_types_are_all_allowlisted() -> None:
+    """Every inline type is also allowlisted, so no new type can go inline alone."""
+    allowed = {
+        document_files.allowed_content_type(t)
+        for t in document_files.INLINE_CONTENT_TYPES
+    }
+    assert allowed == set(document_files.INLINE_CONTENT_TYPES)
+    assert "image/svg+xml" not in document_files.INLINE_CONTENT_TYPES
+
+
 @pytest.mark.parametrize(
     ("content_type", "requested", "expected"),
     [
@@ -768,6 +1157,9 @@ def test_effective_disposition(
         ("Operating Agreement", "application/pdf", "Operating Agreement.pdf"),
         ("Scan.PDF", "application/pdf", "Scan.PDF"),
         ("Photo", "image/jpeg", "Photo.jpg"),
+        ("photo.jpeg", "image/jpeg", "photo.jpeg"),
+        ("Scan.TIFF", "image/tiff", "Scan.TIFF"),
+        ("Scan.tif", "image/tiff", "Scan.tif"),
         ("Notes", "application/octet-stream", "Notes"),
         ("", "application/pdf", "document.pdf"),
         ("   ...  ", "application/pdf", "document.pdf"),
@@ -839,6 +1231,9 @@ def test_content_disposition_for_entirely_non_latin_title() -> None:
         ({"page": "7;alert(1)"}, "/documents/doc-1/preview"),
         ({"page": True}, "/documents/doc-1/preview"),
         ({"page": None}, "/documents/doc-1/preview"),
+        ({"page": 999999}, "/documents/doc-1/preview#page=999999"),
+        ({"page": "1" * 7}, "/documents/doc-1/preview"),
+        ({"page": "1" * 5000}, "/documents/doc-1/preview"),
         ({"kind": "download"}, "/documents/doc-1/download"),
         ({"kind": "download", "page": 4}, "/documents/doc-1/download"),
     ],
@@ -889,3 +1284,42 @@ async def test_documents_page_links_preview_and_download(
     for response in (page, search):
         assert 'href="/documents/doc-1/preview"' in response.text
         assert 'href="/documents/doc-1/download"' in response.text
+
+
+async def test_search_without_document_service_lists_no_file_links(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disconnected, the search fragment says so instead of offering links."""
+    _seed(tmp_db_path)
+    monkeypatch.delenv("BACKEND_LLC_MANAGER_URL")
+    async with client as ac:
+        search = await ac.get("/documents/search?q=Operating", headers=viewer_headers)
+    assert search.status_code == 200
+    assert "Not connected yet" in search.text
+    assert "/documents/doc-1/" not in search.text
+
+
+async def test_home_and_entity_pages_use_document_links(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """Home and entity pages build links with the same filter as Documents."""
+    _seed(tmp_db_path, "doc 2")
+    with contextlib.closing(sqlite3.connect(tmp_db_path)) as conn:
+        conn.execute("UPDATE documents SET entity_id = 'e1', added_at = '2026-10-01'")
+        conn.execute(
+            "INSERT INTO entities (id, name, type, fetched_at) "
+            "VALUES ('e1', 'Family LLC', 'LLC', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()
+    async with client as ac:
+        home = await ac.get("/", headers=viewer_headers)
+        entity = await ac.get("/entities/e1", headers=viewer_headers)
+    assert 'href="/documents/doc%202/preview"' in home.text
+    assert 'href="/documents/doc%202/preview"' in entity.text
+    assert 'href="/documents/doc%202/download"' in entity.text

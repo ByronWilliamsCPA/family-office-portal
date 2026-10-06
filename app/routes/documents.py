@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Documents section routes: folders, name search, preview, and download.
 
-Preview and download stream the file from llc-manager on each request
-(ADR-007). They are the only handlers that call a backend; every other route
-reads the SQLite cache (ADR-003).
+Preview and download stream the file from llc-manager on each request, a
+bounded exception to the cached-read rule of ADR-003 recorded in ADR-007.
+The folder and search views read the SQLite cache.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from starlette.responses import Response, StreamingResponse
 from app import cache, document_files
 from app.config import BackendConfigError, load_settings
 from app.routes._context import freshness, include_confidential
-from app.templating import render, templates
+from app.templating import render
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -97,6 +97,9 @@ async def documents_search(
 ) -> Response:
     """Return the search results fragment used by the Documents page.
 
+    When the document service is not connected the fragment says so, as the
+    full page does, instead of listing links that could only answer 503.
+
     Args:
         request (Request): Current request.
         q (RequiredSearch): Text to find in document names.
@@ -108,10 +111,12 @@ async def documents_search(
     results = await cache.search_documents(
         query, include_confidential=include_confidential(request)
     )
-    return templates.TemplateResponse(
+    return render(
         request,
         "partials/document_results.html",
-        {"query": query, "documents": results},
+        section="documents",
+        query=query,
+        documents=results,
     )
 
 
@@ -148,8 +153,12 @@ async def _stream_document(
     # upstream request, so a Viewer never causes a confidential file to be
     # fetched. #VERIFY: tests/unit/test_document_files.py proves no request.
     # #EDGE: a document marked confidential upstream stays visible to Viewers
-    # until the next documents refresh (at most 12 hours).
-    # #VERIFY: refresh documents from the admin page after marking one.
+    # until the next successful documents refresh (scheduled every 12 hours).
+    # A failed refresh keeps the old cache, so the window lasts until one
+    # succeeds; a malformed item is skipped rather than failing the refresh.
+    # #VERIFY: after marking a document confidential, trigger
+    # ``POST /admin/refresh/documents`` and confirm success in
+    # ``/admin/refresh-status``.
     document = await cache.get_document(
         document_id, include_confidential=include_confidential(request)
     )
@@ -162,6 +171,7 @@ async def _stream_document(
         logger.warning("document_file_failed", reason="backend_misconfigured")
         connection = None
     if connection is None:
+        logger.info("document_file_failed", reason="backend_not_connected")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     try:
         upstream = await document_files.open_upstream(
@@ -171,12 +181,17 @@ async def _stream_document(
         )
     except document_files.FileProxyError as exc:
         raise HTTPException(status_code=exc.status_code) from exc
-    return document_files.UpstreamFileResponse(
-        upstream,
-        headers=document_files.response_headers(
+    built = False
+    try:
+        headers = document_files.response_headers(
             upstream, title=str(document["name"]), requested=requested
-        ),
-    )
+        )
+        built = True
+    finally:
+        if not built:
+            # Nothing will stream, so nothing else would close the upstream.
+            await upstream.aclose()
+    return document_files.UpstreamFileResponse(upstream, headers=headers)
 
 
 @router.get(
