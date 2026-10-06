@@ -4,7 +4,7 @@
 says otherwise, `CLAUDE.md` takes precedence.
 
 > **Status**: Draft
-> **Version**: 1.2 | **Updated**: 2026-09-29
+> **Version**: 1.3 | **Updated**: 2026-10-05
 
 ## TL;DR
 
@@ -12,7 +12,9 @@ Python/FastAPI server rendering Jinja2 templates with HTMX and Tailwind CSS, bac
 by a SQLite read-through cache populated by a scheduled refresher that calls four backend
 services (`llc-manager`, `pp-security-master`, `xero_crypto`, `family_office`). Authentik
 forward auth at the reverse proxy handles login; the portal validates the signed JWT it
-forwards (ADR-005).
+forwards (ADR-005). A separate scheduled command from the same image embeds document
+chunks and writes them to a Qdrant collection for document search (ADR-006); the web
+process never indexes.
 
 ## 1. Technology Stack
 
@@ -96,6 +98,14 @@ Server-rendered monolith with a background refresh scheduler. See [ADR-001](../a
   │  xero_crypto      → crypto positions (USD)      │
   │  family_office    → document metadata           │
   └─────────────────────────────────────────────────┘
+
+  Document index (ADR-006), separate scheduled command, same image:
+
+  chunk-set files ──► python -m app.retrieval.indexer ──► Qdrant
+  (read-only mount)          │                          (family-docs)
+                             ▼
+                     embedding service
+                     (/v1/embeddings)
 ```
 
 ### Component Responsibilities
@@ -267,6 +277,18 @@ Rules for every pair:
 - Every request to a connected backend carries `X-API-Key`; there is no path that
   sends one without it.
 
+Document search and the indexer (ADR-006) have their own optional settings,
+read in `app/retrieval/settings.py`. Unset means off and "not connected"; a URL
+without its key is a configuration error:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EMBED_BASE_URL`, `EMBED_API_KEY` | unset | Embedding service and its bearer key |
+| `EMBEDDING_MODEL` | unset | Embedding model name; required with `EMBED_BASE_URL` |
+| `EMBED_TIMEOUT_SECONDS` | `60` | Timeout for one embedding request |
+| `QDRANT_URL`, `QDRANT_API_KEY` | unset | Vector database and its key |
+| `CHUNKS_DIR` | unset | Read-only chunk-set directory, used only by the indexer command |
+
 ## 5. Security
 
 ### Authentication
@@ -337,6 +359,16 @@ requires Admin. The principal (username, email, name, role) is stored on
   or trusted private network
 - **At Rest**: SQLite file on the portal host; no PII beyond email addresses and financial
   summaries; disk encryption at host level is the operator's responsibility
+- **Document index**: the Qdrant `family-docs` collection holds the full chunk text of
+  every indexed document, with confidentiality, entity and tax-return flags on each
+  point (ADR-006). Treat Qdrant access as access to the documents themselves: a private
+  network, its API key required, host-level disk encryption and backups under the same
+  controls as the document store. The embedding service sees chunk text in transit and
+  must keep no copy. Embedding and Qdrant keys are deployment secrets, never logged
+- **Configuration checks**: required settings and the optional backend pairs are checked
+  at startup (exit 1). The optional retrieval settings are not: a bad value makes
+  document search "not connected" with one warning naming the variable, and the indexer
+  command exits 2 (ADR-006)
 - **Sensitive Data**: Account numbers and full legal identifiers from backends are stored
   in the cache only if required for display; log sanitization must exclude financial values
 
@@ -397,4 +429,5 @@ or an error message visible to primary users. Backend errors during refresh are 
 - [ADR-002: Authentication (superseded)](../architecture/adr/adr-002-authentication-cloudflare-zero-trust.md)
 - [ADR-005: Authentication, Authentik forward auth](../architecture/adr/adr-005-authentication-authentik-forward-auth.md)
 - [ADR-003: Backend Data Aggregation](../architecture/adr/adr-003-backend-data-aggregation.md)
+- [ADR-006: Document Indexer](../architecture/adr/adr-006-document-indexer.md)
 - [Development Roadmap](./roadmap.md)

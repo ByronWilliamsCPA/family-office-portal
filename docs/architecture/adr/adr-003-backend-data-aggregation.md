@@ -190,6 +190,8 @@ These endpoint contracts must be validated with each backend team before Phase 1
 - [Project Vision](../../planning/project-vision.md): Resilience
   requirement driving this decision
 - [Roadmap](../../planning/roadmap.md): Phase-by-phase backend integration order
+- [ADR-006](./adr-006-document-indexer.md): Document indexer; the document-search
+  carve-out from the SQLite-only read rule
 
 ## Amendment 2026-09-30: optional, keyed backend connections
 

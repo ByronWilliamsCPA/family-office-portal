@@ -135,6 +135,7 @@ Key design decisions are documented as ADRs in `docs/architecture/adr/`:
 - [ADR-002](docs/architecture/adr/adr-002-authentication-cloudflare-zero-trust.md) -- Cloudflare Zero Trust authentication (superseded by ADR-005)
 - [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md) -- SQLite read-through cache
 - [ADR-005](docs/architecture/adr/adr-005-authentication-authentik-forward-auth.md) -- Authentik forward-auth authentication
+- [ADR-006](docs/architecture/adr/adr-006-document-indexer.md) -- document indexer as a scheduled command
 
 ## Contributing
 
