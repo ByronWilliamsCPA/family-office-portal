@@ -192,6 +192,22 @@ def test_qdrant_connection_rejects_blank_values(
         QdrantConnection(url=url, api_key=api_key)
 
 
+def test_embedding_connection_rejects_a_non_ascii_key_without_echoing_it() -> None:
+    """A key that cannot be an HTTP header value is a config error."""
+    api_key = SecretStr("cl\u00e9-secret")
+    with pytest.raises(RetrievalConfigError, match="ASCII") as caught:
+        EmbeddingConnection(base_url="http://e", api_key=api_key, model="m")
+    assert "secret" not in str(caught.value)
+
+
+def test_qdrant_connection_rejects_a_non_ascii_key_without_echoing_it() -> None:
+    """A key that cannot be an HTTP header value is a config error."""
+    api_key = SecretStr("cl\u00e9-secret")
+    with pytest.raises(RetrievalConfigError, match="ASCII") as caught:
+        QdrantConnection(url="http://q", api_key=api_key)
+    assert "secret" not in str(caught.value)
+
+
 BAD_URLS = [
     "ftp://host.test",
     "host.test:6333",

@@ -120,10 +120,11 @@ class EmbeddingConnection:
         """Reject blank values and a timeout that is not a positive number.
 
         Raises:
-            RetrievalConfigError: If the URL, key or model is blank, the URL
-                is not an http or https URL with a host and a valid port, or
-                the timeout is not a finite number above zero. The message
-                never includes the URL or the key.
+            RetrievalConfigError: If the URL, key or model is blank, the key
+                has a non-ASCII character, the URL is not an http or https
+                URL with a host and a valid port, or the timeout is not a
+                finite number above zero. The message never includes the URL
+                or the key.
         """
         if not self.base_url.strip():
             msg = "the embedding service needs a base URL"
@@ -131,6 +132,11 @@ class EmbeddingConnection:
         _require_http_url(self.base_url, "EMBED_BASE_URL")
         if not self.api_key.get_secret_value().strip():
             msg = "the embedding service needs a non-blank API key"
+            raise RetrievalConfigError(msg)
+        # An HTTP header value is ASCII; a key with other characters would
+        # raise from the HTTP client's constructor instead of here.
+        if not self.api_key.get_secret_value().isascii():
+            msg = "the embedding service API key must contain only ASCII characters"
             raise RetrievalConfigError(msg)
         if not self.model.strip():
             msg = "the embedding service needs a model name"
@@ -153,12 +159,13 @@ class QdrantConnection:
     api_key: SecretStr
 
     def __post_init__(self) -> None:
-        """Reject a blank or malformed URL and a blank key.
+        """Reject a blank or malformed URL and a blank or non-ASCII key.
 
         Raises:
             RetrievalConfigError: If the URL is blank or is not an http or
-                https URL with a host and a valid port, or the key is blank.
-                The message never includes the URL or the key.
+                https URL with a host and a valid port, or the key is blank
+                or has a non-ASCII character. The message never includes the
+                URL or the key.
         """
         if not self.url.strip():
             msg = "Qdrant needs a URL"
@@ -166,6 +173,9 @@ class QdrantConnection:
         _require_http_url(self.url, "QDRANT_URL")
         if not self.api_key.get_secret_value().strip():
             msg = "Qdrant needs a non-blank API key"
+            raise RetrievalConfigError(msg)
+        if not self.api_key.get_secret_value().isascii():
+            msg = "the Qdrant API key must contain only ASCII characters"
             raise RetrievalConfigError(msg)
 
 
