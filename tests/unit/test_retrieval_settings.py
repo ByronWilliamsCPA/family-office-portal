@@ -199,6 +199,10 @@ BAD_URLS = [
     "http://host.test:99999",
     "http://host.test:bad",
     "http://[host.test",
+    "ht\ntp://host.test:6333",
+    "http://host.\ttest:6333",
+    "http://host.test:6333\x00",
+    "http://host.test\x7f:6333",
     f"http://user:{USERINFO_SECRET}@host.test:99999",
 ]
 
@@ -242,6 +246,32 @@ def test_a_malformed_url_in_the_environment_is_not_connected(
     with pytest.raises(RetrievalConfigError, match="QDRANT_URL"):
         load_retrieval_settings().qdrant_connection()
     assert load_retrieval_settings().search_connected() is False
+
+
+@pytest.mark.parametrize("name", ["QDRANT_URL", "EMBED_BASE_URL"])
+def test_a_control_character_inside_a_url_in_the_environment_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """``urlsplit`` drops a newline, so the value must be refused before it."""
+    _set_all(monkeypatch)
+    monkeypatch.setenv(name, "ht\ntp://host.test:6333")
+    settings = load_retrieval_settings()
+    with pytest.raises(RetrievalConfigError, match=name) as caught:
+        settings.qdrant_connection()
+        settings.embedding_connection()
+    assert "host.test" not in str(caught.value)
+    assert settings.search_connected() is False
+
+
+def test_surrounding_whitespace_on_a_url_in_the_environment_is_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trailing newline from an env file is trimmed, not treated as corruption."""
+    _set_all(monkeypatch)
+    monkeypatch.setenv("QDRANT_URL", "http://qdrant.test:6333\n")
+    connection = load_retrieval_settings().qdrant_connection()
+    assert connection is not None
+    assert connection.url == "http://qdrant.test:6333"
 
 
 @pytest.mark.parametrize("value", ["abc", "", "nan", "inf", "0", "-1"])

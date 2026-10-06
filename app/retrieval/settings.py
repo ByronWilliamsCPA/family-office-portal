@@ -28,8 +28,9 @@ Variables (names only; values come from the deployment environment):
 
 A value that cannot be parsed (for example a non-numeric timeout) makes
 ``load_retrieval_settings`` raise ``RetrievalConfigError`` naming the variable,
-never its value. So does a URL that is not http or https with a host and a
-valid port, which the connection objects reject before any client is built.
+never its value. So does a URL that contains a control character or is not
+http or https with a host and a valid port, which the connection objects
+reject before any client is built.
 Unlike the backend pairs in ``app.config``, these settings are not checked at
 startup: the web process treats a bad value as "not connected" and logs a
 warning, and the indexer command exits 2.
@@ -54,6 +55,10 @@ logger = structlog.get_logger(__name__)
 
 _UNSET = SecretStr("")
 
+# ASCII control characters are the codes below the space and DEL.
+_SPACE = 0x20
+_DELETE = 0x7F
+
 # Problems already logged by ``document_search_connected``, so a bad setting
 # is reported once per process rather than on every page render.
 _reported_problems: set[str] = set()
@@ -68,23 +73,28 @@ def _require_http_url(url: str, name: str) -> None:
 
     The client libraries raise on a malformed URL with a message that can
     echo it, userinfo included, so the check happens here and the error names
-    only the variable.
+    only the variable. ASCII control characters are rejected before parsing
+    because ``urlsplit`` silently drops tabs and newlines, so a value such as
+    ``ht<newline>tp://host`` would otherwise be accepted as ``http://host``.
 
     Args:
         url (str): The configured URL.
         name (str): The variable it came from, for the error message.
 
     Raises:
-        RetrievalConfigError: If the scheme is not http or https, the host is
-            missing, or the port is not a number from 0 to 65535. The message
-            never includes the URL.
+        RetrievalConfigError: If the value contains an ASCII control
+            character, the scheme is not http or https, the host is missing,
+            or the port is not a number from 0 to 65535. The message never
+            includes the URL.
     """
-    try:
-        parts = urlsplit(url.strip())
-        usable = parts.scheme in {"http", "https"} and bool(parts.hostname)
-        _ = parts.port  # raises ValueError for a port that is not 0-65535
-    except ValueError:
-        usable = False
+    usable = not any(ord(char) < _SPACE or ord(char) == _DELETE for char in url)
+    if usable:
+        try:
+            parts = urlsplit(url.strip())
+            usable = parts.scheme in {"http", "https"} and bool(parts.hostname)
+            _ = parts.port  # raises ValueError for a port that is not 0-65535
+        except ValueError:
+            usable = False
     if not usable:
         msg = f"{name} must be an http or https URL with a host and a valid port"
         raise RetrievalConfigError(msg)
