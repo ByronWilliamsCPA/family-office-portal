@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Async SQLite readers used by route handlers, plus the staleness checker.
 
-Route handlers read only from here; they never call backend services
-(ADR-003). Every reader returns ``aiosqlite.Row`` objects, which support
-access by column name in templates.
+Page route handlers read only from here; they never call backend services
+(ADR-003). The balance intake route is the one handler that writes, through
+``app.scheduler``. Every reader returns ``aiosqlite.Row`` objects.
 """
 
 from __future__ import annotations

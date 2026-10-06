@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""APScheduler refresh jobs: pull backend data into the SQLite cache.
+"""APScheduler jobs and the process-wide SQLite write path.
 
-Each job fetches one dataset with a synchronous ``httpx.Client``, replaces the
-cached rows in a single transaction, and records the outcome in
+Each refresh job fetches one dataset with a synchronous ``httpx.Client``,
+replaces the cached rows in a single transaction, and records the outcome in
 ``refresh_log``. On any failure the transaction is not started, so the
 previous cached rows stay in place and the section shows stale data rather
 than a blank screen (ADR-003).
+
+Account balances are not pulled: the intake route delivers them and calls
+``store_balance_delivery`` here, so its write shares ``_WRITE_LOCK`` with the
+jobs. ``snapshot_balances_daily`` copies stored balances into the daily
+history and calls no backend.
 
 #ASSUME: external resources: backends may be down or return 5xx at any time
 (pp-security-master is alpha). #VERIFY: every job catches transport, HTTP,
@@ -17,7 +22,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
@@ -25,12 +30,31 @@ import structlog
 from apscheduler.schedulers.background import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
     BackgroundScheduler,
 )
+from apscheduler.triggers.cron import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
+    CronTrigger,
+)
+from apscheduler.triggers.interval import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
+    IntervalTrigger,
+)
 
-from app.config import BackendConfigError, BackendConnection, Settings, load_settings
+from app import balances
+from app.config import (
+    BackendConfigError,
+    BackendConnection,
+    Settings,
+    display_zone,
+    load_settings,
+)
 from app.db import connect_sync
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from apscheduler.triggers.base import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
+        BaseTrigger,
+    )
+
+    from app.models import BalanceDelivery
 
 logger = structlog.get_logger(__name__)
 
@@ -38,14 +62,31 @@ _MAX_MESSAGE_LENGTH = 500
 _PAGE_SIZE = 100
 _MAX_PAGES = 50
 
+# Seconds a job may start late and still run. The daily snapshot gets a long
+# grace so a run delayed by a busy or briefly paused process is coalesced into
+# one late run instead of being dropped; every other job keeps the library
+# default of one second.
+DEFAULT_MISFIRE_GRACE_SECONDS = 1
+JOB_MISFIRE_GRACE_SECONDS: dict[str, int] = {"snapshot_balances_daily": 3600}
+
 # Refresh cadences in hours. Each is shorter than the staleness threshold in
 # ``app.cache.STALENESS_HOURS`` so one missed run does not mark data stale.
-JOB_INTERVAL_HOURS: dict[str, float] = {
+JOB_INTERVAL_HOURS: dict[str, int] = {
     "refresh_entities": 4,
     "refresh_holdings": 2,
     "refresh_positions": 2,
     "refresh_documents": 12,
 }
+
+# ``snapshot_balances_daily`` is not a refresh: it copies the balances already
+# stored into the durable daily history. It runs once at startup and then
+# every day at this local wall-clock time in the display zone. A fixed local
+# time, unlike a 24 hour interval, cannot drift across midnight when daylight
+# saving time starts or ends, so no local date is skipped. Midday is used
+# because no zone changes its clocks then; APScheduler 3 skips the day after
+# the spring change for a time just after midnight. A balance delivery also
+# snapshots, so a day is covered even when the job is late.
+DAILY_SNAPSHOT_TIME: tuple[int, int] = (12, 0)
 
 # llc-manager document types mapped to the portal's document categories.
 _DOCUMENT_CATEGORIES: dict[str, str] = {
@@ -417,13 +458,104 @@ def refresh_documents() -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Account balances: intake writes and the daily history snapshot
+# --------------------------------------------------------------------------- #
+
+_BALANCES_SERVICE = "balances"
+_BALANCES_DAILY_SERVICE = "balances-daily"
+
+
+def store_balance_delivery(delivery: BalanceDelivery) -> list[str]:
+    """Store a validated balance delivery and today's snapshot in one transaction.
+
+    This is the only writer the intake route calls. It runs under the same
+    process-wide write lock as the scheduler jobs and is blocking, so the
+    route runs it in a worker thread. On any database error the transaction
+    is rolled back (the previous rows and history stay), the failure is
+    recorded in ``refresh_log`` by error class only, and the error is raised.
+
+    #CRITICAL: concurrency: the intake writes while scheduled jobs may also be
+    writing. #VERIFY: the write holds ``_WRITE_LOCK``
+    (``tests/unit/test_balance_jobs.py``) and the app runs one worker.
+
+    Args:
+        delivery (BalanceDelivery): Rows already checked by the intake model.
+
+    Returns:
+        list[str]: Providers whose rows were replaced.
+
+    Raises:
+        sqlite3.Error: If the database write fails; nothing was changed.
+    """
+    settings = load_settings()
+    fetched_at = _now()
+    today = balances.local_today().isoformat()
+    try:
+        with _WRITE_LOCK:
+            conn = connect_sync(settings.sqlite_path)
+            try:
+                with conn:
+                    count = balances.replace_balances(conn, delivery.items, fetched_at)
+                    balances.drop_unreported_from_day(conn, today, delivery.providers())
+                    balances.snapshot_daily(conn, today)
+            finally:
+                conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("balance_delivery_failed", error=type(exc).__name__)
+        _record(_BALANCES_SERVICE, "error", message=type(exc).__name__)
+        raise
+    providers = delivery.providers()
+    logger.info("balance_delivery_stored", rows=count, providers=providers)
+    _record(_BALANCES_SERVICE, "success", rows=count)
+    return providers
+
+
+def snapshot_balances_daily() -> None:
+    """Copy today's stored balances into the durable daily history.
+
+    Runs once at startup and then daily at ``DAILY_SNAPSHOT_TIME`` local. A
+    database error is recorded in ``refresh_log`` (error class only) and not
+    raised, so the next run tries again; any other error is left to the
+    scheduler, which logs it. A run is skipped when the previous one is still
+    going.
+    """
+    lock = _service_lock(_BALANCES_DAILY_SERVICE)
+    if not lock.acquire(blocking=False):
+        logger.info("refresh_skipped_already_running", service=_BALANCES_DAILY_SERVICE)
+        return
+    try:
+        today = balances.local_today().isoformat()
+        try:
+            with _WRITE_LOCK:
+                conn = connect_sync(load_settings().sqlite_path)
+                try:
+                    with conn:
+                        count = balances.snapshot_daily(conn, today)
+                finally:
+                    conn.close()
+        except sqlite3.Error as exc:
+            logger.warning(
+                "balance_snapshot_failed",
+                service=_BALANCES_DAILY_SERVICE,
+                error=type(exc).__name__,
+            )
+            _record(_BALANCES_DAILY_SERVICE, "error", message=type(exc).__name__)
+            return
+        logger.info("balance_snapshot_written", rows=count)
+        _record(_BALANCES_DAILY_SERVICE, "success", rows=count)
+    finally:
+        lock.release()
+
+
 # Scheduled jobs. ``refresh_holdings`` and ``refresh_positions`` stay
 # callable from the admin trigger but are not scheduled: no backend serves
-# their endpoints yet, and a later phase replaces positions with the account
-# balance jobs.
+# their endpoints yet, and account balances arrive through the intake endpoint
+# instead of a pull.
 JOBS: dict[str, Callable[[], None]] = {
     "refresh_entities": refresh_entities,
     "refresh_documents": refresh_documents,
+    "snapshot_balances_daily": snapshot_balances_daily,
 }
 
 # Admin trigger names (``POST /admin/refresh/{service}``) mapped to jobs.
@@ -435,27 +567,48 @@ TRIGGERS: dict[str, Callable[[], None]] = {
 }
 
 
-def build_scheduler(settings: Settings | None = None) -> BackgroundScheduler:
-    """Create a scheduler with every refresh job, each run once at startup.
+def _trigger(name: str, zone: tzinfo) -> BaseTrigger:
+    """Build the trigger for one job.
 
     Args:
-        settings (Settings | None): Unused today; accepted for future cadence
-            configuration.
+        name (str): Job name from ``JOBS``.
+        zone (tzinfo): Display zone for the daily snapshot's local time.
+
+    Returns:
+        BaseTrigger: A daily trigger at ``DAILY_SNAPSHOT_TIME`` in ``zone`` for
+        the snapshot job, otherwise an interval trigger from
+        ``JOB_INTERVAL_HOURS``.
+    """
+    if name == "snapshot_balances_daily":
+        hour, minute = DAILY_SNAPSHOT_TIME
+        return CronTrigger(hour=hour, minute=minute, timezone=zone)
+    return IntervalTrigger(hours=JOB_INTERVAL_HOURS[name], timezone=timezone.utc)
+
+
+def build_scheduler(settings: Settings | None = None) -> BackgroundScheduler:
+    """Create a scheduler with every job, each run once at startup.
+
+    Args:
+        settings (Settings | None): Settings that name the display zone used
+            for the daily snapshot's local time. When omitted, the snapshot
+            runs at that time in UTC.
 
     Returns:
         BackgroundScheduler: Configured, not yet started.
     """
-    del settings
+    zone: tzinfo = display_zone(settings) if settings is not None else timezone.utc
     scheduler = BackgroundScheduler(timezone="UTC")
     start = datetime.now(timezone.utc)
     for name, job in JOBS.items():
         scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
             job,
-            "interval",
-            hours=JOB_INTERVAL_HOURS[name],
+            _trigger(name, zone),
             id=name,
             next_run_time=start,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=JOB_MISFIRE_GRACE_SECONDS.get(
+                name, DEFAULT_MISFIRE_GRACE_SECONDS
+            ),
         )
     return scheduler

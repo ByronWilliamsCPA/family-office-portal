@@ -3,13 +3,15 @@
 """SQLite connection factory and schema initialization.
 
 Async readers (route handlers) use ``get_connection``; synchronous writers
-(APScheduler refresh jobs) use ``connect_sync``. Both set WAL journaling and a
-5 second busy timeout so readers never block the single writer.
+(APScheduler jobs and the balance intake's worker-thread write) use
+``connect_sync``. Both set WAL journaling and a 5 second busy timeout so
+readers never block the single writer.
 
 #CRITICAL: data integrity: WAL allows concurrent async readers alongside one
 synchronous writer; two writers would contend on the database lock.
-#VERIFY: every refresh write goes through ``app.scheduler._WRITE_LOCK`` and
-the app runs as a single process (uvicorn ``--workers 1``).
+#VERIFY: every write, including the balance intake, goes through
+``app.scheduler._WRITE_LOCK`` and the app runs as a single process (uvicorn
+``--workers 1``).
 """
 
 from __future__ import annotations
@@ -105,7 +107,9 @@ CREATE TABLE IF NOT EXISTS account_balances (
 );
 
 -- Daily history of account balances. This table is durable history,
--- not a cache: it must be included in backups.
+-- not a cache: it must be included in backups. Past days are never
+-- deleted; only the current day's rows are corrected when a delivery
+-- replaces an account (app.balances.drop_unreported_from_day).
 CREATE TABLE IF NOT EXISTS balances_daily (
     date          TEXT NOT NULL,
     account_id    TEXT NOT NULL,
@@ -152,6 +156,12 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         """
         ALTER TABLE account_balances ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
         ALTER TABLE balances_daily ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+        """,
+    ),
+    (
+        2,
+        """
+        ALTER TABLE account_balances ADD COLUMN reconciled_through TEXT;
         """,
     ),
 )

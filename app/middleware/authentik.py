@@ -8,7 +8,10 @@ portal. This middleware trusts only the signed ``X-authentik-jwt`` header: it
 verifies the HS256 signature with the proxy provider's client secret, checks
 ``iss``, ``aud``, ``exp`` (plus ``nbf`` and ``iat`` when present) with a
 ``JWT_LEEWAY_SECONDS`` clock-skew allowance, and maps the ``groups`` claim
-to a portal role. Every failure returns 403 (fail closed).
+to a portal role. Every failure returns 403 (fail closed). ``/health`` and
+``/static/`` are public, and ``POST /api/v1/balances`` (exact method and
+path) is passed to its route, which answers 401 or 404 by its own key check
+instead (ADR-005 amendment 2026-10-05).
 
 #CRITICAL: security: the plain ``X-authentik-username``,
 ``X-authentik-groups`` and ``X-authentik-email`` headers are never read,
@@ -69,6 +72,15 @@ JWT_LEEWAY_SECONDS = 10
 ADMIN_PATH = "/admin"
 STATIC_PATH_PREFIX = "/static/"
 HEALTH_PATH = "/health"
+# The one route a machine collector calls without a signed-in identity. The
+# route itself demands its own shared key (``X-API-Key``) and answers 404 when
+# no key is configured.
+# #CRITICAL: security: this exemption is exactly one method and one path. It is
+# an equality test, never a prefix or pattern, so a new ``/api/v1`` route is
+# protected by default. #VERIFY: tests/unit/test_intake_auth_surface.py covers
+# other methods, prefixes, trailing segments, case changes and dot segments.
+INTAKE_PATH = "/api/v1/balances"
+INTAKE_METHOD = "POST"
 
 DEFAULT_ADMIN_GROUP = "fo-admin"
 DEFAULT_VIEWER_GROUP = "fo-viewer"
@@ -439,6 +451,22 @@ def _is_public(route_path: str) -> bool:
     return route_path == HEALTH_PATH or route_path.startswith(STATIC_PATH_PREFIX)
 
 
+def is_intake_request(method: str, route_path: str) -> bool:
+    """Say whether a request is the balance intake call.
+
+    Besides the public ``/health`` and ``/static/`` paths, this is the only
+    request the middleware passes without a JWT; the route checks its own key.
+
+    Args:
+        method (str): HTTP method as the server reports it.
+        route_path (str): Path after any ``root_path`` prefix is removed.
+
+    Returns:
+        bool: True only for ``POST`` to exactly ``/api/v1/balances``.
+    """
+    return method == INTAKE_METHOD and route_path == INTAKE_PATH
+
+
 def _is_admin_path(route_path: str) -> bool:
     # Segment boundary: "/adminX" is an ordinary protected path, not admin.
     return route_path == ADMIN_PATH or route_path.startswith(ADMIN_PATH + "/")
@@ -447,11 +475,13 @@ def _is_admin_path(route_path: str) -> bool:
 class AuthentikAuthMiddleware:
     """Fail-closed ASGI middleware enforcing Authentik identity on every request.
 
-    ``/health`` and ``/static/`` are public. Every other HTTP request needs a
-    valid ``X-authentik-jwt`` granting a portal role, and ``/admin`` or
-    ``/admin/...`` needs the Admin role. Paths are judged after stripping any
-    ASGI ``root_path`` prefix, as the router matches them. WebSocket
-    connections are refused because the portal serves none.
+    ``/health`` and ``/static/`` are public, and ``POST /api/v1/balances``
+    skips the identity check because its route requires an intake key instead.
+    Every other HTTP request needs a valid ``X-authentik-jwt`` granting a
+    portal role, and ``/admin`` or ``/admin/...`` needs the Admin role. Paths
+    are judged after stripping any ASGI ``root_path`` prefix, as the router
+    matches them. WebSocket connections are refused because the portal serves
+    none.
     """
 
     def __init__(
@@ -485,6 +515,11 @@ class AuthentikAuthMiddleware:
         # Viewer, Admin and /health, and the "/adminX" boundary.
         path = _route_path(scope)
         if _is_public(path):
+            await self.app(scope, receive, send)
+            return
+        # The intake route authenticates with its own key, not an identity, so
+        # no principal is set for it. A JWT sent along is ignored.
+        if is_intake_request(scope.get("method", ""), path):
             await self.app(scope, receive, send)
             return
         token = Headers(scope=scope).get(JWT_HEADER)

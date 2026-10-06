@@ -8,11 +8,10 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi.templating import Jinja2Templates
 
-from app.config import BACKENDS, load_settings
+from app.config import BACKENDS, display_zone, load_settings
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -31,13 +30,6 @@ NAV_ITEMS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _display_zone() -> ZoneInfo | timezone:
-    try:
-        return ZoneInfo(load_settings().display_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        return timezone.utc
-
-
 def friendly_time(value: datetime | str | None) -> str:
     """Format a timestamp for primary users, for example "Sep 28, 2026, 3:05 PM".
 
@@ -52,7 +44,7 @@ def friendly_time(value: datetime | str | None) -> str:
     parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    local = parsed.astimezone(_display_zone())
+    local = parsed.astimezone(display_zone())
     hour = local.strftime("%I").lstrip("0") or "12"
     clock = f"{hour}:{local.strftime('%M %p')}"
     return f"{local.strftime('%b')} {local.day}, {local.year}, {clock}"

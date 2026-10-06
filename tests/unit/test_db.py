@@ -192,3 +192,35 @@ def test_migrations_add_currency_and_set_version(tmp_db_path: Path) -> None:
         for table in ("account_balances", "balances_daily"):
             columns = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
             assert "currency" in columns
+
+
+def test_migration_two_adds_reconciled_through_to_an_older_database(
+    tmp_db_path: Path,
+) -> None:
+    """A database already at version 1 gains the column and keeps its rows.
+
+    # noqa
+    """
+    db.init_schema(str(tmp_db_path))
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.executescript(
+            "ALTER TABLE account_balances DROP COLUMN reconciled_through;"
+            "PRAGMA user_version = 1;"
+        )
+        conn.execute(
+            "INSERT INTO account_balances (account_id, account_name, category, "
+            "source, value_cents, as_of, fetched_at) VALUES "
+            "('pp:a', 'Example', 'Cash', 'manual_mark', 5, '2026-01-01', 'x')"
+        )
+    db.init_schema(str(tmp_db_path))
+    db.init_schema(str(tmp_db_path))
+    with sqlite3.connect(tmp_db_path) as conn:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(account_balances)")}
+        row = conn.execute(
+            "SELECT value_cents, reconciled_through FROM account_balances"
+        ).fetchone()
+        version = db.schema_version(conn)
+    assert version == db.MIGRATIONS[-1][0]
+    assert version >= 2
+    assert "reconciled_through" in columns
+    assert row == (5, None)

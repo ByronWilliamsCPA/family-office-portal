@@ -4,6 +4,7 @@
 > **Date**: 2026-09-29
 > **Supersedes**: [ADR-002](adr-002-authentication-cloudflare-zero-trust.md)
 > **Amended**: 2026-09-29 (HS256 forward-auth token; see "Amendment 2026-09-29" below)
+> **Amended**: 2026-10-05 (balance intake key; see "Amendment 2026-10-05" below)
 
 ## TL;DR
 
@@ -128,7 +129,9 @@ it is configured from this repository.
 | 12 | The portal is reachable only through Traefik (no published host port) | Deployment |
 | 13 | The portal has its own single-application Authentik proxy provider, not a domain-level forward-auth provider shared with sibling applications | `AUTHENTIK_AUDIENCE` and `AUTHENTIK_ISSUER` unique to the portal |
 
-> Contract item 3: superseded by the 2026-09-29 amendment below.
+> Contract item 3: superseded by the 2026-09-29 amendment below. Contract
+> items 1 and 12: amended for the balance intake route by the 2026-10-05
+> amendment below.
 
 Contract item 13 is a requirement on homelab-infra, not an infrastructure
 design. A provider shared across applications issues every application behind
@@ -482,3 +485,62 @@ shared secret from the token check. It was rejected because:
 - The portal has no outbound dependency on Authentik for authentication, so
   an Authentik outage no longer changes token validation (new sign-ins still
   need Authentik).
+
+## Amendment 2026-10-05: balance intake authenticates with a shared key
+
+> **Status**: Accepted
+> **Amends**: the original text and the 2026-09-29 amendment above, which are
+> left intact for the record. Where they differ, this amendment takes
+> precedence for the one route it names.
+
+### What changed
+
+The original text has two classes of path: public (`/health` and `/static/`),
+which need no identity, and everything else, which needs a valid signed
+`X-authentik-jwt`. A machine collector that delivers account balances runs on
+the internal network and cannot sign in through Authentik, so it cannot present
+that token. A third class is added.
+
+### Decision
+
+- `POST /api/v1/balances` is not judged by the identity check. It
+  authenticates with its own shared key, sent in the `X-API-Key` header and
+  compared in constant time with the optional `BALANCE_INTAKE_API_KEY` setting.
+- The middleware exemption is an exact match on method and path. It is judged
+  on the routed path with any ASGI `root_path` prefix stripped, like the public
+  and admin checks. Any other method, any other path, a trailing slash, a
+  different letter case and every websocket connection still need a valid
+  token, and a failure is the same plain 403.
+- The endpoint is disabled when no key is set: it answers 404 and accepts
+  nothing. A key shorter than 32 characters stops the portal at startup, naming
+  the variable and never the value.
+- A missing or wrong key is a 401 with a fixed message. The key is checked
+  before the request body is read, and the key, the submitted values, account
+  identifiers and balances are never logged or echoed.
+- A signed token sent to this route is ignored: it neither grants access nor
+  sets a principal. A request with a valid token and no key is a 401.
+
+### Contract items restated
+
+| # | Contract item, as amended | Portal setting or check |
+| --- | --- | --- |
+| 1 | Every request for the portal's hostname that arrives through Traefik passes forward auth to the Authentik outpost. No Traefik route publishes `/api/v1/balances`; the collector calls that one route directly on the internal Docker network instead | Portal returns 403 to anything without a valid token, except `POST /api/v1/balances`, which answers 401 or 404 by its own key check |
+| 12 | The portal publishes no host port. It is reachable through Traefik and, for the balance intake only, from containers on its internal Docker network | Deployment |
+
+### Consequences of the amendment
+
+- The collector must reach the portal directly on the internal network. A
+  forward-auth route in front of the portal would refuse the collector, because
+  it carries no Authentik session, so the route must not be published through
+  the proxy that enforces forward auth.
+- The portal holds one more stack-injected secret. `SECURITY.md` records how
+  to handle and rotate it.
+- The network is not a control for this route. As the Constraints section
+  says, any container on the shared Traefik network can send requests
+  straight to the portal, so the intake key is the only thing that guards
+  `POST /api/v1/balances`, and it travels as plain HTTP inside that network.
+  #ASSUME no container on that network is hostile or able to read another
+  container's traffic, so the key is not observed in transit. #VERIFY with
+  homelab-infra that no public route forwards `/api/v1/balances` to the
+  portal, that the collector reaches the portal on the internal network
+  only, and which containers share that network.

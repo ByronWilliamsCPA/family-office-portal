@@ -200,6 +200,7 @@ CREATE TABLE refresh_log (
 | GET | `/entities/{id}` | Entity detail view | Viewer, Admin |
 | GET | `/admin/refresh-status` | Per-service refresh log | Admin only |
 | POST | `/admin/refresh/{service}` | Trigger manual refresh | Admin only |
+| POST | `/api/v1/balances` | Deliver account balances (collector) | `X-API-Key` header, not identity; disabled (404) when `BALANCE_INTAKE_API_KEY` is unset |
 
 ### Backend Service Contracts (Required from Backend Teams)
 
@@ -242,6 +243,7 @@ Optional variables, each with a documented default:
 | `BACKEND_TIMEOUT_SECONDS` | `10` | Timeout for outbound refresh-job calls |
 | `DISPLAY_TIMEZONE` | `UTC` | IANA time zone for "last updated" labels |
 | `SCHEDULER_ENABLED` | `true` | Start the refresh scheduler at startup; `false` for template work without backends |
+| `BALANCE_INTAKE_API_KEY` | unset | Shared key for `POST /api/v1/balances`, compared in constant time with the `X-API-Key` header; at least 32 characters, never logged or echoed; unset disables the endpoint (404) |
 
 Each backend is an optional pair of variables. Set both to connect it:
 
@@ -294,6 +296,29 @@ plain 403, and the log records only a reason category, never the token. The port
 needs its own single-application Authentik provider so that its `aud` is unique and
 its client secret, which both signs and verifies the token, is never shared (ADR-005
 contract item 13 and the ADR-005 amendment of 2026-09-29).
+
+### Balance intake
+
+`POST /api/v1/balances` is the one route that does not use the signed identity
+token. A collector on the internal network sends the shared key in `X-API-Key`.
+
+- The middleware lets exactly `POST /api/v1/balances` through to the route
+  (routed path, any `root_path` stripped). Every other method and path still
+  needs a valid token, and a token sent to this route is ignored.
+- The key is the optional `BALANCE_INTAKE_API_KEY` setting (at least 32
+  characters of printable ASCII, different from `AUTHENTIK_JWT_SECRET`),
+  compared with `hmac.compare_digest`. It is checked before the
+  body is read. A wrong or missing key is a 401. When the setting is unset the
+  endpoint is disabled and answers 404.
+- The body is limited to 6 MiB (enough for the largest valid delivery) and
+  2000 rows, and values are decimal strings
+  with at most 12 digits before the point. A validation error names the row
+  and field but never echoes a submitted value, and nothing is stored on any
+  error.
+- The key, submitted values, account identifiers and balances are never logged.
+- The collector must reach the portal directly on the internal network, because
+  a forward-auth route in front of the portal would refuse it. See the ADR-005
+  amendment of 2026-10-05.
 
 ### Authorization
 

@@ -111,6 +111,7 @@ Other optional variables, each with a documented default:
 | `DISPLAY_TIMEZONE` | `UTC` | IANA time zone for "last updated" labels |
 | `SCHEDULER_ENABLED` | `true` | Set `false` for template work without backends |
 | `BACKEND_TIMEOUT_SECONDS` | `10` | Outbound request timeout |
+| `BALANCE_INTAKE_API_KEY` | unset | Key a collector sends in `X-API-Key` to deliver balances to `POST /api/v1/balances`; at least 32 characters; unset disables the endpoint (it answers 404) |
 
 ## Container image
 

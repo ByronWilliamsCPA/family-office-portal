@@ -100,7 +100,8 @@ attack surface, not only how to file a report).
 Authentik forward auth behind Traefik handles sign-in and sessions and
 forwards a signed `X-authentik-jwt` header (ADR-005). The in-app
 `AuthentikAuthMiddleware` validates that token on every request except
-`/health` and `/static/`: HS256 signature with the provider's client secret,
+`/health`, `/static/` and `POST /api/v1/balances` (exact method and path; the
+balance intake route checks its own key instead, see below): HS256 signature with the provider's client secret,
 `exp`, `iss` and `aud`, and a non-empty identity claim. It maps the `groups` claim
 to `Viewer` or `Admin`, requires `Admin` for `/admin/*`, and returns 403 on
 any failure (fail closed). The Authentik and Traefik configuration belongs to
@@ -109,12 +110,11 @@ cannot see documents marked confidential. No password-based auth, OAuth
 flows, or session cookies are implemented in the portal, and none are
 planned.
 
-The application is designed to be read-only: it will never write to or
-directly contact upstream commercial systems. Phase 1 routes all backend
-data through an internal SQLite cache populated by scheduled refresh jobs;
-at Phase 0, `app/cache.py` and `app/db.py` do not exist, and route handlers
-return static placeholder content instead of cached data. The cache
-database, once it exists, is never exposed to the network.
+The application never writes to or directly contacts upstream commercial
+systems. It writes only to its own SQLite cache: scheduled refresh jobs store
+backend data there, and the balance intake route (`POST /api/v1/balances`)
+stores account balances that a collector delivers. Page routes only read the
+cache. The cache database is never exposed to the network.
 
 ## Known Limitations
 
@@ -136,7 +136,7 @@ reassessment.
 This repository holds no application secrets in source control. Runtime
 secrets (CI tokens such as `CODECOV_TOKEN` and `SONAR_TOKEN`) are stored
 exclusively in GitHub Actions repository secrets, never committed to the
-repository. The portal holds one authentication credential:
+repository. The portal holds two authentication credentials. The first is
 `AUTHENTIK_JWT_SECRET`, the client secret of the portal's Authentik proxy
 provider. It is injected into the portal's environment by the deployment
 stack (homelab-infra), never committed, and it both signs and verifies the
@@ -148,6 +148,22 @@ single-application and its secret must never be shared with another
 application or provider (ADR-005 amendment 2026-09-29). `#VERIFY`: in
 Authentik, confirm no other application is bound to the portal's provider.
 The `AUTHENTIK_ISSUER` and `AUTHENTIK_AUDIENCE` values are not secret.
+
+The second is `BALANCE_INTAKE_API_KEY`, the shared key a collector sends in
+the `X-API-Key` header to `POST /api/v1/balances`, the one route exempt from
+the sign-in token check. It is optional: unset or blank disables the route,
+which then answers 404. It is injected by the deployment stack, never
+committed, and held only by the portal and the collector. Startup refuses a
+key shorter than 32 characters, one that is not printable ASCII, or one equal
+to `AUTHENTIK_JWT_SECRET`, and the error names the variable, never the value.
+The route compares the key in constant time before it reads the body, answers
+401 to a missing or wrong key, and never logs the key, submitted values,
+account identifiers or balances. `#CRITICAL`: any container on the shared
+Traefik network can reach the portal directly, so this key is the only
+control on the route and it travels as plain HTTP inside that network
+(ADR-005 amendment 2026-10-05). `#VERIFY`: confirm with homelab-infra that no
+public route forwards `/api/v1/balances` and that only trusted containers
+share the portal's network.
 
 Rotation cadence:
 
@@ -163,6 +179,13 @@ Rotation cadence:
   two steps every request gets 403 (fail closed), so do both in one
   maintenance window. Recreating the provider also issues a new client ID,
   so `AUTHENTIK_AUDIENCE` must be updated at the same time.
+- Balance intake key (`BALANCE_INTAKE_API_KEY`): rotated quarterly, or
+  immediately upon suspected compromise. The portal accepts one key at a
+  time, so rotation is two-phase: set the new key in the portal's environment
+  and restart it, then give the collector the same key. Between those two
+  steps the collector's deliveries get 401 and change nothing, and the
+  previously stored balances stay in place. Do both
+  steps in one maintenance window, then confirm one delivery succeeds.
 - Any secret is rotated immediately, outside the regular cadence, if exposure
   is suspected (e.g., accidental commit, leaked CI log, compromised
   contributor account).
