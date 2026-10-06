@@ -81,11 +81,15 @@ class VectorStoreError(RuntimeError):
     """
 
 
-def make_client(connection: QdrantConnection) -> QdrantClient:
+def make_client(
+    connection: QdrantConnection, *, timeout: int = QDRANT_TIMEOUT_SECONDS
+) -> QdrantClient:
     """Create a Qdrant client for a configured connection.
 
     Args:
         connection (QdrantConnection): URL and API key.
+        timeout (int): Request timeout in seconds; search uses a shorter one
+            than the indexer.
 
     Returns:
         QdrantClient: A client for the server.
@@ -93,7 +97,7 @@ def make_client(connection: QdrantConnection) -> QdrantClient:
     return QdrantClient(
         url=connection.url,
         api_key=connection.api_key.get_secret_value(),
-        timeout=QDRANT_TIMEOUT_SECONDS,
+        timeout=timeout,
     )
 
 

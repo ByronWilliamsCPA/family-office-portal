@@ -14,4 +14,6 @@ them:
   the chunk-set directory. It never runs inside the web process.
 * ``tax_law``: the command that indexes the tax-law knowledge base into the
   ``tax-law`` collection.
+* ``search``: the internal search function chat calls (ADR-008), with the
+  confidentiality and entity filters inside the Qdrant query.
 """

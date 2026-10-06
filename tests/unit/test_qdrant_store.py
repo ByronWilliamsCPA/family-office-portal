@@ -454,3 +454,5 @@ def test_make_client_uses_the_connection(monkeypatch: pytest.MonkeyPatch) -> Non
     connection = QdrantConnection(url="http://qdrant.test:6333", api_key=SecretStr(key))
     assert make_client(connection) == "client"
     assert seen == {"url": "http://qdrant.test:6333", "api_key": key, "timeout": 30}
+    make_client(connection, timeout=5)
+    assert seen["timeout"] == 5
