@@ -141,6 +141,69 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "const keyed = Boolean(pm.variables.get('balanceIntakeKey'));",
+                  "pm.test('status is in the expected range', function () {",
+                  "    const expected = keyed ? [200, 422] : [401, 404];",
+                  "    pm.expect(expected).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('response body is valid JSON', function () {",
+                  "    pm.response.to.have.jsonBody();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Deliver account balances",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"items\": [\n    {\n      \"account_id\": \"pp:example-brokerage\",\n      \"account_name\": \"Example Brokerage\",\n      \"as_of\": \"2026-09-26\",\n      \"category\": \"\",\n      \"currency\": \"USD\",\n      \"entity_id\": \"11111111-2222-4333-8444-555555555555\",\n      \"reconciled_through\": \"\",\n      \"source\": \"broker_report\",\n      \"value\": \"1234.56\"\n    }\n  ],\n  \"total\": 0\n}"
+            },
+            "description": "Replace stored balances with the rows in one delivery.\n\nAuthentication: a shared key in ``X-API-Key``, not a sign-in identity. A\nvalid sign-in does not authorise this route. When no key is configured the\nroute answers 404 and never accepts a request.\n\nRows replace the stored rows of each provider (the account id prefix) that\nappears in the delivery; a provider with no rows keeps its last values.\nEverything is stored in one transaction, then today's daily snapshot is\nwritten in the same transaction.\n\n#CRITICAL: security: the key is checked before the body is read or parsed.\n#VERIFY: tests/unit/test_balance_intake.py sends a missing or wrong key\nwith a body over ``MAX_BODY_BYTES`` (declared and streamed) and expects\n401, not 413, and checks the key is compared with ``hmac.compare_digest``.\n\nArgs:\n    request (Request): Current request; the body is read here so the key is\n        checked first.\n\nReturns:\n    Response: 200 with a receipt, or a JSON error (401, 404, 413, 422,\n    503) with a ``detail`` string and no submitted values.",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "type": "text",
+                "value": "{{balanceIntakeKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "type": "text",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ],
+              "raw": "{{baseUrl}}/api/v1/balances"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "balances"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
                   "const authed = Boolean(pm.variables.get('authentikJwt'));",
                   "pm.test('status is in the expected range', function () {",
                   "    const expected = authed ? [200, 422] : [403];",

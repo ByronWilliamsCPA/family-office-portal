@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "BalanceReceipt": {
+        "additionalProperties": false,
+        "description": "Response for an accepted delivery.",
+        "properties": {
+          "accepted": {
+            "description": "Number of rows stored.",
+            "examples": [
+              3
+            ],
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "providers": {
+            "description": "Providers whose rows were replaced.",
+            "examples": [
+              [
+                "pp",
+                "xero"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accepted",
+          "providers"
+        ],
+        "title": "BalanceReceipt",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -332,6 +366,181 @@
         "summary": "Trigger a manual refresh",
         "tags": [
           "admin"
+        ]
+      }
+    },
+    "/api/v1/balances": {
+      "post": {
+        "description": "Replace stored balances with the rows in one delivery.\n\nAuthentication: a shared key in ``X-API-Key``, not a sign-in identity. A\nvalid sign-in does not authorise this route. When no key is configured the\nroute answers 404 and never accepts a request.\n\nRows replace the stored rows of each provider (the account id prefix) that\nappears in the delivery; a provider with no rows keeps its last values.\nEverything is stored in one transaction, then today's daily snapshot is\nwritten in the same transaction.\n\n#CRITICAL: security: the key is checked before the body is read or parsed.\n#VERIFY: tests/unit/test_balance_intake.py sends a missing or wrong key\nwith a body over ``MAX_BODY_BYTES`` (declared and streamed) and expects\n401, not 413, and checks the key is compared with ``hmac.compare_digest``.\n\nArgs:\n    request (Request): Current request; the body is read here so the key is\n        checked first.\n\nReturns:\n    Response: 200 with a receipt, or a JSON error (401, 404, 413, 422,\n    503) with a ``detail`` string and no submitted values.",
+        "operationId": "receive_balances_api_v1_balances_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "A full delivery of balance rows: ``{\"items\": [...], \"total\": n}``.",
+                "properties": {
+                  "items": {
+                    "description": "Every balance row in this delivery.",
+                    "items": {
+                      "additionalProperties": false,
+                      "description": "One account balance in a delivery.\n\nValidation is strict: ``value`` must be a JSON string (a number is\nrejected), and no field is coerced from another type. Error messages never\ncontain the submitted value.",
+                      "properties": {
+                        "account_id": {
+                          "description": "Stable account id prefixed with its provider (pp:, xero:, crypto:). Never a full account number.",
+                          "examples": [
+                            "pp:example-brokerage"
+                          ],
+                          "pattern": "^(pp|xero|crypto):[A-Za-z0-9._:-]{1,100}$",
+                          "title": "Account Id",
+                          "type": "string"
+                        },
+                        "account_name": {
+                          "description": "Plain-English account name shown to people.",
+                          "examples": [
+                            "Example Brokerage"
+                          ],
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "title": "Account Name",
+                          "type": "string"
+                        },
+                        "as_of": {
+                          "description": "Date the value is true for, YYYY-MM-DD.",
+                          "examples": [
+                            "2026-09-26"
+                          ],
+                          "format": "date",
+                          "title": "As Of",
+                          "type": "string"
+                        },
+                        "category": {
+                          "description": "Account category.",
+                          "enum": [
+                            "Investments",
+                            "Retirement",
+                            "Cash",
+                            "Digital currency",
+                            "Alternatives"
+                          ],
+                          "title": "Category",
+                          "type": "string"
+                        },
+                        "currency": {
+                          "description": "Three-letter currency code.",
+                          "examples": [
+                            "USD"
+                          ],
+                          "pattern": "^[A-Z]{3}$",
+                          "title": "Currency",
+                          "type": "string"
+                        },
+                        "entity_id": {
+                          "description": "Entity UUID that owns the account. Never null.",
+                          "examples": [
+                            "11111111-2222-4333-8444-555555555555"
+                          ],
+                          "format": "uuid",
+                          "title": "Entity Id",
+                          "type": "string"
+                        },
+                        "reconciled_through": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Bank rows only: latest date with no unreconciled statement lines.",
+                          "format": "date",
+                          "title": "Reconciled Through"
+                        },
+                        "source": {
+                          "description": "Feed name, for example broker_report or manual_mark.",
+                          "examples": [
+                            "broker_report"
+                          ],
+                          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+                          "title": "Source",
+                          "type": "string"
+                        },
+                        "value": {
+                          "description": "Decimal amount as a JSON string, never a number: an optional minus sign, at most 12 digits before the point and at most 4 after it (rounded half to even to whole cents when stored).",
+                          "examples": [
+                            "1234.56"
+                          ],
+                          "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,4})?$",
+                          "title": "Value",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "account_id",
+                        "account_name",
+                        "entity_id",
+                        "category",
+                        "source",
+                        "value",
+                        "currency",
+                        "as_of"
+                      ],
+                      "title": "BalanceRow",
+                      "type": "object"
+                    },
+                    "maxItems": 2000,
+                    "title": "Items",
+                    "type": "array"
+                  },
+                  "total": {
+                    "description": "Number of rows; must equal the length of items.",
+                    "minimum": 0.0,
+                    "title": "Total",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "items",
+                  "total"
+                ],
+                "title": "BalanceDelivery",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BalanceReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or wrong X-API-Key."
+          },
+          "404": {
+            "description": "The intake is disabled (no key configured)."
+          },
+          "413": {
+            "description": "Body too large."
+          },
+          "422": {
+            "description": "Body failed validation; nothing was stored."
+          },
+          "503": {
+            "description": "The database write failed; nothing was changed."
+          }
+        },
+        "summary": "Deliver account balances",
+        "tags": [
+          "balances"
         ]
       }
     },
@@ -668,6 +877,10 @@
     {
       "description": "Liveness probes for orchestrators.",
       "name": "health"
+    },
+    {
+      "description": "Account balance intake for the collector (API key).",
+      "name": "balances"
     },
     {
       "description": "Landing dashboard.",

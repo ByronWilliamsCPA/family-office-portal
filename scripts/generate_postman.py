@@ -53,6 +53,13 @@ METHODS: tuple[str, ...] = ("get", "post", "put", "patch", "delete", "options", 
 # part of the OpenAPI document).
 PUBLIC_PATHS: frozenset[str] = frozenset({"/health"})
 
+# Operations that authenticate with a shared ``X-API-Key`` instead of the
+# Authentik token, as (method, path) pairs. The middleware exempts exactly
+# these, and the route checks the key itself.
+KEY_AUTH_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
+    {("post", "/api/v1/balances")},
+)
+
 PRE_REQUEST_SCRIPT: str = (
     "if (!pm.variables.get('baseUrl')) { "
     "pm.variables.set('baseUrl', 'http://localhost:8000'); "
@@ -80,11 +87,16 @@ def _build_item(
     raw_url, segments = _path_to_postman(path)
     success_status = _success_status(operation.get("responses", {}))
     body_block = _build_request_body(operation, spec)
-    requires_auth = path not in PUBLIC_PATHS
+    key_auth = (method, path) in KEY_AUTH_OPERATIONS
+    requires_auth = path not in PUBLIC_PATHS and not key_auth
     headers: list[dict[str, str]] = []
     if requires_auth:
         headers.append(
             {"key": "X-authentik-jwt", "value": "{{authentikJwt}}", "type": "text"},
+        )
+    if key_auth:
+        headers.append(
+            {"key": "X-API-Key", "value": "{{balanceIntakeKey}}", "type": "text"},
         )
     if body_block is not None:
         headers.append(
@@ -126,6 +138,7 @@ def _build_item(
                         _operation_returns_json(operation),
                         "422" in (operation.get("responses") or {}),
                         requires_auth=requires_auth,
+                        key_auth=key_auth,
                     ).split("\n"),
                 },
             },

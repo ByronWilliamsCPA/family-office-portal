@@ -247,6 +247,7 @@ def _test_script(
     declares_422: bool,
     *,
     requires_auth: bool = False,
+    key_auth: bool = False,
 ) -> str:
     """Build the Postman test script for an operation.
 
@@ -258,12 +259,30 @@ def _test_script(
         requires_auth: True when the route sits behind the Authentik
             middleware. Without an ``authentikJwt`` variable such a route
             must answer 403 (fail closed) and the JSON check is skipped.
+        key_auth: True when the route authenticates with its own
+            ``X-API-Key`` instead of the Authentik token. Without a
+            ``balanceIntakeKey`` variable it must answer 404 (no key is
+            configured on the app) or 401 (a key is configured but not
+            sent); either way the body is JSON.
 
     Returns:
         str: JavaScript test script for the Postman request.
     """
     allowed = [success_status, 422] if declares_422 else [success_status]
     allowed_js = ", ".join(str(code) for code in allowed)
+    if key_auth:
+        return "\n".join(
+            [
+                "const keyed = Boolean(pm.variables.get('balanceIntakeKey'));",
+                "pm.test('status is in the expected range', function () {",
+                f"    const expected = keyed ? [{allowed_js}] : [401, 404];",
+                "    pm.expect(expected).to.include(pm.response.code);",
+                "});",
+                "pm.test('response body is valid JSON', function () {",
+                "    pm.response.to.have.jsonBody();",
+                "});",
+            ],
+        )
     if not requires_auth:
         lines: list[str] = [
             "pm.test('status is in the expected range', function () {",
