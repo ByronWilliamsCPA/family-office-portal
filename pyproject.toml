@@ -21,6 +21,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pyjwt[crypto]>=2.8",
     "pydantic-settings>=2.5",
+    "qdrant-client>=1.19",
 ]
 
 [project.optional-dependencies]

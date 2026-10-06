@@ -267,6 +267,18 @@ Rules for every pair:
 - Every request to a connected backend carries `X-API-Key`; there is no path that
   sends one without it.
 
+Document search and the indexer (ADR-006) have their own optional settings,
+read in `app/retrieval/settings.py`. Unset means off and "not connected"; a URL
+without its key is a configuration error:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EMBED_BASE_URL`, `EMBED_API_KEY` | unset | Embedding service and its bearer key |
+| `EMBEDDING_MODEL` | unset | Embedding model name; required with `EMBED_BASE_URL` |
+| `EMBED_TIMEOUT_SECONDS` | `60` | Timeout for one embedding request |
+| `QDRANT_URL`, `QDRANT_API_KEY` | unset | Vector database and its key |
+| `CHUNKS_DIR` | unset | Read-only chunk-set directory, used only by the indexer command |
+
 ## 5. Security
 
 ### Authentication

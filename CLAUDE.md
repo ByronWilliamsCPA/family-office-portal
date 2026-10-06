@@ -67,6 +67,8 @@ app/
   main.py              # FastAPI app instantiation, lifespan, middleware registration
   config.py            # Pydantic settings read by cache, scheduler, templates
   models.py            # Pydantic request/response models
+  retrieval/           # Embeddings client, Qdrant store, chunk-set reader, and the
+                       # scheduled indexer command (ADR-006)
   middleware/          # Authentik forward-auth JWT validation middleware (ADR-005)
   routes/              # One module per section: home, documents, finances,
                        # portfolio, entities, health, admin; plus balances
@@ -240,6 +242,20 @@ Never implement password-based auth, OAuth flows, or session cookies.
   (`app/document_files.py`, ADR-007). The cache decides visibility first, so a
   Viewer's request for a confidential document makes no upstream call. Keep
   that order, the content-type allowlist and the size cap when changing them.
+
+## Document index
+
+- The indexer is a command, `python -m app.retrieval.indexer`, run on a schedule
+  from the same image. Never call it from the web process or a scheduler job
+  (ADR-006).
+- Every retrieval setting name lives in `app/retrieval/settings.py`. All are
+  optional: `EMBED_BASE_URL`, `EMBED_API_KEY`, `EMBEDDING_MODEL`,
+  `EMBED_TIMEOUT_SECONDS` (60), `QDRANT_URL`, `QDRANT_API_KEY`, `CHUNKS_DIR`.
+  A URL without its key is an error; unset means off and "not connected".
+- Create collections only through `qdrant_store.ensure_collection`, so the
+  `sparse` slot always exists. Fill only `dense` until hybrid search lands.
+- Tax returns are indexed only when consent is exactly `true` everywhere it
+  appears. Never relax this, and never log chunk text or embedding input.
 
 ## Environment variables
 
