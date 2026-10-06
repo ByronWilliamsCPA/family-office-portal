@@ -18,8 +18,8 @@
   <p class="text-base text-slate-500 mt-2">The home, vehicles, and loans are not included yet.</p>
 </section>
 <div class="space-y-6 mb-6">
-  {{ held(categories, people, companies) }}
-  {{ trend(trend_rows, trend_json, trend_chart) }}
+  {{ held(categories, people, companies, unknown_owners) }}
+  {{ trend(trend_rows, trend_json, trend_chart, trend_days) }}
   {{ cash(cash_accounts) }}
   {{ sources(sources_list) }}
   {% if is_admin %}

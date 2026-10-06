@@ -26,35 +26,41 @@ MISSING = "99999999-9999-4999-8999-999999999999"
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
 
 
-def _balance(  # noqa: PLR0913
-    conn: sqlite3.Connection,
-    account_id: str,
-    cents: int,
-    *,
-    entity: str | None = PERSON,
-    category: str = "Cash",
-    source: str = "xero_bank",
-    as_of: str = "2026-09-26",
-    currency: str = "USD",
-    name: str = "Example Account",
-    fetched_at: str | None = None,
-    reconciled: str | None = None,
+# Column values used when a test does not override them.
+_DEFAULTS: dict[str, str | None] = {
+    "entity": PERSON,
+    "category": "Cash",
+    "source": "xero_bank",
+    "as_of": "2026-09-26",
+    "currency": "USD",
+    "name": "Example Account",
+    "fetched_at": NOW.isoformat(),
+    "reconciled": None,
+}
+
+
+def _balance(
+    conn: sqlite3.Connection, account_id: str, cents: int, **fields: str | None
 ) -> None:
+    """Insert one balance row; ``fields`` override the ``_DEFAULTS`` columns."""
+    unknown = fields.keys() - _DEFAULTS.keys()
+    assert not unknown, f"unknown balance fields: {sorted(unknown)}"
+    row = {**_DEFAULTS, **fields}
     conn.execute(
         "INSERT INTO account_balances (account_id, account_name, entity_id, "
         "category, source, value_cents, as_of, fetched_at, currency, "
         "reconciled_through) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             account_id,
-            name,
-            entity,
-            category,
-            source,
+            row["name"],
+            row["entity"],
+            row["category"],
+            row["source"],
             cents,
-            as_of,
-            fetched_at or NOW.isoformat(),
-            currency,
-            reconciled,
+            row["as_of"],
+            row["fetched_at"],
+            row["currency"],
+            row["reconciled"],
         ),
     )
 
@@ -96,6 +102,41 @@ async def test_totals_by_category_are_usd_only_in_a_fixed_order(
     assert all(isinstance(g.total, Decimal) for g in groups)
 
 
+async def test_category_order_covers_every_known_category(db_path: Path) -> None:
+    """All five known categories keep their fixed order; unknown ones follow A-Z."""
+    with sqlite3.connect(db_path) as conn:
+        # Inserted in an order that matches neither the fixed nor the A-Z order.
+        for i, category in enumerate(
+            (
+                "Zeta",
+                "Alternatives",
+                "Cash",
+                "Beta",
+                "Retirement",
+                "Digital currency",
+                "Investments",
+            )
+        ):
+            _balance(conn, f"pp:{i}", 100, category=category)
+    groups = await cache.get_balance_totals_by_category()
+    assert [g.name for g in groups] == [
+        "Investments",
+        "Retirement",
+        "Cash",
+        "Digital currency",
+        "Alternatives",
+        "Beta",
+        "Zeta",
+    ]
+    assert cache.CATEGORY_ORDER == (
+        "Investments",
+        "Retirement",
+        "Cash",
+        "Digital currency",
+        "Alternatives",
+    )
+
+
 async def test_totals_by_category_empty(db_path: Path) -> None:
     """No balances gives an empty list."""
     del db_path
@@ -127,10 +168,43 @@ async def test_unknown_entities_share_a_plain_label_never_a_uuid(
         _balance(conn, "pp:b", 250, entity="another-missing-id")
         _balance(conn, "pp:c", 50, entity=None)
     groups = await cache.get_balance_totals_by_entity()
-    assert [(g.name, g.kind, g.total, g.accounts) for g in groups] == [
-        ("Unknown entity", None, Decimal("4.00"), 3)
+    assert [(g.name, g.kind, g.total, g.accounts, g.known) for g in groups] == [
+        ("Unknown entity", None, Decimal("4.00"), 3, False)
     ]
     assert MISSING not in repr(groups)
+
+
+async def test_entity_with_blank_name_joins_the_unknown_group(db_path: Path) -> None:
+    """A cached entity with an empty name is not a second "Unknown entity" row."""
+    blank = "12121212-3434-4565-8787-909090909090"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, type, fetched_at) "
+            "VALUES (?, '', 'llc', ?)",
+            (blank, NOW.isoformat()),
+        )
+        _balance(conn, "pp:a", 100, entity=blank)
+        _balance(conn, "pp:b", 250, entity=None)
+        _balance(conn, "pp:c", 1_000, entity=COMPANY)
+    groups = await cache.get_balance_totals_by_entity()
+    assert [(g.name, g.kind, g.total, g.known) for g in groups] == [
+        ("Example Holdings LLC", "llc", Decimal("10.00"), True),
+        ("Unknown entity", None, Decimal("3.50"), False),
+    ]
+
+
+async def test_entity_kind_is_lowercased(db_path: Path) -> None:
+    """An entity type sent in another case is compared in lower case."""
+    upper = "13131313-2424-4535-8646-757575757575"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, type, fetched_at) "
+            "VALUES (?, 'Example Spouse', 'Individual', ?)",
+            (upper, NOW.isoformat()),
+        )
+        _balance(conn, "pp:a", 100, entity=upper)
+    groups = await cache.get_balance_totals_by_entity()
+    assert [(g.name, g.kind) for g in groups] == [("Example Spouse", "individual")]
 
 
 async def test_daily_totals_sum_per_date_and_cover_90_days(db_path: Path) -> None:
@@ -177,6 +251,27 @@ async def test_daily_totals_default_today_is_the_display_date(
         assert await cache.get_daily_totals() == []
 
 
+async def test_reader_dates_follow_the_display_zone_not_utc(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shortly after midnight UTC it is still the previous day in New York."""
+    monkeypatch.setenv("DISPLAY_TIMEZONE", "America/New_York")
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO balances_daily (date, account_id, entity_id, category, "
+            "value_cents, as_of, currency) VALUES (?, 'pp:a', NULL, 'Cash', 100, ?, "
+            "'USD')",
+            [("2026-09-27", "2026-09-27"), ("2026-09-28", "2026-09-28")],
+        )
+        _balance(conn, "pp:m", 1, source="manual_mark", as_of="2026-09-20")
+    # 02:30 UTC on the 28th is 22:30 on the 27th in New York (UTC-4).
+    with freeze_time("2026-09-28 02:30:00"):
+        points = await cache.get_daily_totals(days=1)
+        marks = await cache.get_manual_marks()
+    assert [p.date for p in points] == ["2026-09-27"]
+    assert marks[0].age_days == 7
+
+
 async def test_manual_marks_are_oldest_first_with_ages_in_days(
     db_path: Path,
 ) -> None:
@@ -201,19 +296,26 @@ async def test_manual_marks_are_oldest_first_with_ages_in_days(
             entity=MISSING,
         )
         _balance(conn, "pp:feed", 1, source="broker_report", as_of="2020-01-01")
+        # A near-miss spelling is a different feed and is not listed.
+        _balance(conn, "pp:typo", 1, source="manual_marks", as_of="2026-01-01")
     marks = await cache.get_manual_marks(today=date(2026, 9, 27))
     assert [(m.account_name, m.entity_name, m.as_of, m.age_days) for m in marks] == [
         ("Older Mark", "Unknown entity", "2026-06-30", 89),
         ("Newer Mark", "Example Household", "2026-09-20", 7),
     ]
+    assert not any(m.in_future for m in marks)
 
 
-async def test_manual_marks_age_is_never_negative(db_path: Path) -> None:
-    """A mark dated in the future reports zero days, not a negative age."""
+async def test_manual_mark_in_the_future_is_flagged(db_path: Path) -> None:
+    """A mark dated after today reports zero days and is flagged, not freshest."""
     with sqlite3.connect(db_path) as conn:
         _balance(conn, "pp:x", 1, source="manual_mark", as_of="2026-10-05")
+        _balance(conn, "pp:y", 1, source="manual_mark", as_of="2026-09-27")
     marks = await cache.get_manual_marks(today=date(2026, 9, 27))
-    assert marks[0].age_days == 0
+    assert [(m.as_of, m.age_days, m.in_future) for m in marks] == [
+        ("2026-09-27", 0, False),
+        ("2026-10-05", 0, True),
+    ]
 
 
 async def test_manual_marks_default_today(db_path: Path) -> None:
@@ -260,10 +362,16 @@ async def test_cash_accounts_carry_reconciled_through(db_path: Path) -> None:
 
 
 async def test_balances_freshness_follows_the_oldest_provider(db_path: Path) -> None:
-    """A provider that stops reporting makes the whole section look stale."""
+    """A provider that stops reporting makes the whole section look stale.
+
+    The fresh provider has several accounts, so neither the newest row nor
+    the number of fresh rows decides.
+    """
     old = (NOW - timedelta(hours=60)).isoformat()
     with sqlite3.connect(db_path) as conn:
         _balance(conn, "pp:a", 1, fetched_at=NOW.isoformat())
+        _balance(conn, "pp:b", 1, fetched_at=NOW.isoformat())
+        _balance(conn, "pp:c", 1, fetched_at=NOW.isoformat())
         _balance(conn, "xero:b", 1, fetched_at=old)
     with freeze_time(NOW):
         latest = await cache.last_fetched_at("balances")
@@ -283,3 +391,25 @@ async def test_balances_freshness_when_every_provider_is_current(
             _balance(conn, "pp:a", 1)
             _balance(conn, "xero:b", 1)
         assert await cache.is_stale("balances", 24) is False
+
+
+async def test_other_datasets_stay_as_fresh_as_their_newest_row(
+    db_path: Path,
+) -> None:
+    """Only balances use the oldest row; entities still use the newest."""
+    old = (NOW - timedelta(hours=60)).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, type, fetched_at) "
+            "VALUES ('old-entity', 'Example Old', 'llc', ?)",
+            (old,),
+        )
+    assert await cache.last_fetched_at("entities") == NOW
+
+
+def test_is_older_than_threshold() -> None:
+    """Missing is stale; the threshold itself is not yet stale."""
+    with freeze_time(NOW):
+        assert cache.is_older_than(None, 24) is True
+        assert cache.is_older_than(NOW - timedelta(hours=24), 24) is False
+        assert cache.is_older_than(NOW - timedelta(hours=25), 24) is True

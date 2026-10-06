@@ -29,7 +29,7 @@ never logged or echoed.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timezone
+from datetime import date, datetime, timezone
 from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -292,6 +292,23 @@ def display_zone(settings: Settings | None = None) -> ZoneInfo | timezone:
                 fallback="UTC",
             )
         return timezone.utc
+
+
+def local_today() -> date:
+    """Return today's date in the configured display time zone.
+
+    Falls back to UTC when ``DISPLAY_TIMEZONE`` is not a usable zone (see
+    ``display_zone``). Readers and writers both use this one helper, so the
+    page and the daily snapshot agree on what "today" is.
+
+    #ASSUME: timing: the family reads "today" in the display zone, so a
+    snapshot taken in the evening there still carries that local date.
+    #VERIFY: set ``DISPLAY_TIMEZONE`` to the family's zone in the stack.
+
+    Returns:
+        date: Local calendar date.
+    """
+    return datetime.now(display_zone()).date()
 
 
 def check_backends(settings: Settings) -> None:

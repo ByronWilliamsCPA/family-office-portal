@@ -121,6 +121,13 @@ MAX_DELIVERY_ROWS = 2000
 # Providers a delivery may name, as account id prefixes. This tuple is the one
 # place the set is written down; the account id pattern is built from it.
 BALANCE_PROVIDERS: tuple[str, ...] = ("pp", "xero", "crypto")
+# Feed name the collector puts on accounts valued by hand. The admin view of
+# manual marks selects on this exact name, and the page label is keyed on it.
+# #ASSUME: data integrity: the collector spells the manual feed exactly
+# ``manual_mark``; any other spelling is stored but left off the admin view.
+# #VERIFY: check the collector's source names against this constant before
+# connecting it, and after any collector change.
+MANUAL_MARK_SOURCE = "manual_mark"
 # Bank-style rows that may carry a reconciled-through date.
 _RECONCILED_PROVIDER = "xero"
 _ACCOUNT_ID_PATTERN = rf"^({'|'.join(BALANCE_PROVIDERS)}):[A-Za-z0-9._:-]{{1,100}}$"

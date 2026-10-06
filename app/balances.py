@@ -14,11 +14,10 @@ negative amounts, and no ``float(`` call appears in this module.
 
 from __future__ import annotations
 
-from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import TYPE_CHECKING
 
-from app.config import display_zone
+from app.config import local_today
 from app.models import provider_of
 
 if TYPE_CHECKING:
@@ -29,6 +28,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "drop_unreported_from_day",
+    "from_cents",
     "local_today",
     "provider_of",
     "replace_balances",
@@ -52,6 +52,21 @@ def to_cents(value: str) -> int:
         Decimal(1), rounding=ROUND_HALF_EVEN
     )
     return int(cents)
+
+
+def from_cents(cents: int) -> Decimal:
+    """Convert integer cents back to Decimal dollars with exactly two places.
+
+    This is the one cents-to-dollars helper; every reader that shows money
+    uses it, so totals always carry the same exponent.
+
+    Args:
+        cents (int): Amount in cents, for example ``123456``.
+
+    Returns:
+        Decimal: Amount in dollars, for example ``Decimal("1234.56")``.
+    """
+    return Decimal(cents).scaleb(-2)
 
 
 def replace_balances(
@@ -175,19 +190,3 @@ def snapshot_daily(conn: sqlite3.Connection, day: str) -> int:
         (day,),
     )
     return max(cursor.rowcount, 0)
-
-
-def local_today() -> date:
-    """Return today's date in the configured display time zone.
-
-    Falls back to UTC when ``DISPLAY_TIMEZONE`` is not a usable zone (see
-    ``app.config.display_zone``).
-
-    #ASSUME: timing: the family reads "today" in the display zone, so a
-    snapshot taken in the evening there still carries that local date.
-    #VERIFY: set ``DISPLAY_TIMEZONE`` to the family's zone in the stack.
-
-    Returns:
-        date: Local calendar date.
-    """
-    return datetime.now(display_zone()).date()

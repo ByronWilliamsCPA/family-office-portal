@@ -59,5 +59,5 @@ async def home(request: Request) -> Response:
         upcoming=upcoming,
         recent_documents=recent,
         **(await balances_summary()),
-        **(await balance_breakdown(is_admin=include_confidential(request))),
+        **(await balance_breakdown()),
     )

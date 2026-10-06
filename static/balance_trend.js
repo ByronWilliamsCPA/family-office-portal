@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Byron Williams
 // SPDX-License-Identifier: MIT
 //
-// Draws the daily total as a line once the page has loaded. The same numbers
-// are always in a table on the page, so nothing depends on this script.
+// Draws the daily total as a line. The page loads this script with "defer",
+// so it runs once the page has been parsed, after the vendored Chart.js. The
+// same numbers are always in a table on the page, so nothing depends on it.
 (function () {
   "use strict";
   var holder = document.querySelector("[data-trend-chart]");
-  if (!holder || typeof Chart === "undefined") {
+  if (!holder) {
+    return;
+  }
+  if (typeof Chart === "undefined") {
+    console.warn("balance trend: Chart.js did not load; showing the table only");
     return;
   }
   var canvas = holder.querySelector("canvas");
@@ -14,11 +19,23 @@
   try {
     points = JSON.parse(holder.getAttribute("data-points") || "[]");
   } catch (err) {
+    console.warn("balance trend: chart data could not be read", err);
     return;
   }
   if (!canvas || points.length < 2) {
     return;
   }
+
+  // Whole dollars with the sign before the symbol, for example "-$5,000",
+  // matching the money format of the server-rendered table.
+  function dollars(value) {
+    var amount = Number(value);
+    var sign = amount < 0 ? "-" : "";
+    return sign + "$" + Math.abs(amount).toLocaleString("en-US", {
+      maximumFractionDigits: 0
+    });
+  }
+
   holder.hidden = false;
   new Chart(canvas, {
     type: "line",
@@ -36,11 +53,18 @@
     options: {
       animation: false,
       responsive: true,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function (ctx) { return dollars(ctx.parsed.y); }
+          }
+        }
+      },
       scales: {
         y: {
           ticks: {
-            callback: function (v) { return "$" + Number(v).toLocaleString("en-US"); }
+            callback: function (v) { return dollars(v); }
           }
         }
       }

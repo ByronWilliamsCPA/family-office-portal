@@ -19,7 +19,7 @@
         <th scope="row" class="py-2 font-normal">{{ m.account_name }}</th>
         <td class="py-2">{{ m.entity_name }}</td>
         <td class="py-2">{{ m.as_of | friendly_date }}</td>
-        <td class="py-2 text-right">{{ m.age_days }} day{{ 's' if m.age_days != 1 }} old</td>
+        <td class="py-2 text-right">{% if m.in_future %}Dated after today; please check{% else %}{{ m.age_days }} day{{ 's' if m.age_days != 1 }} old{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

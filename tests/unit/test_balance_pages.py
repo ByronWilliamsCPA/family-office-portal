@@ -11,6 +11,8 @@ JavaScript, per-source dates, and no raw identifiers.
 from __future__ import annotations
 
 import hashlib
+import html as html_lib
+import json
 import re
 import sqlite3
 from collections.abc import Callable
@@ -26,7 +28,7 @@ HOUSEHOLD = "66666666-7777-4888-8999-aaaaaaaaaaaa"
 LLC = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
 NOT_CACHED = "99999999-9999-4999-8999-999999999999"
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
-CHART_TAG = '<script src="/static/chart.umd.min.js"></script>'
+CHART_TAG = '<script src="/static/chart.umd.min.js" defer></script>'
 NOT_INCLUDED = "The home, vehicles, and loans are not included yet."
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # A public file hash, not a secret: it pins the vendored Chart.js build.
@@ -160,6 +162,12 @@ def _seed(path: Path, *, fetched_at: str | None = None) -> None:
             )
 
 
+def _trend_section(page: str) -> str:
+    """Return the HTML of the trend section only."""
+    start = page.index('id="trend-heading"')
+    return page[start : page.index("</section>", start)]
+
+
 async def _get(client: AsyncClient, path: str, headers: dict[str, str]) -> str:
     # The in-process transport holds no connection, so one client can be
     # used for several requests without entering its context.
@@ -228,11 +236,46 @@ async def test_chart_is_loaded_locally_only_where_it_is_drawn(
         assert CHART_TAG in html
         assert "<canvas" in html
         assert "data-points=" in html
+        assert '<script src="/static/balance_trend.js" defer></script>' in html
     for html in (entities, documents):
         assert "chart.umd" not in html
     assert "cdn" not in home.lower()
     assert "http://" not in home
     assert "https://" not in home
+
+
+async def test_chart_data_is_oldest_first_exact_decimal_strings(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """The chart gets every day oldest first, totals as exact strings."""
+    _seed(tmp_db_path)
+    with freeze_time(NOW):
+        html = await _get(client, "/finances", viewer_headers)
+    match = re.search(r"data-points='([^']*)'", html)
+    assert match is not None
+    points = json.loads(html_lib.unescape(match.group(1)))
+    assert points == [
+        {"date": "2026-09-25", "total": "1600000.00"},
+        {"date": "2026-09-26", "total": "1680000.00"},
+        {"date": "2026-09-27", "total": "1683000.50"},
+    ]
+
+
+async def test_trend_table_lists_the_newest_day_first(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """The no-JavaScript table reads newest first, unlike the chart."""
+    _seed(tmp_db_path)
+    with freeze_time(NOW):
+        html = await _get(client, "/", viewer_headers)
+    section = _trend_section(html)
+    assert "The last 90 days" in html
+    days = re.findall(r'<th scope="row"[^>]*>([^<]+)</th>', section)
+    assert days == ["September 27, 2026", "September 26, 2026", "September 25, 2026"]
 
 
 async def test_trend_with_too_few_points_has_no_chart(
@@ -326,7 +369,84 @@ async def test_home_page_keeps_total_when_no_history_or_entities(
     with freeze_time(NOW):
         html = await _get(client, "/", viewer_headers)
     assert "Unknown entity" in html
-    assert "No daily history yet." in html
+    # With no daily history the trend section is left out entirely; the
+    # total above already says what there is.
+    assert 'id="trend-heading"' not in html
+    assert "chart.umd" not in html
+
+
+async def test_owners_not_on_file_get_their_own_heading(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """Money with no cached owner is never labelled as company or trust money."""
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute(
+            "INSERT INTO account_balances (account_id, account_name, entity_id, "
+            "category, source, value_cents, as_of, fetched_at) VALUES "
+            "('pp:z', 'Example', NULL, 'Cash', 'm', 100, '2026-09-27', ?)",
+            (NOW.isoformat(),),
+        )
+    with freeze_time(NOW):
+        html = await _get(client, "/finances", viewer_headers)
+    assert "Owner not on file" in html
+    assert "Unknown entity" in html
+    assert "By company and trust" not in html
+    assert "By person and household" not in html
+
+
+async def test_released_entity_types_are_listed_as_companies_and_trusts(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """Types the entities backend sends today all land under company and trust."""
+    released = ("llc", "trust", "s_corporation", "partnership", "other")
+    with sqlite3.connect(tmp_db_path) as conn:
+        for i, kind in enumerate(released):
+            entity_id = f"0000000{i}-0000-4000-8000-000000000000"
+            conn.execute(
+                "INSERT INTO entities (id, name, type, fetched_at) VALUES (?, ?, ?, ?)",
+                (entity_id, f"Example Owner {kind}", kind, NOW.isoformat()),
+            )
+            conn.execute(
+                "INSERT INTO account_balances (account_id, account_name, "
+                "entity_id, category, source, value_cents, as_of, fetched_at) "
+                "VALUES (?, 'Example', ?, 'Cash', 'm', 100, '2026-09-27', ?)",
+                (f"pp:{kind}", entity_id, NOW.isoformat()),
+            )
+    with freeze_time(NOW):
+        html = await _get(client, "/finances", viewer_headers)
+    assert "By company and trust" in html
+    assert "By person and household" not in html
+    for kind in released:
+        assert f"Example Owner {kind}" in html
+
+
+async def test_intake_supplied_names_are_escaped(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """Account and owner names are text, never markup."""
+    hostile = "<script>alert(\"x\")</script> & 'q'"
+    owner = "14141414-2525-4636-8747-858585858585"
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, type, fetched_at) VALUES (?, ?, 'llc', ?)",
+            (owner, hostile, NOW.isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO account_balances (account_id, account_name, entity_id, "
+            "category, source, value_cents, as_of, fetched_at) VALUES "
+            "('xero:z', ?, ?, 'Cash', 'xero_bank', 100, '2026-09-27', ?)",
+            (hostile, owner, NOW.isoformat()),
+        )
+    with freeze_time(NOW):
+        html = await _get(client, "/finances", viewer_headers)
+    assert "<script>alert" not in html
+    assert "&lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt; &amp; &#39;q&#39;" in html
 
 
 async def test_stale_provider_is_labelled_out_of_date(
@@ -373,13 +493,14 @@ async def test_manual_marks_page_lists_oldest_first_with_ages(
         conn.execute(
             "INSERT INTO account_balances (account_id, account_name, entity_id, "
             "category, source, value_cents, as_of, fetched_at) VALUES "
-            "('pp:acct-777', 'Example Alternatives', ?, 'Alternatives', "
+            "('pp:acct-777', 'Example Zeta Alternatives', ?, 'Alternatives', "
             "'manual_mark', 100, '2026-06-30', ?)",
             (HOUSEHOLD, NOW.isoformat()),
         )
     with freeze_time(NOW):
         html = await _get(client, "/admin/manual-marks", admin_headers)
-    assert html.index("Example Alternatives") < html.index("Example Retirement")
+    # Oldest first; alphabetical order would put Retirement first.
+    assert html.index("Example Zeta Alternatives") < html.index("Example Retirement")
     assert "89 days old" in html
     assert "27 days old" in html
     assert "June 30, 2026" in html
@@ -387,6 +508,26 @@ async def test_manual_marks_page_lists_oldest_first_with_ages(
     assert "Example Brokerage" not in html
     assert not UUID_RE.search(html)
     assert "acct-" not in html
+
+
+async def test_manual_marks_page_flags_a_future_date(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """A mark dated after today asks to be checked instead of looking newest."""
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute(
+            "INSERT INTO account_balances (account_id, account_name, entity_id, "
+            "category, source, value_cents, as_of, fetched_at) VALUES "
+            "('pp:f', 'Example Future', NULL, 'Alternatives', 'manual_mark', 1, "
+            "'2026-10-15', ?)",
+            (NOW.isoformat(),),
+        )
+    with freeze_time(NOW):
+        html = await _get(client, "/admin/manual-marks", admin_headers)
+    assert "Dated after today; please check" in html
+    assert "0 days old" not in html
 
 
 async def test_manual_marks_page_empty_state(
@@ -428,6 +569,44 @@ async def test_refresh_status_knows_the_balances_service(
         response = await ac.get("/admin/refresh-status", headers=admin_headers)
     entry = next(e for e in response.json()["entries"] if e["service"] == "balances")
     assert entry["is_stale"] is True  # no balances cached yet
+
+
+async def test_refresh_status_balances_follow_the_oldest_provider(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    tmp_db_path: Path,
+) -> None:
+    """Fresh balances are not stale; one provider behind makes them stale."""
+    _seed(tmp_db_path)
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute(
+            "INSERT INTO refresh_log (service, status, message, rows, ran_at) "
+            "VALUES ('balances', 'success', NULL, 3, ?)",
+            (NOW.isoformat(),),
+        )
+
+    async def balances_stale() -> bool:
+        with freeze_time(NOW):
+            response = await client.get("/admin/refresh-status", headers=admin_headers)
+        entries = response.json()["entries"]
+        return next(e for e in entries if e["service"] == "balances")["is_stale"]
+
+    assert await balances_stale() is False
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute(
+            "UPDATE account_balances SET fetched_at = ? WHERE account_id LIKE 'xero:%'",
+            ((NOW - timedelta(hours=72)).isoformat(),),
+        )
+    assert await balances_stale() is True
+
+
+def test_source_label_known_and_unknown_feeds() -> None:
+    """Known feeds get their label; others read as words, first letter upper."""
+    from app.routes._context import source_label  # noqa: PLC0415
+
+    assert source_label("manual_mark") == "Manual entry from a statement"
+    assert source_label("custom_feed_x") == "Custom feed x"
+    assert source_label("_") == ""
 
 
 # --------------------------------------------------------------------------- #

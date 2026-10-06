@@ -16,21 +16,22 @@
 {% endif %}
 {%- endmacro %}
 
-{% macro held(categories, people, companies) -%}
+{% macro held(categories, people, companies, unknown_owners) -%}
 {% if categories %}
 <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="held-heading">
   <h2 id="held-heading" class="text-xl font-semibold mb-1">Where the money is held</h2>
   {{ group_table("By type of account", categories) }}
   {{ group_table("By person and household", people) }}
   {{ group_table("By company and trust", companies) }}
+  {{ group_table("Owner not on file", unknown_owners) }}
 </section>
 {% endif %}
 {%- endmacro %}
 
-{% macro trend(points, chart_json, chart) -%}
+{% macro trend(points, chart_json, chart, days) -%}
+{% if points %}
 <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="trend-heading">
-  <h2 id="trend-heading" class="text-xl font-semibold mb-3">The last 90 days</h2>
-  {% if points %}
+  <h2 id="trend-heading" class="text-xl font-semibold mb-3">The last {{ days }} days</h2>
   {% if chart %}
   <div class="mb-4" data-trend-chart data-points='{{ chart_json }}' hidden>
     <canvas aria-hidden="true" height="220"></canvas>
@@ -39,7 +40,7 @@
   <details>
     <summary class="cursor-pointer text-blue-800 underline">Show the totals day by day</summary>
     <table class="w-full text-left mt-3">
-      <caption class="text-left text-slate-500 pb-2">Total by day, newest first</caption>
+      <caption class="text-left text-slate-500 pb-2">Total by day, newest first. Days with no record are left out.</caption>
       <thead><tr class="text-slate-500">
         <th scope="col" class="py-2">Day</th>
         <th scope="col" class="py-2 text-right">Total</th>
@@ -54,10 +55,8 @@
       </tbody>
     </table>
   </details>
-  {% else %}
-  <p class="text-slate-600">No daily history yet.</p>
-  {% endif %}
 </section>
+{% endif %}
 {%- endmacro %}
 
 {% macro sources(items) -%}
@@ -99,7 +98,7 @@
 
 {% macro chart_scripts(chart) -%}
 {% if chart %}
-<script src="/static/chart.umd.min.js"></script>
-<script src="/static/balance_trend.js"></script>
+<script src="/static/chart.umd.min.js" defer></script>
+<script src="/static/balance_trend.js" defer></script>
 {% endif %}
 {%- endmacro %}
