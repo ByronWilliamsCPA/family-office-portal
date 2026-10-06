@@ -6,8 +6,6 @@
 > **Amended**: 2026-10-05 (balance intake writer; see "Amendment 2026-10-05" below)
 > **Related**: [ADR-007](adr-007-live-document-file-proxy.md) records a bounded exception:
 > document preview and download stream the file from llc-manager per request
-> **Narrowed by**: [ADR-006](./adr-006-document-indexer.md) (document search may call the
-> embedding service and Qdrant during a request; every other page still reads only SQLite)
 
 ## TL;DR
 
