@@ -106,12 +106,9 @@ _EXTENSIONS: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
 }
 
-# Other extensions a title may already end with for the same content type, so
-# "photo.jpeg" is not renamed "photo.jpeg.jpg".
-_EXTENSION_ALIASES: dict[str, tuple[str, ...]] = {
-    "image/jpeg": (".jpeg",),
-    "image/tiff": (".tiff",),
-}
+# Other spellings of an extension a title may already end with, mapped to the
+# extension above, so "photo.jpeg" is not renamed "photo.jpeg.jpg".
+_EXTENSION_ALIASES: dict[str, str] = {".jpeg": ".jpg", ".tiff": ".tif"}
 
 # Longest page number a link may carry; longer strings are ignored before
 # ``int()`` sees them (Python refuses to parse over 4300 digits).
@@ -360,7 +357,10 @@ def download_filename(title: str, content_type: str) -> str:
     stem = _WHITESPACE.sub(" ", _PATH_SEPARATORS.sub("_", kept)).strip(" .")
     stem = stem[:_MAX_STEM_CHARS].rstrip(" .") or _DEFAULT_STEM
     extension = _EXTENSIONS.get(content_type, "")
-    accepted = (extension, *_EXTENSION_ALIASES.get(content_type, ()))
+    accepted = (
+        extension,
+        *(alias for alias, same in _EXTENSION_ALIASES.items() if same == extension),
+    )
     if extension and not stem.lower().endswith(accepted):
         return stem + extension
     return stem

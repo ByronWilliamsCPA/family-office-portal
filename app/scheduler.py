@@ -502,7 +502,7 @@ def _optional_text(item: dict[str, Any], key: str) -> str | None:
     return str(value)
 
 
-def _document_row(item: object, fetched_at: str) -> tuple[Any, ...] | None:
+def _document_row(item: object, fetched_at: str) -> tuple[tuple[Any, ...], bool] | None:
     """Turn one contract document into a cache row, or None to skip it.
 
     Args:
@@ -510,8 +510,9 @@ def _document_row(item: object, fetched_at: str) -> tuple[Any, ...] | None:
         fetched_at (str): ISO 8601 refresh time.
 
     Returns:
-        tuple[Any, ...] | None: Column values for ``documents``, or None when
-        the item has no usable ID or title.
+        tuple[tuple[Any, ...], bool] | None: Column values for
+        ``documents`` and whether the item named an unknown category, or
+        None when the item has no usable ID or title.
     """
     if not isinstance(item, dict):
         logger.warning("document_skipped", reason="not_an_object")
@@ -526,7 +527,7 @@ def _document_row(item: object, fetched_at: str) -> tuple[Any, ...] | None:
         # The ID is logged, never the title, which may be personal.
         logger.warning("document_skipped", reason="no_usable_title", id=doc_id)
         return None
-    return (
+    row = (
         doc_id,
         title,
         _document_category(record),
@@ -539,6 +540,7 @@ def _document_row(item: object, fetched_at: str) -> tuple[Any, ...] | None:
         f"/documents/{doc_id}/preview",
         fetched_at,
     )
+    return row, _is_unknown_category(record)
 
 
 def _write_documents(
@@ -568,16 +570,16 @@ def _write_documents(
     seen: set[str] = set()
     unknown_categories = 0
     for item in items:
-        row = _document_row(item, fetched_at)
-        if row is None:
+        parsed = _document_row(item, fetched_at)
+        if parsed is None:
             continue
+        row, unknown_category = parsed
         doc_id = str(row[0])
         if doc_id in seen:
             logger.warning("document_skipped", reason="duplicate_id", id=doc_id)
             continue
         seen.add(doc_id)
-        if _is_unknown_category(cast("dict[str, Any]", item)):
-            unknown_categories += 1
+        unknown_categories += unknown_category
         conn.execute(
             "INSERT INTO documents (id, name, category, entity_id, document_type, "
             "document_date, is_confidential, added_at, modified_at, proxy_url, "
