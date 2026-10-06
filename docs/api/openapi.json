@@ -295,6 +295,28 @@
         ]
       }
     },
+    "/admin/manual-marks": {
+      "get": {
+        "description": "List accounts whose value is entered by hand, oldest first.\n\nAuthentication: Admin only; the middleware refuses a Viewer with the\nstandard access-denied answer before this runs.\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered page with each account and the age of its value.",
+        "operationId": "manual_marks_admin_manual_marks_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Accounts valued by hand",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/refresh-status": {
       "get": {
         "description": "Return the latest success and failure per backend service.\n\nAuthentication: Admin only (ADR-005). Services that have never run are\nomitted.\n\nReturns:\n    RefreshStatusResponse: One entry per service that has run.",

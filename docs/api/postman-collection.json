@@ -29,6 +29,46 @@
                   "pm.test('status is in the expected range', function () {",
                   "    const expected = authed ? [200] : [403];",
                   "    pm.expect(expected).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Accounts valued by hand",
+          "request": {
+            "description": "List accounts whose value is entered by hand, oldest first.\n\nAuthentication: Admin only; the middleware refuses a Viewer with the\nstandard access-denied answer before this runs.\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered page with each account and the age of its value.",
+            "header": [
+              {
+                "key": "X-authentik-jwt",
+                "type": "text",
+                "value": "{{authentikJwt}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "manual-marks"
+              ],
+              "raw": "{{baseUrl}}/admin/manual-marks"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const authed = Boolean(pm.variables.get('authentikJwt'));",
+                  "pm.test('status is in the expected range', function () {",
+                  "    const expected = authed ? [200] : [403];",
+                  "    pm.expect(expected).to.include(pm.response.code);",
                   "});",
                   "if (authed) {",
                   "    pm.test('response body is valid JSON', function () {",
