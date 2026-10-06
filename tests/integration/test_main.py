@@ -262,3 +262,34 @@ def test_backend_with_url_and_key_starts(
     monkeypatch.setenv(key_var, "a-real-key")
 
     _load_main()
+
+
+# --------------------------------------------------------------------------- #
+# Chat settings
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.usefixtures("portal_env")
+def test_chat_url_without_key_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """LLM_BASE_URL without LLM_API_KEY exits 1 naming the key variable."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
+    with pytest.raises(SystemExit) as exc_info:
+        _load_main()
+    assert exc_info.value.code == 1
+    assert "LLM_API_KEY" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("portal_env")
+def test_chat_bad_flag_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unknown CHAT_ENABLED_FOR value exits 1 naming the variable only."""
+    monkeypatch.setenv("CHAT_ENABLED_FOR", "somebody")
+    with pytest.raises(SystemExit) as exc_info:
+        _load_main()
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "CHAT_ENABLED_FOR" in err
+    assert "somebody" not in err

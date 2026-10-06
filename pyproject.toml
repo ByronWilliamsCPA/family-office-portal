@@ -22,6 +22,7 @@ dependencies = [
     "pyjwt[crypto]>=2.8",
     "pydantic-settings>=2.5",
     "qdrant-client>=1.19",
+    "pillow>=11.0",
 ]
 
 [project.optional-dependencies]

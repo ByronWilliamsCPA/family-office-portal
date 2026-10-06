@@ -56,6 +56,13 @@ _OPTIONAL_PORTAL_ENV_VARS = (
     "BALANCE_INTAKE_API_KEY",
     "DISPLAY_TIMEZONE",
     "SCHEDULER_ENABLED",
+    # Chat settings (``app.chat.settings``): chat tests set their own.
+    "LLM_BASE_URL",
+    "LLM_API_KEY",
+    "LLM_MODEL",
+    "LLM_TIMEOUT_SECONDS",
+    "CHAT_INSTRUCTIONS_PATH",
+    "CHAT_ENABLED_FOR",
 )
 
 

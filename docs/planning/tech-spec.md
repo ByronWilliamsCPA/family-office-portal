@@ -294,6 +294,19 @@ without its key is a configuration error:
 | `CHUNKS_DIR` | unset | Read-only chunk-set directory, used only by the indexer command |
 | `TAX_LAW_PATH` | unset | Tax-law knowledge-base JSON file, used only by `python -m app.retrieval.tax_law` |
 
+The question panel ([ADR-009](../architecture/adr/adr-009-chat-live-model-call.md))
+reads its optional settings in `app/chat/settings.py`. Chat shows "not
+connected" until the model URL and the instructions file are both usable; a
+model URL without its key stops startup:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LLM_BASE_URL`, `LLM_API_KEY` | unset | OpenAI-compatible chat model service and its bearer key |
+| `LLM_MODEL` | empty | Model name; left out of the request when empty |
+| `LLM_TIMEOUT_SECONDS` | `30` | Most one answer may take, including the wait for a slot |
+| `CHAT_INSTRUCTIONS_PATH` | unset | Instructions file used as the system prompt; never stored in this repository |
+| `CHAT_ENABLED_FOR` | `admin` | Who sees the panel: `admin`, `all` or `none` |
+
 ## 5. Security
 
 ### Authentication

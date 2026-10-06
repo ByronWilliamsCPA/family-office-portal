@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi.templating import Jinja2Templates
 
+from app.chat.balances import format_amount
 from app.config import BACKENDS, display_zone, load_settings
 from app.document_files import document_url
 from app.retrieval.settings import document_search_connected
@@ -87,6 +88,7 @@ templates.env.filters["friendly_time"] = friendly_time
 templates.env.filters["friendly_date"] = friendly_date
 templates.env.filters["money"] = money
 templates.env.filters["document_url"] = document_url
+templates.env.filters["amount"] = format_amount
 
 
 def render(

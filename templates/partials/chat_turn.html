@@ -1,0 +1,39 @@
+{# One question and its answer. Model text is shown as escaped plain text;
+   the only links are the portal's own citation links. #}
+<article class="border-t border-stone-200 pt-4 mt-4" aria-label="Answer">
+  <p class="font-semibold">You asked: {{ outcome.question }}</p>
+  {% if outcome.error %}
+  <p class="mt-2 text-amber-800" role="alert">{{ outcome.error }}</p>
+  {% else %}
+  <div class="mt-2 space-y-3">
+    {% for paragraph in outcome.paragraphs %}
+    <p class="whitespace-pre-line">{{ paragraph }}</p>
+    {% else %}
+    <p class="text-slate-600">No answer was given. Please try asking another way.</p>
+    {% endfor %}
+  </div>
+  {% if outcome.total or outcome.balances %}
+  <div class="mt-4 rounded-lg bg-stone-50 border border-stone-200 p-4">
+    <h3 class="font-semibold">Balances from the portal's records</h3>
+    <ul class="mt-2 space-y-1">
+      {% if outcome.total %}
+      <li>{{ outcome.total.label }}: {{ outcome.total.amount | amount }}, as of {{ outcome.total.as_of | friendly_date }}</li>
+      {% endif %}
+      {% for account in outcome.balances %}
+      <li>{{ account.name }}: {{ account.amount | amount(account.currency) }}, as of {{ account.as_of | friendly_date }}</li>
+      {% endfor %}
+    </ul>
+    <p class="mt-2 text-base text-slate-500">These figures come from the portal, not from the answer above. They may have changed since.</p>
+  </div>
+  {% endif %}
+  {% if outcome.citations %}
+  <h3 class="mt-4 font-semibold">Sources</h3>
+  <ul class="mt-1 space-y-1">
+    {% for source in outcome.citations %}
+    <li>{% if source.href %}<a class="text-blue-800 underline" href="{{ source.href }}">{{ source.label }}</a>{% else %}{{ source.label }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <p class="mt-4 text-base text-slate-500">Educational, not legal or tax advice.</p>
+  {% endif %}
+</article>
