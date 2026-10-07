@@ -9,23 +9,19 @@ from contextlib import closing
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from app.chat.balances import (
-    AccountBalance,
-    BalanceTable,
-    dollars,
-    format_amount,
-    read_balance_table,
-)
+from app.balances import format_amount, from_cents
+from app.chat.balances import AccountBalance, BalanceTable, read_balance_table
 from tests.unit.chat_fakes import seed_balances
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_dollars_is_exact() -> None:
-    """Cents become dollars without float drift."""
-    assert dollars(123456789) == Decimal("1234567.89")
-    assert dollars(-5) == Decimal("-0.05")
+def test_cents_become_exact_dollars() -> None:
+    """Cents become dollars without float drift, with two decimal places."""
+    assert from_cents(123456789) == Decimal("1234567.89")
+    assert from_cents(-5) == Decimal("-0.05")
+    assert str(from_cents(100)) == "1.00"
 
 
 def test_format_amount() -> None:
@@ -65,7 +61,7 @@ async def test_reads_accounts_and_daily_totals(
     ]
     totals = [(t.label, t.amount, t.as_of) for t in table.totals]
     assert totals == [
-        ("All accounts", Decimal("1237067.89"), "2026-09-30"),
+        ("All US dollar accounts", Decimal("1237067.89"), "2026-09-30"),
         ("Category Cash", Decimal("2500.00"), "2026-10-01"),
         ("Category Investments", Decimal("1234567.89"), "2026-09-30"),
     ]
@@ -90,7 +86,7 @@ async def test_totals_fall_back_to_accounts(
     assert len(table.accounts) == 3
     totals = [(t.label, t.amount, t.as_of) for t in table.totals]
     assert totals == [
-        ("All accounts", Decimal("1237067.89"), "2026-09-30"),
+        ("All US dollar accounts", Decimal("1237067.89"), "2026-09-30"),
         ("Category Cash", Decimal("2500.00"), "2026-10-01"),
         ("Category Investments", Decimal("1234567.89"), "2026-09-30"),
     ]

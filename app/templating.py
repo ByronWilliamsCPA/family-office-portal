@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi.templating import Jinja2Templates
 
-from app.chat.balances import format_amount
+from app.balances import format_amount
 from app.config import BACKENDS, display_zone, load_settings
 from app.document_files import document_url
 from app.retrieval.settings import document_search_connected

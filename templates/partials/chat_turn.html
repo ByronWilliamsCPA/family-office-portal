@@ -12,6 +12,9 @@
     <p class="text-slate-600">No answer was given. Please try asking another way.</p>
     {% endfor %}
   </div>
+  {% if outcome.notice %}
+  <p class="mt-2 text-amber-800">{{ outcome.notice }}</p>
+  {% endif %}
   {% if outcome.total or outcome.balances %}
   <div class="mt-4 rounded-lg bg-stone-50 border border-stone-200 p-4">
     <h3 class="font-semibold">Balances from the portal's records</h3>

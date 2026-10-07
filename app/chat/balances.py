@@ -8,7 +8,13 @@ row per account, and ``balances_daily`` for the daily totals. The same
 shown next to an answer, so a figure on screen never comes from model text.
 
 Totals are USD only, like the rest of the portal; accounts in other
-currencies are listed with their currency and left out of totals.
+currencies are listed with their currency and left out of totals, which is
+why the overall total is labelled "All US dollar accounts".
+
+Totals come from the latest day in ``balances_daily``, the same daily series
+the finances page charts, while Home sums ``account_balances``. The two agree
+when the daily snapshot is current; when a snapshot lags, the as-of date on
+each figure shows which one is older. ADR-009 records the choice.
 
 #CRITICAL: financial: amounts are integer cents from the database turned into
 ``Decimal`` dollars; no float arithmetic. #VERIFY:
@@ -22,13 +28,14 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from app.balances import from_cents
 from app.db import get_connection
 
 if TYPE_CHECKING:
     import aiosqlite
 
 USD = "USD"
-_CENTS = Decimal(100)
+OVERALL_LABEL = "All US dollar accounts"
 _WORD = re.compile(r"[a-z0-9]+")
 
 
@@ -58,7 +65,7 @@ class BalanceTotal:
     """One total the table lists.
 
     Attributes:
-        label (str): What the total covers, for example "All accounts".
+        label (str): What the total covers, for example "All US dollar accounts".
         amount (Decimal): Total in US dollars.
         as_of (str): Date of the oldest value counted in the total.
     """
@@ -100,7 +107,9 @@ class BalanceTable:
         """Return the accounts whose full name appears in any of the texts.
 
         Matching ignores case and punctuation and needs the whole name as a
-        run of words, so "Brokerage" does not match "Brokerage Two".
+        run of words. When both "Brokerage" and "Brokerage Two" exist, a text
+        that says "Brokerage Two" matches only the longer name; a text that
+        says "Brokerage" alone still matches the shorter one.
 
         Args:
             *texts (str): Question and answer text to look in.
@@ -136,42 +145,13 @@ def _words(text: str) -> str:
     return f" {' '.join(found)} "
 
 
-def dollars(cents: int) -> Decimal:
-    """Turn integer cents into dollars.
-
-    Args:
-        cents (int): Amount in cents.
-
-    Returns:
-        Decimal: Amount in dollars, exact.
-    """
-    return Decimal(cents) / _CENTS
-
-
-def format_amount(amount: Decimal, currency: str = USD) -> str:
-    """Format an amount to the cent, for example "$1,250.00" or "1,250.00 EUR".
-
-    Args:
-        amount (Decimal): Amount to format.
-        currency (str): ISO currency code.
-
-    Returns:
-        str: The formatted amount.
-    """
-    sign = "-" if amount < 0 else ""
-    number = f"{abs(amount):,.2f}"
-    if currency == USD:
-        return f"{sign}${number}"
-    return f"{sign}{number} {currency}"
-
-
 def _account(row: aiosqlite.Row) -> AccountBalance:
     entity = row["entity_name"]
     return AccountBalance(
         name=str(row["account_name"]),
         category=str(row["category"]),
         entity=str(entity) if entity else None,
-        amount=dollars(int(row["value_cents"])),
+        amount=from_cents(int(row["value_cents"])),
         currency=str(row["currency"]),
         as_of=str(row["as_of"]),
     )
@@ -214,13 +194,13 @@ async def _daily_totals(conn: aiosqlite.Connection) -> tuple[BalanceTotal, ...]:
     per_category = [
         BalanceTotal(
             label=f"Category {r['category']}",
-            amount=dollars(int(r["cents"])),
+            amount=from_cents(int(r["cents"])),
             as_of=str(r["oldest"]),
         )
         for r in rows
     ]
     overall = BalanceTotal(
-        label="All accounts",
+        label=OVERALL_LABEL,
         amount=sum((t.amount for t in per_category), Decimal(0)),
         as_of=min(t.as_of for t in per_category),
     )
@@ -243,7 +223,7 @@ def _totals_from_accounts(
         for name in categories
     ]
     overall = BalanceTotal(
-        label="All accounts",
+        label=OVERALL_LABEL,
         amount=sum((a.amount for a in usd), Decimal(0)),
         as_of=min(a.as_of for a in usd),
     )

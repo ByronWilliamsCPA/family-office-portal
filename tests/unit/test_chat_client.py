@@ -9,6 +9,7 @@ import json
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from app.chat.client import (
     CHAT_GATE,
@@ -31,7 +32,7 @@ IMAGE = PreparedImage(data=b"\xff\xd8jpeg", width=10, height=10)
 def _connection(timeout: float = 5.0, model: str = "") -> ChatConnection:
     return ChatConnection(
         base_url="http://chat.test",
-        api_key=random_key(),
+        api_key=SecretStr(random_key()),
         model=model,
         timeout_seconds=timeout,
     )
@@ -77,7 +78,15 @@ def _response(
 def test_parse_answer_reads_only_message_content() -> None:
     """reasoning_content is ignored; content is returned."""
     body = chat_answer("Visible answer.", reasoning_content="hidden thoughts")
-    assert parse_answer(_response(body=body)) == "Visible answer."
+    answer = parse_answer(_response(body=body))
+    assert answer.text == "Visible answer."
+    assert answer.truncated is False
+
+
+def test_parse_answer_flags_a_length_cut() -> None:
+    """finish_reason "length" marks the answer as cut short."""
+    body = chat_answer("Half an answ", finish_reason="length")
+    assert parse_answer(_response(body=body)).truncated is True
 
 
 @pytest.mark.parametrize(
@@ -95,24 +104,29 @@ def test_parse_answer_reads_only_message_content() -> None:
 )
 def test_parse_answer_rejects_unusable_bodies(body: object) -> None:
     """Anything but a non-blank string at choices[0].message.content fails."""
+    response = _response(body=body)
     with pytest.raises(ChatError) as info:
-        parse_answer(_response(body=body))
+        parse_answer(response)
     assert info.value.reason == "bad_response"
 
 
 def test_parse_answer_rejects_non_json() -> None:
     """A body that is not JSON is a bad response."""
+    response = _response(text="<html>")
     with pytest.raises(ChatError) as info:
-        parse_answer(_response(text="<html>"))
+        parse_answer(response)
     assert info.value.reason == "bad_response"
+    assert info.value.error_type == "JSONDecodeError"
 
 
 @pytest.mark.parametrize("status", [401, 500, 503])
 def test_parse_answer_treats_errors_as_unavailable(status: int) -> None:
-    """A non-200 status means the service is unavailable."""
+    """A non-200 status means the service is unavailable, with its status."""
+    response = _response(status=status, body={})
     with pytest.raises(ChatError) as info:
-        parse_answer(_response(status=status, body={}))
+        parse_answer(response)
     assert info.value.reason == "unavailable"
+    assert info.value.status_code == status
 
 
 async def test_ask_posts_bearer_key_to_chat_path() -> None:
@@ -121,10 +135,13 @@ async def test_ask_posts_bearer_key_to_chat_path() -> None:
     connection = _connection()
     client = ChatClient(connection, transport=model.transport())
     answer = await client.ask(system_prompt="sys", question="q")
-    assert answer == "Hello."
+    assert answer.text == "Hello."
     request = model.requests[0]
     assert request.url.path == CHAT_PATH
-    assert request.headers["authorization"] == f"Bearer {connection.api_key}"
+    assert (
+        request.headers["authorization"]
+        == f"Bearer {connection.api_key.get_secret_value()}"
+    )
     assert json.loads(request.content)["stream"] is False
     assert client.timeout_seconds == 5.0
 
@@ -136,7 +153,61 @@ async def test_ask_maps_connect_error_to_unavailable() -> None:
     with pytest.raises(ChatError) as info:
         await client.ask(system_prompt="sys", question="q")
     assert info.value.reason == "unavailable"
+    assert info.value.error_type == "ConnectError"
     assert len(model.requests) == 1
+
+
+async def test_ask_maps_an_invalid_url_to_unavailable() -> None:
+    """A URL the HTTP client cannot use is a plain failure, not a crash."""
+    connection = ChatConnection(
+        base_url="http://chat.test", api_key=SecretStr(random_key())
+    )
+    model = FakeModel(raise_error=httpx.InvalidURL("bad"))
+    client = ChatClient(connection, transport=model.transport())
+    with pytest.raises(ChatError) as info:
+        await client.ask(system_prompt="sys", question="q")
+    assert info.value.reason == "unavailable"
+    assert info.value.error_type == "InvalidURL"
+
+
+async def test_ask_maps_a_client_value_error_to_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ValueError raised while building or using the client is contained."""
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        codec = "ascii"
+        reason = "refused"
+        source = "x"
+        raise UnicodeEncodeError(codec, source, 0, 1, reason)
+
+    monkeypatch.setattr(httpx, "AsyncClient", refuse)
+    client = ChatClient(_connection())
+    with pytest.raises(ChatError) as info:
+        await client.ask(system_prompt="sys", question="q")
+    assert info.value.reason == "unavailable"
+    assert info.value.error_type == "UnicodeEncodeError"
+
+
+async def test_ask_does_not_follow_redirects_or_read_proxy_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redirect is a failure, and proxy variables are not consulted."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(302, headers={"location": "http://elsewhere.test/x"})
+
+    client = ChatClient(_connection(), transport=httpx.MockTransport(handler))
+    with pytest.raises(ChatError) as info:
+        await client.ask(system_prompt="sys", question="q")
+    assert info.value.reason == "unavailable"
+    assert info.value.status_code == 302
+    assert calls == ["http://chat.test/v1/chat/completions"]
 
 
 async def test_ask_maps_httpx_timeout_to_timeout() -> None:
@@ -146,6 +217,7 @@ async def test_ask_maps_httpx_timeout_to_timeout() -> None:
     with pytest.raises(ChatError) as info:
         await client.ask(system_prompt="sys", question="q")
     assert info.value.reason == "timeout"
+    assert info.value.error_type == "ReadTimeout"
 
 
 async def test_ask_times_out_when_no_slot_frees_up() -> None:
@@ -183,7 +255,7 @@ async def test_no_more_than_two_calls_run_at_once() -> None:
     answers = await asyncio.gather(
         *(client.ask(system_prompt="s", question="q") for _ in range(5))
     )
-    assert answers == ["ok"] * 5
+    assert [a.text for a in answers] == ["ok"] * 5
     assert peak == CHAT_SLOTS
 
 

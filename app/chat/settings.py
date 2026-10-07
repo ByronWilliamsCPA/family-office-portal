@@ -13,12 +13,17 @@ without its bearer key.
 Variables (names only; values come from the deployment environment):
 
 * ``LLM_BASE_URL`` and ``LLM_API_KEY``: the chat model service and its
-  bearer key. No host or port is built into the code.
+  bearer key. No host or port is built into the code. The base URL stops
+  before ``/v1``; the client adds ``/v1/chat/completions`` itself, so a
+  ``/v1`` suffix would send requests to ``/v1/v1/chat/completions``. The URL
+  must be http or https with a host and a valid port, and the key must be
+  ASCII, or the app stops at startup.
 * ``LLM_MODEL`` (default empty): model name sent with each request. The
   service hosts one model and does not route on this field, so it is left
   out of the request when empty.
-* ``LLM_TIMEOUT_SECONDS`` (default 30): the most one answer may take,
-  counting the wait for a free model slot.
+* ``LLM_TIMEOUT_SECONDS`` (default 30): a finite number above zero. It
+  bounds the model call, counting the wait for a free model slot; the search
+  that runs before the call has its own timeouts and is not counted.
 * ``CHAT_INSTRUCTIONS_PATH``: the chat instructions file used as the system
   prompt. The file is kept outside this repository; the portal reads it at
   question time and refuses to enable chat when it is unreadable.
@@ -28,12 +33,15 @@ Variables (names only; values come from the deployment environment):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 from pydantic import SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.url_check import is_http_url
 
 _UNSET = SecretStr("")
 
@@ -51,32 +59,46 @@ class ChatConnection:
     """Where and how to reach the chat model.
 
     Attributes:
-        base_url (str): Service base URL, without a trailing slash.
-        api_key (str): Bearer key; never shown in ``repr``.
+        base_url (str): Service base URL, without a trailing slash and
+            without ``/v1``.
+        api_key (SecretStr): Bearer key; never shown in ``repr``.
         model (str): Model name, or empty to leave it out of requests.
-        timeout_seconds (float): The most one answer may take.
+        timeout_seconds (float): The most one model call may take.
     """
 
     base_url: str
-    api_key: str = field(repr=False)
+    api_key: SecretStr = field(repr=False)
     model: str = ""
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
-        """Reject a blank URL or key and a non-positive timeout.
+        """Reject a bad URL, a bad key and a timeout that is not usable.
 
         Raises:
-            ChatConfigError: If the URL or key is blank, or the timeout is
-                not positive. The message never includes the key.
+            ChatConfigError: If the URL is blank or is not an http or https
+                URL with a host and a valid port, the key is blank or has a
+                non-ASCII character, or the timeout is not a finite number
+                above zero. The message never includes the URL or the key.
         """
         if not self.base_url.strip():
             msg = "the chat model needs a base URL"
             raise ChatConfigError(msg)
-        if not self.api_key.strip():
+        if not is_http_url(self.base_url):
+            msg = (
+                "LLM_BASE_URL must be an http or https URL with a host and a valid port"
+            )
+            raise ChatConfigError(msg)
+        key = self.api_key.get_secret_value()
+        if not key.strip():
             msg = "the chat model needs a non-blank API key"
             raise ChatConfigError(msg)
-        if self.timeout_seconds <= 0:
-            msg = "the chat timeout must be positive"
+        # An HTTP header value is ASCII; a key with other characters would
+        # raise from the HTTP client instead of here.
+        if not key.isascii():
+            msg = "the chat model API key must contain only ASCII characters"
+            raise ChatConfigError(msg)
+        if not (math.isfinite(self.timeout_seconds) and self.timeout_seconds > 0):
+            msg = "the chat timeout must be a finite number above zero"
             raise ChatConfigError(msg)
 
 
@@ -89,12 +111,13 @@ class ChatSettings(BaseSettings):
         llm_base_url (str): Chat model base URL. Empty means off.
         llm_api_key (SecretStr): Chat model bearer key.
         llm_model (str): Model name sent with each request, or empty.
-        llm_timeout_seconds (float): The most one answer may take.
+        llm_timeout_seconds (float): The most one model call may take; a
+            finite number above zero.
         chat_instructions_path (str): The instructions file. Empty means off.
         chat_enabled_for (ChatAudience): Who sees chat.
     """
 
-    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False, frozen=True)
 
     llm_base_url: str = ""
     llm_api_key: SecretStr = _UNSET
@@ -110,9 +133,10 @@ class ChatSettings(BaseSettings):
             ChatConnection | None: The connection, or None when off.
 
         Raises:
-            ChatConfigError: If the URL is set but the key is blank, or the
-                timeout is not positive. The message names the variable,
-                never a value.
+            ChatConfigError: If the URL is set but is not a usable http or
+                https URL, the key is blank or not ASCII, or the timeout is
+                not a finite number above zero. The message names the
+                variable, never a value.
         """
         url = self.llm_base_url.strip()
         if not url:
@@ -121,12 +145,14 @@ class ChatSettings(BaseSettings):
         if not key:
             msg = "LLM_API_KEY must be set when LLM_BASE_URL is set"
             raise ChatConfigError(msg)
-        if self.llm_timeout_seconds <= 0:
-            msg = "LLM_TIMEOUT_SECONDS must be positive"
+        if not math.isfinite(self.llm_timeout_seconds) or self.llm_timeout_seconds <= 0:
+            msg = "LLM_TIMEOUT_SECONDS must be a finite number above zero"
             raise ChatConfigError(msg)
+        # The connection object checks the URL and the key's characters, and
+        # names the variable in its message.
         return ChatConnection(
             base_url=url.rstrip("/"),
-            api_key=key,
+            api_key=SecretStr(key),
             model=self.llm_model.strip(),
             timeout_seconds=self.llm_timeout_seconds,
         )

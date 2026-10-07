@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from app.chat.settings import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -17,6 +18,8 @@ from app.chat.settings import (
     check_chat_settings,
 )
 from tests.unit.chat_fakes import random_key
+
+USERINFO_SECRET = secrets.token_urlsafe(9)
 
 CHAT_VARS = (
     "LLM_BASE_URL",
@@ -53,7 +56,7 @@ def test_connection_is_built_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     connection = ChatSettings().connection()
     assert connection is not None
     assert connection.base_url == "http://chat.test"
-    assert connection.api_key == key
+    assert connection.api_key.get_secret_value() == key
     assert connection.model == "qwen"
     assert connection.timeout_seconds == 12.5
     assert key not in repr(connection)
@@ -63,8 +66,9 @@ def test_url_without_key_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """A URL with a blank key names the key variable."""
     monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
     monkeypatch.setenv("LLM_API_KEY", "   ")
+    settings = ChatSettings()
     with pytest.raises(ChatConfigError, match="LLM_API_KEY"):
-        ChatSettings().connection()
+        settings.connection()
 
 
 def test_non_positive_timeout_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,24 +76,134 @@ def test_non_positive_timeout_is_an_error(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
     monkeypatch.setenv("LLM_API_KEY", random_key())
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0")
+    settings = ChatSettings()
     with pytest.raises(ChatConfigError, match="LLM_TIMEOUT_SECONDS"):
-        ChatSettings().connection()
+        settings.connection()
 
 
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"base_url": " ", "api_key": "k"}, "base URL"),
-        ({"base_url": "http://x", "api_key": " "}, "API key"),
-        ({"base_url": "http://x", "api_key": "k", "timeout_seconds": 0}, "positive"),
+        ({"base_url": " ", "api_key": SecretStr("k")}, "base URL"),
+        ({"base_url": "http://x", "api_key": SecretStr(" ")}, "API key"),
+        (
+            {
+                "base_url": "http://x",
+                "api_key": SecretStr("k"),
+                "timeout_seconds": 0,
+            },
+            "finite number above zero",
+        ),
+        (
+            {
+                "base_url": "http://x",
+                "api_key": SecretStr("k"),
+                "timeout_seconds": float("nan"),
+            },
+            "finite number above zero",
+        ),
+        (
+            {
+                "base_url": "http://x",
+                "api_key": SecretStr("k"),
+                "timeout_seconds": float("inf"),
+            },
+            "finite number above zero",
+        ),
+        (
+            {"base_url": "http://x", "api_key": SecretStr("k\u00e9")},
+            "ASCII",
+        ),
     ],
 )
-def test_connection_rejects_blank_values(
-    kwargs: dict[str, object], message: str
-) -> None:
-    """The connection object cannot be built without a URL and key."""
+def test_connection_rejects_bad_values(kwargs: dict[str, object], message: str) -> None:
+    """The connection object cannot be built from unusable values."""
     with pytest.raises(ChatConfigError, match=message):
         ChatConnection(**kwargs)
+
+
+BAD_URLS = [
+    "chat.test/v1",
+    "ftp://chat.test",
+    "http://",
+    "http://chat.test:99999",
+    "http://chat.test:bad",
+    "http://[chat.test",
+    "ht\ntp://chat.test:8000",
+    "http://chat.test\n",
+    "http://chat.\ttest:8000",
+    "http://chat.test:8000\x00",
+    f"http://user:{USERINFO_SECRET}@chat.test:99999",
+]
+
+
+@pytest.mark.parametrize("url", BAD_URLS)
+def test_connection_rejects_a_malformed_url_without_echoing_it(url: str) -> None:
+    """A URL that is not http or https with a host and port names the variable."""
+    with pytest.raises(ChatConfigError, match="LLM_BASE_URL") as caught:
+        ChatConnection(base_url=url, api_key=SecretStr("k"))
+    assert url not in str(caught.value)
+    assert USERINFO_SECRET not in str(caught.value)
+
+
+ENV_BAD_URLS = [
+    u for u in BAD_URLS if not u.endswith(("\n", "\x00")) and "user:" not in u
+]
+
+
+@pytest.mark.parametrize("url", ENV_BAD_URLS)
+def test_bad_url_in_the_environment_is_a_startup_problem(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    """The startup check reports a bad URL by variable name only."""
+    monkeypatch.setenv("LLM_BASE_URL", url)
+    monkeypatch.setenv("LLM_API_KEY", random_key())
+    problem = check_chat_settings()
+    assert problem is not None
+    assert "LLM_BASE_URL" in problem
+    assert url.strip() not in problem
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0", "-1"])
+def test_unusable_timeout_in_the_environment_is_a_startup_problem(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """NaN and infinity do not pass as a positive timeout."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
+    monkeypatch.setenv("LLM_API_KEY", random_key())
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", value)
+    assert check_chat_settings() == (
+        "LLM_TIMEOUT_SECONDS must be a finite number above zero"
+    )
+
+
+def test_unparsable_timeout_names_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout that is not a number is a validation error naming the variable."""
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "soon")
+    assert check_chat_settings() == "invalid value for LLM_TIMEOUT_SECONDS"
+    with pytest.raises(ValidationError):
+        ChatSettings()
+
+
+def test_non_ascii_key_in_the_environment_is_a_startup_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key with a non-ASCII character is refused without echoing it."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
+    monkeypatch.setenv("LLM_API_KEY", "caf\u00e9-key")
+    problem = check_chat_settings()
+    assert problem is not None
+    assert "ASCII" in problem
+    assert "caf" not in problem
+
+
+def test_connection_is_hidden_and_settings_are_frozen() -> None:
+    """The key is a SecretStr and settings cannot be changed after loading."""
+    connection = ChatConnection(base_url="http://x", api_key=SecretStr("k"))
+    assert "k" not in repr(connection).replace("base_url", "")
+    settings = ChatSettings()
+    with pytest.raises(ValidationError):
+        settings.chat_enabled_for = "all"
 
 
 def test_instructions_file_path(monkeypatch: pytest.MonkeyPatch) -> None:

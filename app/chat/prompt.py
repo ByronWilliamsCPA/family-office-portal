@@ -9,28 +9,34 @@ sent separately, as the user message.
 
 Retrieved text is untrusted. Before it goes in the prompt:
 
-* every line that would read as a heading loses its leading ``#`` marks, so
-  a passage cannot open a section of its own;
-* every line that, once marks and punctuation are removed, reads
+* every line loses its leading ``#`` marks (a line such as ``#1 priority``
+  becomes ``1 priority``), so a passage cannot open a heading of its own;
+* every line that, once marks, digits and punctuation are removed, reads
   ``BALANCE TABLE`` or ``SOURCES`` is dropped;
-* runs of three or more ``<`` or ``>`` are cut to one, so a passage cannot
+* text is normalized (NFKC), and runs of three or more ``<`` or ``>``, with
+  or without spaces between them, are cut to one, so a passage cannot
   contain the ``<<<`` and ``>>>`` fence that wraps each passage.
 
 Passage labels carry the document title and page, or the tax-law reference
 number and title. Document, entity and account identifiers never go in the
-prompt, so the model cannot repeat them.
+prompt, so the model cannot repeat them. The tax-law reference numbers do go
+in, on purpose, because the instructions ask for them as citations.
 
 #CRITICAL: security: a passage must not be able to pose as a section or
-change a balance. #VERIFY: tests/unit/test_chat_prompt.py
-::test_injected_headings_leave_exactly_one_of_each.
+change a balance in the portal's BALANCE TABLE block. It cannot make the
+model's own words true: injected document text can still lead the model to
+state a different figure in its paragraphs, which is why the page shows the
+table's figures separately, labelled as coming from the portal. #VERIFY:
+tests/unit/test_chat_prompt.py::test_injected_headings_leave_exactly_one_of_each.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import TYPE_CHECKING
 
-from app.chat.balances import format_amount
+from app.balances import format_amount
 from app.retrieval.search import DocumentCitation, TaxLawCitation
 
 if TYPE_CHECKING:
@@ -44,7 +50,7 @@ SOURCES_HEADING = "SOURCES"
 SECTION_HEADINGS = (BALANCE_HEADING, SOURCES_HEADING)
 
 _HEADING_MARKS = re.compile(r"^(\s*)#+\s*")
-_FENCE_RUN = re.compile(r"(<{3,}|>{3,})")
+_FENCE_RUN = re.compile(r"(<(?:[ \t]*<){2,}|>(?:[ \t]*>){2,})")
 _NOT_WORD = re.compile(r"[^A-Z]+")
 _WHITESPACE = re.compile(r"\s+")
 
@@ -86,7 +92,9 @@ def clean_passage(text: str) -> str:
     """
     kept: list[str] = []
     for raw in text.splitlines():
-        line = _FENCE_RUN.sub(lambda m: m.group(0)[0], raw)
+        line = _FENCE_RUN.sub(
+            lambda m: m.group(0)[0], unicodedata.normalize("NFKC", raw)
+        )
         line = _HEADING_MARKS.sub(r"\1", line)
         if _is_section_name(line):
             continue
@@ -135,6 +143,21 @@ def passage_label(result: SearchResult) -> str:
     return f"{title}{_pages(citation)}"
 
 
+def kept_results(results: Sequence[SearchResult]) -> list[SearchResult]:
+    """Return the results whose text is not empty once cleaned.
+
+    The prompt and the source list under the answer both use this, so a
+    source is listed only when its passage went to the model.
+
+    Args:
+        results (Sequence[SearchResult]): Search results, best first.
+
+    Returns:
+        list[SearchResult]: The results that carry passage text.
+    """
+    return [r for r in results if clean_passage(r.text)]
+
+
 def sources_section(results: Sequence[SearchResult]) -> str:
     """Write the SOURCES section.
 
@@ -145,8 +168,9 @@ def sources_section(results: Sequence[SearchResult]) -> str:
         str: The section, heading included.
     """
     parts = [section_line(SOURCES_HEADING), _SOURCES_NOTE, ""]
-    passages = [(passage_label(r), clean_passage(r.text)) for r in results]
-    passages = [(label, body) for label, body in passages if body]
+    passages = [
+        (passage_label(r), clean_passage(r.text)) for r in kept_results(results)
+    ]
     if not passages:
         parts.append(_NO_SOURCES)
     for number, (label, body) in enumerate(passages, start=1):

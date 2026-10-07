@@ -69,6 +69,24 @@ def from_cents(cents: int) -> Decimal:
     return Decimal(cents).scaleb(-2)
 
 
+def format_amount(amount: Decimal, currency: str = "USD") -> str:
+    """Format an amount to the cent, for example "$1,250.00" or "1,250.00 EUR".
+
+    Args:
+        amount (Decimal): Amount to format.
+        currency (str): ISO currency code; US dollars get a ``$`` prefix and
+            any other code is written after the number.
+
+    Returns:
+        str: The formatted amount.
+    """
+    sign = "-" if amount < 0 else ""
+    number = f"{abs(amount):,.2f}"
+    if currency == "USD":
+        return f"{sign}${number}"
+    return f"{sign}{number} {currency}"
+
+
 def replace_balances(
     conn: sqlite3.Connection,
     rows: Sequence[BalanceRow],

@@ -45,19 +45,16 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import structlog
 from pydantic import Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.url_check import is_http_url
+
 logger = structlog.get_logger(__name__)
 
 _UNSET = SecretStr("")
-
-# ASCII control characters are the codes below the space and DEL.
-_SPACE = 0x20
-_DELETE = 0x7F
 
 # Problems already logged by ``document_search_connected``, so a bad setting
 # is reported once per process rather than on every page render.
@@ -71,31 +68,18 @@ class RetrievalConfigError(ValueError):
 def _require_http_url(url: str, name: str) -> None:
     """Check that a URL is http or https with a host and a usable port.
 
-    The client libraries raise on a malformed URL with a message that can
-    echo it, userinfo included, so the check happens here and the error names
-    only the variable. ASCII control characters are rejected before parsing
-    because ``urlsplit`` silently drops tabs and newlines, so a value such as
-    ``ht<newline>tp://host`` would otherwise be accepted as ``http://host``.
+    The check itself is ``app.url_check.is_http_url``; this wrapper turns a
+    failure into an error that names only the variable.
 
     Args:
         url (str): The configured URL.
         name (str): The variable it came from, for the error message.
 
     Raises:
-        RetrievalConfigError: If the value contains an ASCII control
-            character, the scheme is not http or https, the host is missing,
-            or the port is not a number from 0 to 65535. The message never
-            includes the URL.
+        RetrievalConfigError: If the value is not a usable http or https URL.
+            The message never includes the URL.
     """
-    usable = not any(ord(char) < _SPACE or ord(char) == _DELETE for char in url)
-    if usable:
-        try:
-            parts = urlsplit(url.strip())
-            usable = parts.scheme in {"http", "https"} and bool(parts.hostname)
-            _ = parts.port  # raises ValueError for a port that is not 0-65535
-        except ValueError:
-            usable = False
-    if not usable:
+    if not is_http_url(url):
         msg = f"{name} must be an http or https URL with a host and a valid port"
         raise RetrievalConfigError(msg)
 

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from app import cache
 from app.balances import from_cents
+from app.chat.service import chat_panel_state
 from app.config import local_today
 from app.db import get_connection
 from app.models import MANUAL_MARK_SOURCE
@@ -209,4 +210,36 @@ async def balance_breakdown() -> dict[str, Any]:
         "trend_days": cache.TREND_DAYS,
         "sources_list": sources,
         "cash_accounts": await cache.get_cash_accounts(),
+    }
+
+
+_UPCOMING_LIMIT = 5
+_RECENT_LIMIT = 5
+
+
+async def home_context(request: Request) -> dict[str, Any]:
+    """Build the Home page context: balances, dates, documents and chat state.
+
+    Args:
+        request (Request): Current request.
+
+    Returns:
+        dict[str, Any]: Template values for ``pages/home.html``.
+    """
+    entities = await cache.get_entities()
+    upcoming = sorted(
+        (e for e in entities if e["next_date"]),
+        key=lambda e: str(e["next_date"]),
+    )[:_UPCOMING_LIMIT]
+    admin = include_confidential(request)
+    documents = await cache.get_documents(include_confidential=admin)
+    recent = sorted(documents, key=lambda d: str(d["added_at"] or ""), reverse=True)[
+        :_RECENT_LIMIT
+    ]
+    return {
+        "upcoming": upcoming,
+        "recent_documents": recent,
+        "chat": await chat_panel_state(is_admin=is_admin(request)),
+        **(await balances_summary()),
+        **(await balance_breakdown()),
     }

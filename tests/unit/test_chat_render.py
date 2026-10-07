@@ -40,6 +40,33 @@ def test_reference_style_link_definitions_are_removed() -> None:
     assert out == ("Text [x][1].",)
 
 
+def test_bracketed_answer_lines_that_are_not_links_are_kept() -> None:
+    """A bracketed label followed by prose is answer text, not a link target."""
+    out = answer_paragraphs("[Important]: file Form 1065\n[Note]: see the deed")
+    assert out == ("[Important]: file Form 1065\n[Note]: see the deed",)
+
+
+def test_reference_definitions_with_each_scheme_are_removed() -> None:
+    """Only lines whose target looks like an address are dropped."""
+    text = "\n".join(
+        [
+            "Keep this.",
+            "[a]: https://evil.example/x",
+            "[b]: <javascript:alert(1)>",
+            "[c]: www.evil.example",
+            "[d]: /internal/path",
+            "  [e]: mailto:a@evil.example",
+        ]
+    )
+    assert answer_paragraphs(text) == ("Keep this.",)
+
+
+def test_reference_definition_does_not_swallow_following_paragraphs() -> None:
+    """The definition match stops at the end of its own line."""
+    out = answer_paragraphs("[a]: https://evil.example\n\nNext paragraph.")
+    assert out == ("Next paragraph.",)
+
+
 def test_paragraphs_split_on_blank_lines() -> None:
     """Blank lines separate paragraphs; single newlines stay inside one."""
     out = answer_paragraphs("One\nline two\n\n\nThree\n   \n")
@@ -53,13 +80,13 @@ def test_html_is_left_for_the_template_to_escape() -> None:
 
 def test_preview_url_points_at_the_cited_page() -> None:
     """A document citation links to its preview at the first cited page."""
-    result = doc_result("x", document_id="doc 1/a", page_start=7, page_end=8)
+    result = doc_result("x", document_id="doc 1/a", pages=(7, 8))
     assert preview_url(result.citation) == "/documents/doc%201%2Fa/preview#page=7"
 
 
 def test_preview_url_without_page_or_id() -> None:
     """No page gives no fragment; no id gives no link."""
-    no_page = doc_result("x", page_start=None, page_end=None)
+    no_page = doc_result("x", pages=(None, None))
     assert preview_url(no_page.citation) == "/documents/doc-1/preview"
     no_id = doc_result("x", document_id="")
     assert preview_url(no_id.citation) is None

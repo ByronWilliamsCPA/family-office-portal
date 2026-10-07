@@ -7,18 +7,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import SecretStr
 
+from app.chat import instructions as instructions_module
 from app.chat import service
 from app.chat.client import ChatClient
-from app.chat.service import (
+from app.chat.instructions import (
     MAX_INSTRUCTIONS_BYTES,
     InstructionsError,
-    chat_connection,
-    chat_panel_state,
-    check_question,
     instructions_readable,
     load_instructions,
 )
+from app.chat.service import chat_connection, chat_panel_state, check_question
 from app.chat.settings import ChatConnection
 from app.routes.chat import build_chat_client
 from tests.unit.chat_fakes import SYNTHETIC_INSTRUCTIONS, random_key, write_instructions
@@ -53,7 +53,7 @@ def test_instructions_unreadable_on_os_error(
     def deny(path: Path) -> bool:
         raise PermissionError(str(path))
 
-    monkeypatch.setattr(service, "_can_open", deny)
+    monkeypatch.setattr(instructions_module, "_can_open", deny)
     assert instructions_readable(write_instructions(tmp_path)) is False
 
 
@@ -102,14 +102,44 @@ def test_chat_connection_is_none_when_misconfigured(
     assert chat_connection() is None
 
 
-def test_panel_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_panel_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Visible follows the flag; connected needs URL, key and instructions."""
-    assert chat_panel_state(is_admin=True) == {"visible": True, "connected": False}
-    assert chat_panel_state(is_admin=False) == {"visible": False, "connected": False}
+    assert await chat_panel_state(is_admin=True) == {
+        "visible": True,
+        "connected": False,
+    }
+    assert await chat_panel_state(is_admin=False) == {
+        "visible": False,
+        "connected": False,
+    }
     monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
     monkeypatch.setenv("LLM_API_KEY", random_key())
     monkeypatch.setenv("CHAT_INSTRUCTIONS_PATH", str(write_instructions(tmp_path)))
-    assert chat_panel_state(is_admin=True) == {"visible": True, "connected": True}
+    assert await chat_panel_state(is_admin=True) == {
+        "visible": True,
+        "connected": True,
+    }
+
+
+async def test_panel_state_survives_a_bad_value_set_after_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A value that stops parsing mid-run turns chat off instead of failing Home."""
+    monkeypatch.setenv("CHAT_ENABLED_FOR", "everyone")
+    assert await chat_panel_state(is_admin=True) == {
+        "visible": False,
+        "connected": False,
+    }
+
+
+def test_chat_connection_is_none_for_an_unparsable_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timeout that is not a number counts as not connected."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
+    monkeypatch.setenv("LLM_API_KEY", random_key())
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "soon")
+    assert chat_connection() is None
 
 
 def test_check_question() -> None:
@@ -121,5 +151,7 @@ def test_check_question() -> None:
 
 def test_default_chat_client_builder() -> None:
     """The route's builder returns a real client for the connection."""
-    connection = ChatConnection(base_url="http://chat.test", api_key=random_key())
+    connection = ChatConnection(
+        base_url="http://chat.test", api_key=SecretStr(random_key())
+    )
     assert isinstance(build_chat_client(connection), ChatClient)

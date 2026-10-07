@@ -3,7 +3,8 @@
 """Turn a model answer and its search results into what the page shows.
 
 The answer is shown as plain text: no markdown is rendered, markdown images
-are dropped, markdown links keep only their words, and bare web addresses are
+are dropped, markdown links keep only their words, reference-style link
+definitions (``[1]: https://...``) are removed, and bare web addresses are
 replaced. Jinja's autoescaping then turns any HTML the model wrote into
 visible text. The only links on the answer are the portal's own citation
 links, built here from search results, never from model text.
@@ -18,9 +19,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import quote
 
-from app.chat.prompt import clean_label, passage_label
+from app.chat.prompt import clean_label, kept_results, passage_label
+from app.document_files import document_url
 from app.retrieval.search import DocumentCitation
 
 if TYPE_CHECKING:
@@ -30,7 +31,16 @@ if TYPE_CHECKING:
 
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-_REF_LINK_DEF = re.compile(r"^\s*\[[^\]]+\]:\s*\S+.*$", re.MULTILINE)
+# A reference-style link definition, ``[label]: target``, whose target looks
+# like an address. A line such as ``[Important]: file Form 1065`` is answer
+# text and stays. ``[ \t]`` rather than ``\s`` keeps the match from running
+# across blank lines.
+_REF_LINK_DEF = re.compile(
+    r"^[ \t]*\[[^\]]+\]:[ \t]*<?"
+    r"(?:[a-z][a-z0-9+.-]*://|(?:javascript|data|mailto|file|tel):|www\.|/)"
+    r".*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 _URL = re.compile(r"\b(?:https?|ftp|file|data|javascript):\S+", re.IGNORECASE)
 _WWW = re.compile(r"\bwww\.\S+", re.IGNORECASE)
 _BLANK_LINES = re.compile(r"\n\s*\n")
@@ -77,18 +87,21 @@ def preview_url(citation: DocumentCitation) -> str | None:
 
     Returns:
         str | None: ``/documents/<id>/preview``, with ``#page=N`` when the
-        page is known; None when the document id is missing.
+        page is a positive whole number; None when the document id is
+        missing.
     """
     if not citation.document_id:
         return None
-    url = f"/documents/{quote(citation.document_id, safe='')}/preview"
-    if citation.page_start is not None:
-        url += f"#page={citation.page_start}"
-    return url
+    return document_url(citation.document_id, "preview", citation.page_start)
 
 
 def citations(results: Sequence[SearchResult]) -> tuple[Citation, ...]:
     """Build the source list shown under an answer, without duplicates.
+
+    Only passages the model was shown are listed (the same ones the prompt
+    keeps), so every source here had its text in the prompt. The list is the
+    passages searched for the answer, not a claim about which ones the
+    answer used.
 
     Args:
         results (Sequence[SearchResult]): Search results, best first.
@@ -98,7 +111,7 @@ def citations(results: Sequence[SearchResult]) -> tuple[Citation, ...]:
     """
     seen: set[tuple[str, str | None]] = set()
     out: list[Citation] = []
-    for result in results:
+    for result in kept_results(results):
         href = (
             preview_url(result.citation)
             if isinstance(result.citation, DocumentCitation)

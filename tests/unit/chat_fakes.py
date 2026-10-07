@@ -48,11 +48,14 @@ def write_instructions(directory: Path) -> Path:
     return path
 
 
-def chat_answer(content: object, **extra: object) -> dict[str, object]:
+def chat_answer(
+    content: object, *, finish_reason: str = "stop", **extra: object
+) -> dict[str, object]:
     """Build an OpenAI-style chat completion body.
 
     Args:
         content (object): ``choices[0].message.content``.
+        finish_reason (str): ``choices[0].finish_reason``.
         **extra (object): Extra fields for the message.
 
     Returns:
@@ -65,7 +68,7 @@ def chat_answer(content: object, **extra: object) -> dict[str, object]:
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": content, **extra},
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
             }
         ],
     }
@@ -78,12 +81,14 @@ class FakeModel:
     Attributes:
         answer (str): Content to return.
         status (int): HTTP status to return.
+        finish_reason (str): ``finish_reason`` to return.
         raise_error (Exception | None): Raised instead of answering.
         requests (list[httpx.Request]): Every request received.
     """
 
     answer: str = "The answer. This is educational, not legal or tax advice."
     status: int = 200
+    finish_reason: str = "stop"
     raise_error: Exception | None = None
     requests: list[httpx.Request] = field(default_factory=list)
 
@@ -102,7 +107,10 @@ class FakeModel:
         self.requests.append(request)
         if self.raise_error is not None:
             raise self.raise_error
-        return httpx.Response(self.status, json=chat_answer(self.answer))
+        return httpx.Response(
+            self.status,
+            json=chat_answer(self.answer, finish_reason=self.finish_reason),
+        )
 
     def transport(self) -> httpx.MockTransport:
         """Return a transport that routes to this fake.
@@ -125,22 +133,21 @@ def doc_result(
     text: str,
     *,
     title: str = "Operating Agreement",
-    document_id: str = "doc-1",
-    page_start: int | None = 3,
-    page_end: int | None = 3,
+    document_id: str | None = "doc-1",
+    pages: tuple[int | None, int | None] = (3, 3),
 ) -> SearchResult:
     """Build a family-document search result.
 
     Args:
         text (str): Passage text.
         title (str): Document title.
-        document_id (str): Document id.
-        page_start (int | None): First page.
-        page_end (int | None): Last page.
+        document_id (str | None): Document id, or None for a hit without one.
+        pages (tuple[int | None, int | None]): First and last page.
 
     Returns:
         SearchResult: The result.
     """
+    page_start, page_end = pages
     return SearchResult(
         text=text,
         score=0.9,
@@ -186,12 +193,16 @@ class FakeSearcher:
     Attributes:
         results (tuple[SearchResult, ...]): Results to return.
         fail (bool): Raise ``SearchError`` instead.
+        missing (tuple[str, ...]): Collections reported as not indexed.
+        close_error (Exception | None): Raised by ``close``.
         requests (list[SearchRequest]): Requests received.
         closed (int): Times ``close`` was called.
     """
 
     results: tuple[SearchResult, ...] = ()
     fail: bool = False
+    missing: tuple[str, ...] = ()
+    close_error: Exception | None = None
     requests: list[SearchRequest] = field(default_factory=list)
     closed: int = 0
 
@@ -211,11 +222,46 @@ class FakeSearcher:
         if self.fail:
             msg = "Qdrant request failed: ConnectError"
             raise SearchError(msg)
-        return SearchResponse(results=self.results, embedding_model="test-embed")
+        return SearchResponse(
+            results=self.results,
+            embedding_model="test-embed",
+            missing_collections=self.missing,
+        )
 
     def close(self) -> None:
-        """Count the close."""
+        """Count the close.
+
+        Raises:
+            Exception: ``close_error`` when set.
+        """
         self.closed += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def seed_documents(db_path: Path, *, confidential: tuple[str, ...] = ()) -> None:
+    """Seed made-up cached documents: ``doc-1``, ``doc-2`` and each id given.
+
+    ``doc-1`` and ``doc-2`` are visible to a Viewer unless listed in
+    ``confidential``; every id in ``confidential`` is added as confidential.
+
+    Args:
+        db_path (Path): SQLite file with the schema applied.
+        confidential (tuple[str, ...]): Ids to flag confidential.
+    """
+    ids = dict.fromkeys(("doc-1", "doc-2", *confidential), 0)
+    for doc_id in confidential:
+        ids[doc_id] = 1
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.executemany(
+            "INSERT INTO documents (id, name, category, is_confidential, fetched_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [
+                (doc_id, f"Made-up document {doc_id}", "Legal", flag, "2026-10-01")
+                for doc_id, flag in ids.items()
+            ],
+        )
+        conn.commit()
 
 
 def seed_balances(db_path: Path) -> None:

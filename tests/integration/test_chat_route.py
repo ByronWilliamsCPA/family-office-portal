@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import sqlite3
 from contextlib import closing
 from typing import TYPE_CHECKING
@@ -25,6 +26,8 @@ from structlog.testing import capture_logs
 from app.chat import service
 from app.chat.client import ChatClient
 from app.chat.service import (
+    MSG_BALANCES_DOWN,
+    MSG_CUT_SHORT,
     MSG_EMPTY,
     MSG_MODEL_BAD,
     MSG_MODEL_DOWN,
@@ -33,6 +36,7 @@ from app.chat.service import (
     MSG_SEARCH_DOWN,
     MSG_SEARCH_OFF,
     MSG_TOO_LONG,
+    MSG_UNEXPECTED,
 )
 from app.routes import chat as chat_route
 from tests.unit.chat_fakes import (
@@ -41,11 +45,13 @@ from tests.unit.chat_fakes import (
     doc_result,
     random_key,
     seed_balances,
+    seed_documents,
     tax_result,
     write_instructions,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from httpx import AsyncClient
@@ -109,7 +115,7 @@ def searcher(monkeypatch: pytest.MonkeyPatch) -> FakeSearcher:
     """
     fake = FakeSearcher(
         results=(
-            doc_result("Distributions are made quarterly.", page_start=4, page_end=5),
+            doc_result("Distributions are made quarterly.", pages=(4, 5)),
             tax_result("Annual exclusion rules."),
         )
     )
@@ -137,6 +143,13 @@ async def _ask(
         response = await ac.post(
             "/chat/ask", data=data, headers={**HX, **(headers or {})}, **post
         )
+    assert response.status_code == 200
+    return response.text
+
+
+async def _post(ac: AsyncClient, question: str = QUESTION) -> str:
+    """Post one question on an open client and return the 200 fragment."""
+    response = await ac.post("/chat/ask", data={"question": question}, headers=HX)
     assert response.status_code == 200
     return response.text
 
@@ -404,7 +417,7 @@ async def test_seeded_document_cannot_change_the_rendered_balance(
     text = await _ask(client, "What is the balance of Harbor Brokerage?")
     assert "Balances from the portal's records" in text
     assert "Harbor Brokerage: $1,234,567.89, as of September 30, 2026" in text
-    assert "All accounts: $1,237,067.89, as of September 30, 2026" in text
+    assert "All US dollar accounts: $1,237,067.89, as of September 30, 2026" in text
     system = model.bodies()[0]["messages"][0]["content"]
     assert system.count("## BALANCE TABLE") == 1
 
@@ -547,12 +560,9 @@ async def test_model_failures_are_plain(
 
 
 @pytest.mark.usefixtures("chat_env", "searcher")
-async def test_model_timeout_is_plain(
-    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A slow model gives the timeout sentence."""
-    model.raise_error = httpx.ReadTimeout("slow")
-    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "1")
+async def test_model_timeout_is_plain(client: AsyncClient, model: FakeModel) -> None:
+    """A read timeout from the model gives the timeout sentence."""
+    model.raise_error = httpx.ReadTimeout("model did not answer in time")
     text = await _ask(client)
     assert MSG_MODEL_TIMEOUT in text
 
@@ -612,6 +622,462 @@ async def test_no_history_is_stored_and_logs_carry_timing_only(
     assert finished[0]["outcome"] == "answered"
     assert finished[0]["elapsed_ms"] >= 0
     assert finished[0]["sources"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Who may see which passage
+# --------------------------------------------------------------------------- #
+
+
+def _system_prompt(model: FakeModel) -> str:
+    messages = model.bodies()[0]["messages"]
+    assert isinstance(messages, list)
+    return str(messages[0]["content"])
+
+
+@pytest.mark.usefixtures("chat_env")
+async def test_viewer_never_sees_a_passage_the_cache_hides(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    model: FakeModel,
+    tmp_db_path: Path,
+) -> None:
+    """A Viewer's answer drops hits the portal's own table hides from Viewers.
+
+    The search backend says every hit is not confidential (its payload is
+    out of date), but the cache says doc-secret is confidential, doc-gone is
+    not cached at all, and one hit has no document id.
+    """
+    seed_documents(tmp_db_path, confidential=("doc-secret",))
+    hits = FakeSearcher(
+        results=(
+            doc_result("Visible-passage text.", document_id="doc-1", title="Visible"),
+            doc_result(
+                "Hidden-by-cache text.", document_id="doc-secret", title="Hidden Title"
+            ),
+            doc_result("Not-cached text.", document_id="doc-gone", title="Gone"),
+            doc_result("No-id text.", title="NoId", document_id=None),
+            tax_result("Tax passage text."),
+        )
+    )
+    monkeypatch.setattr(chat_route, "build_search_service", lambda: hits)
+    monkeypatch.setenv("CHAT_ENABLED_FOR", "all")
+    text = await _ask(client, headers=viewer_headers)
+    system = _system_prompt(model)
+    assert "Visible-passage text." in system
+    assert "Tax passage text." in system
+    for hidden in ("Hidden-by-cache", "Not-cached", "No-id text."):
+        assert hidden not in system
+    assert "Hidden Title" not in text
+    assert "Gone" not in text
+    assert "NoId" not in text
+    assert 'href="/documents/doc-1/preview' in text
+    assert "doc-secret" not in text
+
+
+@pytest.mark.usefixtures("chat_env")
+async def test_admin_keeps_every_family_document_passage(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    model: FakeModel,
+    tmp_db_path: Path,
+) -> None:
+    """An Admin may open any document, so no hit is dropped."""
+    seed_documents(tmp_db_path, confidential=("doc-secret",))
+    hits = FakeSearcher(
+        results=(
+            doc_result("Secret passage text.", document_id="doc-secret"),
+            doc_result("Uncached passage text.", document_id="doc-gone"),
+        )
+    )
+    monkeypatch.setattr(chat_route, "build_search_service", lambda: hits)
+    await _ask(client)
+    system = _system_prompt(model)
+    assert "Secret passage text." in system
+    assert "Uncached passage text." in system
+
+
+# --------------------------------------------------------------------------- #
+# Request size, form caps and cross-site rules
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_declared_oversize_body_is_refused_before_reading(
+    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Content-Length over the cap gets 413 and nothing is called."""
+    monkeypatch.setattr(chat_route, "MAX_BODY_BYTES", 400)
+    async with client as ac:
+        response = await ac.post(
+            "/chat/ask",
+            data={"question": QUESTION},
+            files=[("image", ("a.png", b"x" * 1000, "image/png"))],
+        )
+    assert response.status_code == 413
+    assert model.requests == []
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_streamed_oversize_body_is_refused_without_a_length(
+    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chunked body with no Content-Length is cut off at the cap."""
+    monkeypatch.setattr(chat_route, "MAX_BODY_BYTES", 400)
+    boundary = "streamed-boundary"
+
+    async def body() -> AsyncIterator[bytes]:
+        yield (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="image"; '
+            'filename="a.png"\r\nContent-Type: image/png\r\n\r\n'
+        ).encode()
+        for _ in range(5):
+            yield b"x" * 200
+
+    async with client as ac:
+        response = await ac.post(
+            "/chat/ask",
+            content=body(),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+    assert response.status_code == 413
+    assert "content-length" not in response.request.headers
+    assert model.requests == []
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_body_at_the_cap_is_still_answered(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """The real cap leaves room for a full-size picture and the question."""
+    assert chat_route.MAX_BODY_BYTES > chat_route.MAX_UPLOAD_BYTES
+    await _ask(client)
+    assert len(model.requests) == 1
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_three_files_are_refused_by_the_form_cap(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """More than two file parts is a client error, not an answer."""
+    one = ("image", ("a.png", b"\x89PNG", "image/png"))
+    async with client as ac:
+        response = await ac.post(
+            "/chat/ask", data={"question": QUESTION}, files=[one, one, one]
+        )
+    assert 400 <= response.status_code < 500
+    assert model.requests == []
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_nine_fields_are_refused_by_the_form_cap(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """More than eight form fields is a client error, not an answer."""
+    data = {"question": QUESTION, **{f"extra{n}": "x" for n in range(8)}}
+    async with client as ac:
+        response = await ac.post("/chat/ask", data=data)
+    assert 400 <= response.status_code < 500
+    assert model.requests == []
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+@pytest.mark.parametrize(
+    ("headers", "allowed"),
+    [
+        ({"Sec-Fetch-Site": "same-origin"}, True),
+        ({"Sec-Fetch-Site": "none"}, True),
+        ({}, True),
+        ({"Origin": "http://test"}, True),
+        ({"Sec-Fetch-Site": "same-site"}, False),
+        ({"Sec-Fetch-Site": "cross-site"}, False),
+        ({"Origin": "http://evil.example"}, False),
+        ({"Origin": "http://test.evil.example"}, False),
+    ],
+)
+async def test_fetch_metadata_and_origin_rules(
+    client: AsyncClient, model: FakeModel, headers: dict[str, str], *, allowed: bool
+) -> None:
+    """Only same-origin and none pass; with no header, a foreign Origin fails."""
+    async with client as ac:
+        response = await ac.post(
+            "/chat/ask", data={"question": QUESTION}, headers=headers
+        )
+    assert (response.status_code == 200) is allowed
+    assert response.status_code in {200, 403}
+    assert len(model.requests) == (1 if allowed else 0)
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_refused_role_gets_404_before_the_cross_site_check(
+    client: AsyncClient, viewer_headers: dict[str, str], model: FakeModel
+) -> None:
+    """A Viewer cannot learn the route exists, even from a cross-site post."""
+    async with client as ac:
+        response = await ac.post(
+            "/chat/ask",
+            data={"question": QUESTION},
+            headers={**viewer_headers, "Sec-Fetch-Site": "cross-site"},
+        )
+    assert response.status_code == 404
+    assert model.requests == []
+
+
+# --------------------------------------------------------------------------- #
+# What the page shows
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.usefixtures("chat_env", "searcher", "model")
+async def test_the_question_is_escaped_in_both_response_shapes(
+    client: AsyncClient,
+) -> None:
+    """HTML typed into the question is shown as text, with or without HTMX."""
+    question = '<img src=x onerror="alert(1)"> and <b>bold</b>'
+    async with client as ac:
+        fragment = await _post(ac, question)
+        page = await ac.post("/chat/ask", data={"question": question})
+    for text in (fragment, page.text):
+        assert "<img src=x" not in text
+        assert "<b>bold</b>" not in text
+        assert "&lt;b&gt;bold&lt;/b&gt;" in text
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_real_answer_clears_the_form_and_an_error_does_not(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """The route asks the form to reset only when an answer arrived."""
+    async with client as ac:
+        good = await ac.post("/chat/ask", data={"question": QUESTION}, headers=HX)
+        model.status = 503
+        bad = await ac.post("/chat/ask", data={"question": QUESTION}, headers=HX)
+    assert good.headers["hx-trigger"] == "chat-answered"
+    assert "hx-trigger" not in bad.headers
+    assert MSG_MODEL_DOWN in bad.text
+
+
+@pytest.mark.usefixtures("chat_env")
+async def test_panel_resets_only_on_the_answer_event_and_shows_failures(
+    client: AsyncClient,
+) -> None:
+    """The panel markup wires the reset to the answer event and a failure note."""
+    async with client as ac:
+        page = await ac.get("/")
+    assert 'hx-on:chat-answered="this.reset()"' in page.text
+    assert "after-request" not in page.text
+    assert 'hx-on::response-error="' in page.text
+    assert 'hx-on::send-error="' in page.text
+    assert 'id="chat-problem"' in page.text
+    assert "up to a minute" in page.text
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_answer_text_that_looks_like_a_bracketed_label_is_kept(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """A line such as "[Important]: ..." is answer text, not a link definition."""
+    model.answer = (
+        "Summary.\n\n[Important]: You must file Form 1065 by March 15.\n\n"
+        "[1]: https://evil.example/ref\n\nDone."
+    )
+    text = await _ask(client)
+    assert "[Important]: You must file Form 1065 by March 15." in text
+    assert "evil.example" not in text
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_length_cut_is_noted(client: AsyncClient, model: FakeModel) -> None:
+    """When the model stops at its token limit, the page says so."""
+    model.finish_reason = "length"
+    text = await _ask(client)
+    assert MSG_CUT_SHORT in text
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_complete_answer_has_no_cut_note(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """The normal finish adds no note."""
+    del model
+    text = await _ask(client)
+    assert MSG_CUT_SHORT not in text
+
+
+# --------------------------------------------------------------------------- #
+# Balances shown with an answer
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_balances_are_scoped_to_the_question(
+    client: AsyncClient, model: FakeModel, tmp_db_path: Path
+) -> None:
+    """Only a named account or a balance question shows figures on the page.
+
+    The prompt carries the whole table either way; the page does not.
+    """
+    seed_balances(tmp_db_path)
+    async with client as ac:
+        unrelated = await _post(ac, "What does the operating agreement say?")
+        named = await _post(ac, "How is Main Checking set up?")
+        totals = await _post(ac, "What is the total value?")
+    assert "Balances from the portal's records" not in unrelated
+    assert "Harbor Brokerage" not in unrelated
+    assert "Main Checking: $2,500.00" in named
+    assert "Harbor Brokerage:" not in named
+    assert "All US dollar accounts:" not in named
+    assert "All US dollar accounts: $1,237,067.89" in totals
+    assert "Harbor Brokerage:" not in totals
+    for body in model.bodies():
+        system = body["messages"][0]["content"]
+        assert "Harbor Brokerage" in system
+        assert "Main Checking" in system
+        assert "acct-" not in system
+
+
+# --------------------------------------------------------------------------- #
+# Failures that are not the model's
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.usefixtures("chat_env")
+async def test_a_search_close_error_does_not_replace_the_answer(
+    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing close() is logged by class and the answer still shows."""
+    hits = FakeSearcher(
+        results=(doc_result("Passage."),), close_error=RuntimeError("close failed")
+    )
+    monkeypatch.setattr(chat_route, "build_search_service", lambda: hits)
+    model.answer = "Still answered."
+    with capture_logs() as logs:
+        text = await _ask(client)
+    assert "Still answered." in text
+    assert hits.closed == 1
+    closed = [e for e in logs if e["event"] == "chat_search_close_failed"]
+    assert closed[0]["error_type"] == "RuntimeError"
+    assert "close failed" not in json.dumps(logs, default=str)
+
+
+@pytest.mark.usefixtures("chat_env")
+async def test_a_search_factory_error_is_a_plain_sentence(
+    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure while building the search service says search is down."""
+
+    def broken() -> FakeSearcher:
+        msg = "cannot build"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(chat_route, "build_search_service", broken)
+    text = await _ask(client)
+    assert MSG_SEARCH_DOWN in text
+    assert model.requests == []
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_balance_read_error_is_a_plain_sentence(
+    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database error never turns into an empty balance table in the prompt."""
+
+    async def broken() -> object:
+        msg = "database is locked"
+        raise sqlite3.OperationalError(msg)
+
+    monkeypatch.setattr(service, "read_balance_table", broken)
+    text = await _ask(client)
+    assert MSG_BALANCES_DOWN in text
+    assert "database is locked" not in text
+    assert model.requests == []
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_an_unexpected_error_is_a_plain_sentence_and_logged_by_class(
+    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anything unforeseen gives one sentence, not a 500 and not a traceback."""
+
+    def broken(*args: object, **kwargs: object) -> str:
+        del args, kwargs
+        msg = "private-detail-marker"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(service, "assemble_system_prompt", broken)
+    with capture_logs() as logs:
+        text = await _ask(client)
+    assert MSG_UNEXPECTED in text
+    assert "private-detail-marker" not in text
+    assert "private-detail-marker" not in json.dumps(logs, default=str)
+    unexpected = [e for e in logs if e["event"] == "chat_unexpected_failure"]
+    assert unexpected[0]["error_type"] == "RuntimeError"
+    assert model.requests == []
+
+
+@pytest.mark.usefixtures("chat_env")
+async def test_missing_collections_are_logged_by_name(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unindexed collection shows in the log, since the page cannot tell."""
+    hits = FakeSearcher(results=(tax_result("Tax passage."),), missing=("family-docs",))
+    monkeypatch.setattr(chat_route, "build_search_service", lambda: hits)
+    with capture_logs() as logs:
+        await _ask(client)
+    missing = [e for e in logs if e["event"] == "chat_collections_missing"]
+    assert missing[0]["collections"] == ["family-docs"]
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_model_status_and_error_class_are_logged_without_the_body(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """A 401 and a refused connection can be told apart in the log."""
+    model.status = 401
+    model.answer = "secret-body-marker"
+    async with client as ac:
+        with capture_logs() as logs:
+            await _post(ac)
+        model.status = 200
+        model.raise_error = httpx.ConnectError("refused")
+        with capture_logs() as more:
+            await _post(ac)
+    failed = [e for e in [*logs, *more] if e["event"] == "chat_model_failed"]
+    assert [(e["reason"], e["status_code"], e["error_type"]) for e in failed] == [
+        ("unavailable", 401, None),
+        ("unavailable", None, "ConnectError"),
+    ]
+    assert "secret-body-marker" not in json.dumps(failed, default=str)
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_an_answer_that_is_empty_after_cleaning_is_logged_as_empty(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """An answer of only a markdown image is shown as empty and logged so."""
+    model.answer = "![pixel](https://evil.example/p.png)"
+    with capture_logs() as logs:
+        text = await _ask(client)
+    assert "No answer was given." in text
+    finished = [e for e in logs if e["event"] == "chat_finished"]
+    assert finished[0]["outcome"] == "empty"
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_standard_logging_never_carries_the_question_or_answer(
+    client: AsyncClient, model: FakeModel, caplog: pytest.LogCaptureFixture
+) -> None:
+    """At DEBUG, on success and on failure, no log line holds the text."""
+    caplog.set_level(logging.DEBUG)
+    model.answer = "answer-marker-one"
+    async with client as ac:
+        await _post(ac, "question-marker-one")
+        model.status = 503
+        await _post(ac, "question-marker-two")
+    dumped = caplog.text
+    for marker in ("question-marker-one", "question-marker-two", "answer-marker-one"):
+        assert marker not in dumped
 
 
 def test_service_module_exposes_limits() -> None:
