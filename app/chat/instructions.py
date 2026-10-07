@@ -62,12 +62,20 @@ async def load_instructions(path: Path | None) -> str:
         msg = "CHAT_INSTRUCTIONS_PATH is not set"
         raise InstructionsError(msg)
     try:
-        raw = await anyio.Path(path).read_bytes()
-        text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        async with await anyio.Path(path).open("rb") as handle:
+            raw = await handle.read(MAX_INSTRUCTIONS_BYTES + 1)
+    except OSError as exc:
         msg = "the chat instructions file cannot be read"
         raise InstructionsError(msg) from exc
-    if not text.strip() or len(raw) > MAX_INSTRUCTIONS_BYTES:
+    if len(raw) > MAX_INSTRUCTIONS_BYTES:
+        msg = "the chat instructions file is empty or too large"
+        raise InstructionsError(msg)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        msg = "the chat instructions file cannot be read"
+        raise InstructionsError(msg) from exc
+    if not text.strip():
         msg = "the chat instructions file is empty or too large"
         raise InstructionsError(msg)
     return text

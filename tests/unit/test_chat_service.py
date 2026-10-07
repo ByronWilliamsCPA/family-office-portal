@@ -76,6 +76,7 @@ async def test_load_instructions_refuses_unset_path() -> None:
         (b"\xff\xfe\x00bad", "cannot be read"),
         (b"   \n", "empty or too large"),
         (b"x" * (MAX_INSTRUCTIONS_BYTES + 1), "empty or too large"),
+        (b"\xc3\xa9" * MAX_INSTRUCTIONS_BYTES, "empty or too large"),
     ],
 )
 async def test_load_instructions_refuses_bad_files(
@@ -86,6 +87,13 @@ async def test_load_instructions_refuses_bad_files(
     path.write_bytes(content)
     with pytest.raises(InstructionsError, match=message):
         await load_instructions(path)
+
+
+async def test_load_instructions_accepts_file_at_the_limit(tmp_path: Path) -> None:
+    """A file of exactly the size limit is still accepted."""
+    path = tmp_path / "instructions.md"
+    path.write_bytes(b"x" * MAX_INSTRUCTIONS_BYTES)
+    assert len(await load_instructions(path)) == MAX_INSTRUCTIONS_BYTES
 
 
 async def test_load_instructions_refuses_missing_file(tmp_path: Path) -> None:

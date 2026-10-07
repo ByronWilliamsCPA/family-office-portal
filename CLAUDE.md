@@ -231,7 +231,7 @@ Never implement password-based auth, OAuth flows, or session cookies.
   except the document file proxy described below (ADR-007) and the question
   panel's `POST /chat/ask`, which calls the search function and the chat model
   per ADR-009; do not add another without a new ADR. The only handler
-  that writes is the balance intake route, the only handler that writes: it
+  that writes is the balance intake route: it
   goes through the process-wide write lock in a worker thread (ADR-003
   amendment 2026-10-05).
 - Refresh jobs (APScheduler) call backend services and write to SQLite. They never
