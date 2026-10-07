@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Status**: Active | **Version**: 1.4.0 | **Updated**: 2026-10-05
+> **Status**: Active | **Version**: 1.5.0 | **Updated**: 2026-10-06
 >
 > Project-specific rules for the family-office-portal FastAPI application.
 > Global standards are in `~/.claude/CLAUDE.md` and apply everywhere.
@@ -70,10 +70,13 @@ app/
   retrieval/           # Embeddings client, Qdrant store, chunk-set reader, and the
                        # scheduled indexer and tax-law commands (ADR-006),
                        # and the internal search function (ADR-008)
+  chat/                # Question panel (ADR-009): settings, balance table,
+                       # prompt, image prep, model client, answer rendering
   middleware/          # Authentik forward-auth JWT validation middleware (ADR-005)
   routes/              # One module per section: home, documents, finances,
                        # portfolio, entities, health, admin; plus balances
                        # (POST /api/v1/balances, the key-authenticated intake)
+                       # and chat (POST /chat/ask, the panel on Home)
   templating.py        # Jinja2 environment, plain-English filters, render helper
   cache.py             # Async SQLite readers called by route handlers
   scheduler.py         # APScheduler setup; refresh and snapshot jobs; write lock
@@ -170,7 +173,9 @@ Key documents to read before making architectural or data-model decisions:
 - **Money**: totals are USD only; other currencies are counted and
   shown as left out. Format with `Decimal`, never float arithmetic.
 - **HTTP client**: `httpx` for outbound calls in APScheduler refresh jobs. Use
-  `httpx.Client` (synchronous) inside scheduler jobs; `httpx.AsyncClient` in tests.
+  `httpx.Client` (synchronous) inside scheduler jobs; `httpx.AsyncClient` in
+  tests, in the document file proxy (ADR-007) and in the chat model client
+  (ADR-009, which sets `trust_env=False` and `follow_redirects=False`).
   Backends are reached on a private Docker network; every request carries the
   backend's `X-API-Key`. A backend with a URL always has a key (startup refuses
   otherwise), so no request goes out without the header. A backend whose URL is
@@ -223,8 +228,10 @@ Never implement password-based auth, OAuth flows, or session cookies.
 ## Data layer rules
 
 - Route handlers read from SQLite only. They never call backend HTTP services,
-  except the document file proxy described below (ADR-007). The one exception
-  to read-only is the balance intake route, the only handler that writes: it
+  except the document file proxy described below (ADR-007) and the question
+  panel's `POST /chat/ask`, which calls the search function and the chat model
+  per ADR-009; do not add another without a new ADR. The only handler
+  that writes is the balance intake route: it
   goes through the process-wide write lock in a worker thread (ADR-003
   amendment 2026-10-05).
 - Refresh jobs (APScheduler) call backend services and write to SQLite. They never
@@ -286,6 +293,29 @@ Never implement password-based auth, OAuth flows, or session cookies.
   reading the knowledge-base file at `TAX_LAW_PATH`. Never commit that file
   or any of its content; it is licensed material. Tests use synthetic data.
 
+## Chat
+
+- The system prompt is the file at `CHAT_INSTRUCTIONS_PATH`, read at question
+  time. Never commit that file or any part of it; tests write a short
+  synthetic one. Chat is "not connected" when it is unset or unreadable.
+  Tagged `#CRITICAL`.
+- Build the model request only in `app.chat.client.build_payload`, from fixed
+  fields. Never pass client form, query or JSON fields through (a client
+  `chat_template_kwargs` must never reach the model). Read only
+  `choices[0].message.content`.
+- Every passage goes through `app.chat.prompt.clean_passage` and its fence,
+  and every title, name or label the prompt prints goes through `clean_label`;
+  the prompt holds exactly one `BALANCE TABLE` and one `SOURCES` heading.
+- A Viewer sees a passage only when the search payload and the portal cache
+  both say its document is not confidential (`visible_results`); never trust
+  the payload flag alone.
+- Render model text only through `app.chat.render.answer_paragraphs` and
+  Jinja autoescaping; never `|safe`. Balances on screen come from the
+  balance table, never from model text.
+- Store no questions or answers, and log timings and counts only.
+- `CHAT_ENABLED_FOR` gates the route (404) and the panel; set
+  `include_confidential` only from the signed-in role.
+
 ## Environment variables
 
 The variables listed as required in the tech spec (section 4) must be
@@ -308,7 +338,11 @@ Other optional variables, with documented defaults: `FO_ADMIN_GROUP`
 (`fo-admin`), `FO_VIEWER_GROUP` (`fo-viewer`), `BACKEND_TIMEOUT_SECONDS` (10),
 `DISPLAY_TIMEZONE` (`UTC`), `SCHEDULER_ENABLED` (`true`). Also optional:
 `BALANCE_INTAKE_API_KEY` (at least 32 characters when set; the balance intake
-answers 404 when it is unset).
+answers 404 when it is unset). Chat (ADR-009): `LLM_BASE_URL` and
+`LLM_API_KEY` (unset; a URL without its key, or an invalid URL, non-ASCII key
+or non-finite timeout, exits 1), `LLM_MODEL` (empty),
+`LLM_TIMEOUT_SECONDS` (30), `CHAT_INSTRUCTIONS_PATH` (unset), `CHAT_ENABLED_FOR`
+(`admin`).
 
 ## Frontend conventions
 

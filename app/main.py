@@ -24,6 +24,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
 
 from app import __version__
+from app.chat.settings import check_chat_settings
 from app.config import (
     BackendConfigError,
     check_backends,
@@ -36,6 +37,7 @@ from app.middleware import AuthConfigError, AuthentikAuthMiddleware, AuthentikSe
 from app.routes import (
     admin,
     balances,
+    chat,
     documents,
     entities,
     finances,
@@ -83,6 +85,11 @@ except BackendConfigError as _exc:
 # reported at startup (one warning, then UTC) rather than on first use.
 display_zone(_SETTINGS)
 
+_CHAT_PROBLEM = check_chat_settings()
+if _CHAT_PROBLEM is not None:
+    sys.stderr.write(f"Invalid chat configuration: {_CHAT_PROBLEM}\n")
+    sys.exit(1)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
@@ -127,6 +134,10 @@ app: FastAPI = FastAPI(
             "description": "Account balance intake for the collector (API key).",
         },
         {"name": "home", "description": "Landing dashboard."},
+        {
+            "name": "chat",
+            "description": "Questions about documents and balances (live model call).",
+        },
         {"name": "documents", "description": "Document folders, search, and previews."},
         {"name": "finances", "description": "Account totals and digital currency."},
         {"name": "portfolio", "description": "Holdings from pp-security-master."},
@@ -170,6 +181,7 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 app.include_router(health.router)
 app.include_router(balances.router)
 app.include_router(home.router)
+app.include_router(chat.router)
 app.include_router(documents.router)
 app.include_router(finances.router)
 app.include_router(portfolio.router)

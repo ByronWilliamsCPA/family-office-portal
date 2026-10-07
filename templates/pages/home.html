@@ -22,6 +22,9 @@
     {{ trend(trend_rows, trend_json, trend_chart, trend_days) }}
     {{ sources(sources_list) }}
   </div>
+  {% if chat and chat.visible %}
+  {% include "partials/chat_panel.html" %}
+  {% endif %}
   <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="upcoming-heading">
     <h2 id="upcoming-heading" class="text-xl font-semibold mb-3">Coming up</h2>
     {% if not connected.llc_manager %}

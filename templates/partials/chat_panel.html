@@ -1,0 +1,36 @@
+{% from "partials/not_connected.html" import not_connected %}
+{# Chat panel on the Home page. Works without JavaScript (the form posts and
+   the Home page comes back with the answer); with HTMX each answer is added
+   below the earlier ones. The form is cleared only when an answer arrives
+   (the route sends an HX-Trigger header), so a failed question can be sent
+   again. A failed request (an error status or no connection) shows the
+   hidden "not available" sentence. Nothing is stored. #}
+<section class="bg-white rounded-xl border border-stone-200 p-6 md:col-span-2" aria-labelledby="chat-heading">
+  <h2 id="chat-heading" class="text-xl font-semibold mb-2">Ask a question</h2>
+  {% if not chat.connected %}
+  {{ not_connected("Answers to questions") }}
+  {% else %}
+  <p class="text-slate-600">Ask about the family's documents, accounts, or tax rules. Answers are educational, not legal or tax advice.</p>
+  <div id="chat-turns" aria-live="polite">
+    {% if chat_outcome %}{% with outcome = chat_outcome %}{% include "partials/chat_turn.html" %}{% endwith %}{% endif %}
+  </div>
+  <p id="chat-problem" class="mt-4 text-amber-800" role="alert" hidden>The question could not be sent or answered. Your question is still in the box. If you added a picture, check that it is under 10 MB, then try again.</p>
+  <form class="mt-4 space-y-3" method="post" action="/chat/ask" enctype="multipart/form-data"
+        hx-post="/chat/ask" hx-encoding="multipart/form-data" hx-target="#chat-turns" hx-swap="beforeend"
+        hx-disabled-elt="find button"
+        hx-on::before-request="document.getElementById('chat-problem').hidden = true"
+        hx-on::response-error="document.getElementById('chat-problem').hidden = false"
+        hx-on::send-error="document.getElementById('chat-problem').hidden = false"
+        hx-on:chat-answered="this.reset()">
+    <label for="chat-question" class="block font-medium">Your question</label>
+    <textarea id="chat-question" name="question" rows="3" maxlength="1000" required
+              class="w-full rounded-lg border border-stone-300 p-3"></textarea>
+    <label for="chat-image" class="block font-medium">Add a picture (optional)</label>
+    <input id="chat-image" name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp">
+    <div class="flex items-center gap-4">
+      <button type="submit" class="px-5 py-2 rounded-lg bg-slate-800 text-white">Ask</button>
+      <span class="htmx-indicator text-slate-600">Working on it. This can take up to a minute.</span>
+    </div>
+  </form>
+  {% endif %}
+</section>

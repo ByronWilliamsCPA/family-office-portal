@@ -246,6 +246,51 @@
                 "exec": [
                   "const authed = Boolean(pm.variables.get('authentikJwt'));",
                   "pm.test('status is in the expected range', function () {",
+                  "    const expected = authed ? [200] : [403];",
+                  "    pm.expect(expected).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Ask a question (HTMX partial, or the Home page without HTMX)",
+          "request": {
+            "description": "Answer one question with citations and balances from the table.\n\nAuthentication: Admin, or Viewer when ``CHAT_ENABLED_FOR`` is ``all``.\n\nArgs:\n    request (Request): Current request; the form carries ``question`` and\n        an optional ``image``.\n\nReturns:\n    Response: The answer fragment for HTMX, else the Home page.\n\nRaises:\n    HTTPException: 404 when chat is not enabled for the caller's role,\n        403 for a cross-site post, 413 when the body is over\n        ``MAX_BODY_BYTES``.",
+            "header": [
+              {
+                "key": "X-authentik-jwt",
+                "type": "text",
+                "value": "{{authentikJwt}}"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chat",
+                "ask"
+              ],
+              "raw": "{{baseUrl}}/chat/ask"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "chat"
+    },
+    {
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const authed = Boolean(pm.variables.get('authentikJwt'));",
+                  "pm.test('status is in the expected range', function () {",
                   "    const expected = authed ? [200, 422] : [403];",
                   "    pm.expect(expected).to.include(pm.response.code);",
                   "});"
@@ -623,7 +668,7 @@
           ],
           "name": "Home dashboard",
           "request": {
-            "description": "Render the landing dashboard: totals, upcoming dates, recent documents.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered dashboard page.",
+            "description": "Render the landing dashboard: totals, dates, documents and chat.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered dashboard page.",
             "header": [
               {
                 "key": "X-authentik-jwt",

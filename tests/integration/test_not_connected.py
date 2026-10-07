@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.unit.chat_fakes import random_key, write_instructions
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -45,6 +47,24 @@ async def test_page_says_not_connected_when_url_is_unset(
     assert NOT_CONNECTED in response.text
 
 
+@pytest.fixture
+def chat_connected(
+    portal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Connect chat too, since Home shows its panel to Admins.
+
+    Args:
+        portal_env: Applied first, because it clears the chat settings.
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Per-test directory for the synthetic instructions file.
+    """
+    del portal_env
+    monkeypatch.setenv("LLM_BASE_URL", "http://chat.test")
+    monkeypatch.setenv("LLM_API_KEY", random_key())
+    monkeypatch.setenv("CHAT_INSTRUCTIONS_PATH", str(write_instructions(tmp_path)))
+
+
+@pytest.mark.usefixtures("chat_connected")
 @pytest.mark.parametrize(("path", "url_var"), PAGES)
 async def test_page_has_no_not_connected_note_when_connected(
     client: AsyncClient, path: str, url_var: str
