@@ -7,8 +7,9 @@
 
 Chat answers questions about the family's documents and balances. Each
 question makes two live calls while the request is open: the internal search
-function (ADR-008) and the chat model. This is the one exception to ADR-003,
-under which route handlers read only the SQLite cache. Everything else about
+function (ADR-008) and the chat model. This is a bounded request-time exception
+to ADR-003, under which route handlers read only the SQLite cache; it sits
+beside the exceptions in ADR-006, ADR-007 and ADR-008. Everything else about
 chat keeps ADR-003's spirit: balances come from the cache, nothing is stored,
 a failure is one plain sentence, and chat is off ("not connected") unless it
 is configured.
@@ -36,8 +37,9 @@ Constraints:
 
 ### The exception
 
-`POST /chat/ask` (`app/routes/chat.py`) is the only route that calls services
-while serving a request. It calls `SearchService.search_async` (ADR-008) and
+`POST /chat/ask` (`app/routes/chat.py`) is the route that calls the search
+function and the chat model while serving a request; document preview and
+download (ADR-007) are the other request-time backend call. It calls `SearchService.search_async` (ADR-008) and
 the chat model (`app/chat/client.py`). Balances still come from the cache
 (`account_balances` and `balances_daily`).
 
@@ -47,10 +49,10 @@ All optional, named only in `app/chat/settings.py`:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `LLM_BASE_URL` | unset | Chat model base URL; unset means not connected |
-| `LLM_API_KEY` | unset | Bearer key; required when `LLM_BASE_URL` is set (startup exits 1 otherwise) |
+| `LLM_BASE_URL` | unset | Chat model base URL without `/v1`; the client adds `/v1/chat/completions`. Unset means not connected |
+| `LLM_API_KEY` | unset | Bearer key, ASCII only; required when `LLM_BASE_URL` is set |
 | `LLM_MODEL` | empty | Model name; left out of the request when empty |
-| `LLM_TIMEOUT_SECONDS` | 30 | Most one answer may take, counting the wait for a slot |
+| `LLM_TIMEOUT_SECONDS` | 30 | Most the model step may take, counting the wait for a slot; search time is not included |
 | `CHAT_INSTRUCTIONS_PATH` | unset | The instructions file used as the system prompt |
 | `CHAT_ENABLED_FOR` | `admin` | Feature flag: `admin`, `all` (Admins and Viewers) or `none` |
 
@@ -60,6 +62,12 @@ when the model URL or the path is unset, or the file is missing, empty or
 unreadable. A file that is not UTF-8 or is over 64 KB is caught when a
 question is asked, and the answer says chat is not connected. No host or port
 is built into the code.
+
+Startup exits 1 when `LLM_BASE_URL` is set without a key, or when a value is
+invalid: a URL that is not `http` or `https` with a host and a valid port, a
+key with non-ASCII or control characters, or a timeout that is not a finite
+number above zero. The model client ignores proxy environment variables and
+does not follow redirects, so the key goes only to the configured address.
 
 ### Where chat lives
 
@@ -88,7 +96,15 @@ The system prompt is the instructions file followed by exactly two sections,
   line, any line that reads `BALANCE TABLE` or `SOURCES` once marks and
   punctuation are removed is dropped, and runs of three or more `<` or `>`
   are cut to one, so a passage cannot open a section or close its fence.
+- Document titles, tax-law titles and numbers, and account, category,
+  entity, currency and total labels are cleaned the same way before they are
+  printed.
 - Document, entity and account identifiers never go in the prompt.
+- A Viewer's passages are checked twice before they reach the prompt or the
+  citations: the search payload's confidential flag, and the portal's own
+  cache (the rule the document preview route applies). A passage whose
+  document is missing from the cache, is confidential there, or has no
+  document id is dropped for a Viewer. The payload flag alone is not trusted.
 
 The question is the user message.
 
@@ -100,12 +116,19 @@ The question is the user message.
   client `chat_template_kwargs` never reaches the model.
 - At most one image. It is decoded with Pillow (MIT-CMU license), turned
   upright, converted to RGB, shrunk so its long edge is at most 1024 px, and
-  re-encoded as JPEG. Uploads over 10 MB or 40 megapixels are refused.
+  re-encoded as JPEG. PNG, JPEG (including phone photos stored as MPO), WebP
+  and GIF are accepted. Uploads over 10 MB or 40 megapixels are refused, and a
+  damaged file gets the same plain refusal as any non-picture.
+- The request body is capped at the image limit plus 64 KB. A declared size
+  over the cap, or a body that grows past it while it is read, gets 413.
 - A semaphore of 2 (the service's slot count) wraps every call. The wait for
   a slot counts toward `LLM_TIMEOUT_SECONDS`.
 - Only `choices[0].message.content` is read; `reasoning_content` is ignored.
 - One attempt. A timeout, an unreachable or refusing service, or an unusable
-  body becomes a plain sentence. There is no retry loop.
+  body becomes a plain sentence. There is no retry loop. A reply cut off at
+  the token limit is shown with a note that it was cut short.
+- Any other failure inside the question flow (the balance read, an
+  unexpected error) is logged by type only and shown as one plain sentence.
 
 ### Rendering
 
@@ -117,21 +140,24 @@ The question is the user message.
   number and title with no link.
 - Balances are rendered from the table, never from model text: any account
   whose full name appears in the question or answer is shown with its figure
-  and as-of date, and the overall total is shown when the question is about
-  balances or totals. The label says the figures come from the portal and may
+  and as-of date, and the overall total is shown when the question contains a
+  balance-related keyword (a simple keyword match, not an intent check). The label says the figures come from the portal and may
   have changed.
 - Every answer carries "Educational, not legal or tax advice."
 
 ### Logs and privacy
 
 Logs carry the outcome, whether an image was sent, the number of sources,
-and search, model and total time in milliseconds (`chat_finished`). Never the
-question, the prompt, the passages or the answer.
+and search, model and total time in milliseconds (`chat_finished`), plus the
+status code and error type of a failed model call and the names of any search
+collections that were missing. Never the question, the prompt, the passages,
+the answer or the key.
 
 ### Cross-site posts
 
 The portal has no CSRF token. A post whose `Sec-Fetch-Site` header is
-`cross-site` gets 403.
+`cross-site` gets 403. When that header is absent, a post whose `Origin`
+header names a different host than the request gets 403 as well.
 
 ## Consequences
 
@@ -144,21 +170,42 @@ The portal has no CSRF token. A post whose `Sec-Fetch-Site` header is
   paths. They do not prove latency, that the model follows the instructions,
   or the real service's response shape.
 
+### Balance table source
+
+`BALANCE TABLE` totals come from `balances_daily` because it holds the
+latest complete day and is already the figure the Balances page shows. When
+that table is empty the totals are summed from `account_balances`.
+
+### Deferred
+
+There is no per-user rate limit. The semaphore and the model timeout bound
+the load for a household of a few people. Add a limit before enabling chat
+for a larger group.
+
 Open assumptions:
 
 - #ASSUME the portal is the only caller of the chat service, so a semaphore of
   2 matches its slots. #VERIFY with the model service's owner before
   enabling chat for Viewers.
+- #ASSUME the portal runs one worker process (`--workers 1`), because the
+  semaphore is per process. #VERIFY the container command before raising the
+  worker count; with N workers the service could see 2N calls.
+- #ASSUME the reverse proxy in front of the portal also limits request body
+  size. #VERIFY the proxy's limit is at or below the portal's cap.
 - #ASSUME the service's default temperature is suitable; none is sent.
   #VERIFY against the service's benchmark settings before setting one.
 - #ASSUME a search plus a model call fits 30 seconds with two users at once.
   #VERIFY by reading `elapsed_ms` from `chat_finished` logs in a test session
   against the live services.
-- #EDGE browsers that send no Fetch Metadata headers are not protected from a
-  cross-site post. #VERIFY that the household's tablets run a current browser.
+- #EDGE browsers that send neither Fetch Metadata nor an `Origin` header are
+  not protected from a cross-site post. #VERIFY that the household's tablets
+  run a current browser.
 
 ## Related
 
-- ADR-003: backend data aggregation (the cached-read rule this ADR excepts)
+- ADR-003: backend data aggregation (the cached-read rule this ADR
+  makes a bounded exception to)
+- ADR-006: document indexer (the earlier document-search carve-out)
+- ADR-007: live document file proxy (the earlier request-time exception)
 - ADR-005: authentication (the role that sets the flag and confidential access)
 - ADR-008: document search (the search function chat calls)

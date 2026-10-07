@@ -65,7 +65,9 @@ These rules are non-negotiable, mirrored from CLAUDE.md so non-Claude agents
   services directly, except the document file proxy for preview and download
   (`app/document_files.py`), which checks visibility in the cache first, and
   document search (`app/retrieval/search.py`), which embeds the query and
-  queries Qdrant during the request. See ADR-003, ADR-007 and ADR-008.
+  queries Qdrant during the request. The question panel's `POST /chat/ask` also calls the search function and the
+  chat model during the request (`app/chat/`). See ADR-003, ADR-007, ADR-008
+  and ADR-009.
 - **Python 3.12 only.** Do not introduce 3.13 syntax or features.
 - **No CDN-loaded assets in production.** HTMX and Chart.js are vendored
   static files; never reference a CDN URL in templates.

@@ -215,6 +215,7 @@ CREATE TABLE refresh_log (
 | GET | `/admin/refresh-status` | Per-service refresh log | Admin only |
 | POST | `/admin/refresh/{service}` | Trigger manual refresh | Admin only |
 | GET | `/admin/manual-marks` | Accounts valued by hand, oldest first | Admin only |
+| POST | `/chat/ask` | Ask a question (question panel; HTMX fragment or Home page); 404 when the flag does not allow the role; 403 for a cross-site post; 413 for an oversized body | Viewer, Admin per `CHAT_ENABLED_FOR` |
 | POST | `/api/v1/balances` | Deliver account balances (collector) | `X-API-Key` header, not identity; disabled (404) when `BALANCE_INTAKE_API_KEY` is unset |
 
 ### Backend Service Contracts (Required from Backend Teams)
@@ -301,9 +302,9 @@ model URL without its key stops startup:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LLM_BASE_URL`, `LLM_API_KEY` | unset | OpenAI-compatible chat model service and its bearer key |
+| `LLM_BASE_URL`, `LLM_API_KEY` | unset | OpenAI-compatible chat model service (base URL without `/v1`; the client adds `/v1/chat/completions`) and its ASCII bearer key; an invalid URL, key or timeout stops startup |
 | `LLM_MODEL` | empty | Model name; left out of the request when empty |
-| `LLM_TIMEOUT_SECONDS` | `30` | Most one answer may take, including the wait for a slot |
+| `LLM_TIMEOUT_SECONDS` | `30` | Most the model step may take, including the wait for a slot; search time is not counted |
 | `CHAT_INSTRUCTIONS_PATH` | unset | Instructions file used as the system prompt; never stored in this repository |
 | `CHAT_ENABLED_FOR` | `admin` | Who sees the panel: `admin`, `all` or `none` |
 

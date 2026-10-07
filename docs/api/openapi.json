@@ -275,7 +275,7 @@
   "paths": {
     "/": {
       "get": {
-        "description": "Render the landing dashboard: totals, upcoming dates, recent documents.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered dashboard page.",
+        "description": "Render the landing dashboard: totals, dates, documents and chat.\n\nAuthentication: Viewer or Admin (ADR-005).\n\nArgs:\n    request (Request): Current request.\n\nReturns:\n    Response: Rendered dashboard page.",
         "operationId": "home__get",
         "responses": {
           "200": {
@@ -580,6 +580,37 @@
         "summary": "Deliver account balances",
         "tags": [
           "balances"
+        ]
+      }
+    },
+    "/chat/ask": {
+      "post": {
+        "description": "Answer one question with citations and balances from the table.\n\nAuthentication: Admin, or Viewer when ``CHAT_ENABLED_FOR`` is ``all``.\n\nArgs:\n    request (Request): Current request; the form carries ``question`` and\n        an optional ``image``.\n\nReturns:\n    Response: The answer fragment for HTMX, else the Home page.\n\nRaises:\n    HTTPException: 404 when chat is not enabled for the caller's role,\n        403 for a cross-site post, 413 when the body is over\n        ``MAX_BODY_BYTES``.",
+        "operationId": "ask_chat_ask_post",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Cross-site post"
+          },
+          "404": {
+            "description": "Chat is not enabled for this role"
+          },
+          "413": {
+            "description": "Request body too large"
+          }
+        },
+        "summary": "Ask a question (HTMX partial, or the Home page without HTMX)",
+        "tags": [
+          "chat"
         ]
       }
     },
@@ -926,6 +957,10 @@
     {
       "description": "Landing dashboard.",
       "name": "home"
+    },
+    {
+      "description": "Questions about documents and balances (live model call).",
+      "name": "chat"
     },
     {
       "description": "Document folders, search, and previews.",

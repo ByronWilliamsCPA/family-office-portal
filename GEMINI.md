@@ -49,8 +49,9 @@ Most project context, conventions, and rules are written for Claude Code.
   per RAD. See ADR-005.
 - **Data layer**: route handlers read from SQLite only; they never call backend
   HTTP services directly, except the document file proxy for preview and
-  download (ADR-007). APScheduler refresh jobs are the only writers. See
-  ADR-003.
+  download (ADR-007), document search (ADR-008) and the question panel's
+  search and model call (ADR-009). APScheduler refresh jobs are the only
+  writers, apart from the balance intake route. See ADR-003.
 - **Stale data**: a stale section must show the last cached value with a "last
   updated" label, never an error page or blank section.
 - **Python 3.12 only**: do not introduce 3.13 syntax or features.

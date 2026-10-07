@@ -346,6 +346,12 @@ Key design requirements (captured here for future reference):
 - No conversation history stored between sessions (privacy)
 - `family_office` backend already active and provides the knowledge base
 
+**Note (2026-10-06)**: A first version shipped early as a question panel on the
+Home page, not a sixth section (ADR-009). It answers from the cached balances and
+the internal document search with a live chat model call, stores nothing, and is
+off for Viewers unless `CHAT_ENABLED_FOR` allows it. The sixth-section design
+above stays a later option.
+
 ---
 
 ## Risk Register
