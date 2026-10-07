@@ -140,8 +140,9 @@ BAD_URLS = [
 @pytest.mark.parametrize("url", BAD_URLS)
 def test_connection_rejects_a_malformed_url_without_echoing_it(url: str) -> None:
     """A URL that is not http or https with a host and port names the variable."""
+    api_key = SecretStr("k")
     with pytest.raises(ChatConfigError, match="LLM_BASE_URL") as caught:
-        ChatConnection(base_url=url, api_key=SecretStr("k"))
+        ChatConnection(base_url=url, api_key=api_key)
     assert url not in str(caught.value)
     assert USERINFO_SECRET not in str(caught.value)
 
