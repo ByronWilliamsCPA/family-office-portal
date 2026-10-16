@@ -17,7 +17,7 @@
   {% for folder in folders %}
   <section class="mb-8" aria-labelledby="folder-{{ loop.index }}">
     <h2 id="folder-{{ loop.index }}" class="text-xl font-semibold mb-3">
-      {%- if folder.entity_id %}<a class="text-blue-800 underline" href="/entities/{{ folder.entity_id | urlencode }}">{{ folder.title }}</a>
+      {%- if folder.entity_id %}<a class="text-blue-800 underline" href="{{ folder.entity_id | entity_url }}">{{ folder.title }}</a>
       {%- else %}{{ folder.title }}{% endif -%}
     </h2>
     <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200">

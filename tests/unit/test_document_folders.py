@@ -22,6 +22,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 import pytest
 
@@ -430,3 +431,51 @@ async def test_search_partial_still_works(
     assert response.status_code == 200
     assert "Trust Deed.pdf" in response.text
     assert "<html" not in response.text
+
+
+# --------------------------------------------------------------------------- #
+# Entity links and the Viewer's not-connected note
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("entity_id", ["a/b", "../admin", "x?y=1#z", "50%/off"])
+async def test_entity_link_escapes_the_whole_id(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+    entity_id: str,
+) -> None:
+    """A slash, dot segment or other URL character in an id stays one segment."""
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(tmp_db_path) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, name, type, fetched_at) VALUES (?, ?, ?, ?)",
+            (entity_id, "Odd Id LLC", "LLC", now),
+        )
+        conn.execute(
+            "INSERT INTO documents (id, name, category, entity_id, "
+            "is_confidential, proxy_url, fetched_at) VALUES "
+            "('d1', 'Odd.pdf', 'LLCs', ?, 0, '/documents/d1', ?)",
+            (entity_id, now),
+        )
+        conn.commit()
+    async with client as ac:
+        response = await ac.get("/documents?view=entity", headers=viewer_headers)
+    expected = quote(entity_id, safe="")
+    assert f'href="/entities/{expected}"' in response.text
+    assert f'href="/entities/{entity_id}"' not in response.text
+
+
+async def test_viewer_fragment_says_not_connected_without_the_backend(
+    client: AsyncClient,
+    viewer_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Viewer gets the same plain note when the document service is unset."""
+    monkeypatch.delenv("BACKEND_LLC_MANAGER_URL")
+    async with client as ac:
+        response = await ac.get(
+            "/documents/folders?view=entity", headers=viewer_headers
+        )
+    assert response.status_code == 200
+    assert "Not connected yet" in response.text
