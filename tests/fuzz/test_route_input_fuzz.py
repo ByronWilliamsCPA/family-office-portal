@@ -208,6 +208,23 @@ async def test_document_search_query_validation_boundary(
         assert response.status_code == 422
 
 
+@given(view=_adversarial_text(max_size=60))
+@settings(suppress_health_check=_SUPPRESS, max_examples=_MAX_EXAMPLES)
+async def test_document_folder_view_validation_boundary(
+    client: AsyncClient, view: str
+) -> None:
+    """``view`` is a ``Literal``: the two named views pass, all else is 422.
+
+    Args:
+        client (AsyncClient): ASGI-wired HTTPX client (see ``conftest.py``).
+        view (str): Hypothesis-generated view name.
+    """
+    expected = status.HTTP_200_OK if view in {"category", "entity"} else 422
+    for path in ("/documents", "/documents/folders"):
+        response = await client.get(path, params={"view": view})
+        assert response.status_code == expected
+
+
 @given(service=_path_segment_text())
 @settings(suppress_health_check=_SUPPRESS, max_examples=_MAX_EXAMPLES)
 async def test_admin_refresh_rejects_unknown_service(

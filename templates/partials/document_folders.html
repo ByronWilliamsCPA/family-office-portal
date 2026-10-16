@@ -1,0 +1,40 @@
+{% from "partials/not_connected.html" import not_connected %}
+{% if not connected.llc_manager %}
+  {{ not_connected("Documents") }}
+{% else %}
+<nav aria-label="Browse documents" class="flex flex-wrap gap-2 mb-6">
+  {% for key, label in [("category", "By category"), ("entity", "By entity")] %}
+  <a href="/documents?view={{ key }}"
+     hx-get="/documents/folders?view={{ key }}" hx-target="#folders"
+     hx-push-url="/documents?view={{ key }}"
+     class="block px-4 py-2 rounded-lg border {% if key == view %}bg-slate-800 border-slate-800 text-white{% else %}border-stone-300 text-slate-700 hover:bg-stone-100{% endif %}"
+     {% if key == view %}aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
+{# Outside the form in the markup but tied to it, so a view switch updates it. #}
+<input type="hidden" name="view" value="{{ view }}" form="document-search-form">
+{% if folders %}
+  {% for folder in folders %}
+  <section class="mb-8" aria-labelledby="folder-{{ loop.index }}">
+    <h2 id="folder-{{ loop.index }}" class="text-xl font-semibold mb-3">
+      {%- if folder.entity_id %}<a class="text-blue-800 underline" href="/entities/{{ folder.entity_id | urlencode }}">{{ folder.title }}</a>
+      {%- else %}{{ folder.title }}{% endif -%}
+    </h2>
+    <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200">
+      {% for doc in folder.documents %}
+      <li class="px-5 py-4 flex justify-between gap-4">
+        <a class="text-blue-800 underline" href="{{ doc['id'] | document_url }}">{{ doc['name'] }}</a>
+        <span class="flex gap-4">
+          {% if view == "entity" %}<span class="text-slate-500">{{ doc['category'] }}</span>{% endif %}
+          {% if doc['document_date'] %}<span class="text-slate-500">{{ doc['document_date'] | friendly_date }}</span>{% endif %}
+          <a class="text-blue-800 underline" href="{{ doc['id'] | document_url('download') }}">Download</a>
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+{% else %}
+<p class="text-slate-600">No documents have been added yet.</p>
+{% endif %}
+{% endif %}

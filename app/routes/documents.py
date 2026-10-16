@@ -2,14 +2,16 @@
 # SPDX-License-Identifier: MIT
 """Documents section routes: folders, name search, preview, and download.
 
-Preview and download stream the file from llc-manager on each request, a
-bounded exception to the cached-read rule of ADR-003 recorded in ADR-007.
-The folder and search views read the SQLite cache.
+Folders come in two views of the same cached documents: by category and by
+entity. Preview and download stream the file from llc-manager on each
+request, a bounded exception to the cached-read rule of ADR-003 recorded in
+ADR-007. The folder and search views read the SQLite cache.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -36,13 +38,98 @@ RequiredSearch = Annotated[
 ]
 
 
-def _group_by_category(
-    documents: list[aiosqlite.Row],
-) -> list[tuple[str, list[aiosqlite.Row]]]:
+DocumentView = Literal["category", "entity"]
+DEFAULT_VIEW: DocumentView = "category"
+ViewChoice = Annotated[
+    DocumentView,
+    Query(description="Group folders by category (default) or by entity."),
+]
+
+# Folder title for documents whose entity is missing, not cached, or has a
+# blank name. An entity id is never shown as a title.
+NO_ENTITY = "No entity on file"
+
+
+@dataclass(frozen=True)
+class Folder:
+    """One folder of documents on the Documents page.
+
+    Attributes:
+        title (str): Category name, entity name, or ``NO_ENTITY``.
+        entity_id (str | None): Set only for a folder of a named entity, so
+            the page can link to that entity.
+        documents (list[aiosqlite.Row]): Documents in the folder.
+    """
+
+    title: str
+    entity_id: str | None
+    documents: list[aiosqlite.Row]
+
+
+def _group_by_category(documents: list[aiosqlite.Row]) -> list[Folder]:
     groups: dict[str, list[aiosqlite.Row]] = {}
     for doc in documents:
         groups.setdefault(str(doc["category"]), []).append(doc)
-    return sorted(groups.items())
+    return [Folder(title, None, docs) for title, docs in sorted(groups.items())]
+
+
+def _group_by_entity(
+    documents: list[aiosqlite.Row], entities: list[aiosqlite.Row]
+) -> list[Folder]:
+    """Group visible documents into one folder per named entity.
+
+    Folders come only from the documents passed in, never from the entity
+    list, so an entity whose documents are all hidden from the caller gets no
+    folder and its name is not revealed. Entities are told apart by id, so two
+    entities with one name stay two folders. Documents with no entity, an
+    entity that is not cached, or an entity with a blank name share one folder
+    that is listed last.
+
+    Args:
+        documents (list[aiosqlite.Row]): Documents the caller may see.
+        entities (list[aiosqlite.Row]): Cached entities, for their names.
+
+    Returns:
+        list[Folder]: Named folders by name, then the no-entity folder.
+    """
+    names = {
+        str(entity["id"]): str(entity["name"]).strip()
+        for entity in entities
+        if entity["name"] and str(entity["name"]).strip()
+    }
+    named: dict[str, list[aiosqlite.Row]] = {}
+    unlinked: list[aiosqlite.Row] = []
+    for doc in documents:
+        entity_id = doc["entity_id"]
+        if entity_id is not None and str(entity_id) in names:
+            named.setdefault(str(entity_id), []).append(doc)
+        else:
+            unlinked.append(doc)
+    folders = [
+        Folder(names[entity_id], entity_id, docs)
+        for entity_id, docs in sorted(
+            named.items(), key=lambda item: (names[item[0]].casefold(), item[0])
+        )
+    ]
+    if unlinked:
+        folders.append(Folder(NO_ENTITY, None, unlinked))
+    return folders
+
+
+async def _folders(view: DocumentView, *, admin: bool) -> list[Folder]:
+    """Return the folders for one view of the documents the caller may see.
+
+    Args:
+        view (DocumentView): ``category`` or ``entity``.
+        admin (bool): Whether confidential documents are included.
+
+    Returns:
+        list[Folder]: The folders, in display order.
+    """
+    documents = await cache.get_documents(include_confidential=admin)
+    if view == "entity":
+        return _group_by_entity(documents, await cache.get_entities())
+    return _group_by_category(documents)
 
 
 @router.get(
@@ -54,22 +141,23 @@ def _group_by_category(
 async def documents_index(
     request: Request,
     q: OptionalSearch = None,
+    view: ViewChoice = DEFAULT_VIEW,
 ) -> Response:
-    """Render documents grouped by category, with optional name search.
+    """Render documents in category or entity folders, with name search.
 
-    Works without JavaScript: the search form submits here with ``q``.
-    Authentication: Viewer or Admin (ADR-005). Viewers never see
-    confidential documents.
+    Works without JavaScript: the search form submits here with ``q`` and
+    ``view``, and the view links are plain links. Authentication: Viewer or
+    Admin (ADR-005). Viewers never see confidential documents, in either view.
 
     Args:
         request (Request): Current request.
         q (OptionalSearch): Optional name search text.
+        view (ViewChoice): ``category`` (default) or ``entity``.
 
     Returns:
         Response: Rendered documents page.
     """
     admin = include_confidential(request)
-    documents = await cache.get_documents(include_confidential=admin)
     query = (q or "").strip()
     results = (
         await cache.search_documents(query, include_confidential=admin) if query else []
@@ -78,10 +166,42 @@ async def documents_index(
         request,
         "pages/documents.html",
         section="documents",
-        categories=_group_by_category(documents),
+        view=view,
+        folders=await _folders(view, admin=admin),
         query=query,
         documents=results,
         **(await freshness("documents")),
+    )
+
+
+@router.get(
+    "/folders",
+    summary="Document folders (HTMX partial)",
+    response_class=HTMLResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def documents_folders(
+    request: Request,
+    view: ViewChoice = DEFAULT_VIEW,
+) -> Response:
+    """Return the view switch and folders used by the Documents page.
+
+    Authentication: Viewer or Admin (ADR-005). Viewers never see confidential
+    documents, in either view.
+
+    Args:
+        request (Request): Current request.
+        view (ViewChoice): ``category`` (default) or ``entity``.
+
+    Returns:
+        Response: HTML fragment with the view links and the folders.
+    """
+    return render(
+        request,
+        "partials/document_folders.html",
+        section="documents",
+        view=view,
+        folders=await _folders(view, admin=include_confidential(request)),
     )
 
 
