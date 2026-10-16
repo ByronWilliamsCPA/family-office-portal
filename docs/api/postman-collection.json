@@ -301,7 +301,7 @@
           ],
           "name": "Document folders",
           "request": {
-            "description": "Render documents grouped by category, with optional name search.\n\nWorks without JavaScript: the search form submits here with ``q``.\nAuthentication: Viewer or Admin (ADR-005). Viewers never see\nconfidential documents.\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n\nReturns:\n    Response: Rendered documents page.",
+            "description": "Render documents in category or entity folders, with name search.\n\nWorks without JavaScript: the search form submits here with ``q`` and\n``view``, and the view links are plain links. Authentication: Viewer or\nAdmin (ADR-005). Viewers never see confidential documents, in either view.\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n    view (ViewChoice): ``category`` (default) or ``entity``.\n\nReturns:\n    Response: Rendered documents page.",
             "header": [
               {
                 "key": "X-authentik-jwt",
@@ -323,9 +323,63 @@
                   "disabled": true,
                   "key": "q",
                   "value": ""
+                },
+                {
+                  "description": "Group folders by category (default) or by entity.",
+                  "disabled": true,
+                  "key": "view",
+                  "value": ""
                 }
               ],
               "raw": "{{baseUrl}}/documents"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const authed = Boolean(pm.variables.get('authentikJwt'));",
+                  "pm.test('status is in the expected range', function () {",
+                  "    const expected = authed ? [200, 422] : [403];",
+                  "    pm.expect(expected).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Document folders (HTMX partial)",
+          "request": {
+            "description": "Return the view switch and folders used by the Documents page.\n\nAuthentication: Viewer or Admin (ADR-005). Viewers never see confidential\ndocuments, in either view.\n\nArgs:\n    request (Request): Current request.\n    view (ViewChoice): ``category`` (default) or ``entity``.\n\nReturns:\n    Response: HTML fragment with the view links and the folders.",
+            "header": [
+              {
+                "key": "X-authentik-jwt",
+                "type": "text",
+                "value": "{{authentikJwt}}"
+              }
+            ],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                "folders"
+              ],
+              "query": [
+                {
+                  "description": "Group folders by category (default) or by entity.",
+                  "disabled": true,
+                  "key": "view",
+                  "value": ""
+                }
+              ],
+              "raw": "{{baseUrl}}/documents/folders"
             }
           },
           "response": []

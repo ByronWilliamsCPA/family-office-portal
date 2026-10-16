@@ -115,7 +115,16 @@ async def test_health_endpoint_is_public(
 # Auth enforcement (every primary route requires a valid JWT)
 # --------------------------------------------------------------------------- #
 
-PRIMARY_ROUTES = ["/", "/documents", "/finances", "/portfolio", "/entities"]
+PRIMARY_ROUTES = [
+    "/",
+    "/documents",
+    "/documents?view=entity",
+    "/documents/folders",
+    "/documents/folders?view=entity",
+    "/finances",
+    "/portfolio",
+    "/entities",
+]
 
 
 @phase1

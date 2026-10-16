@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from fastapi.templating import Jinja2Templates
 
@@ -84,10 +85,27 @@ def money(value: Decimal | float | None) -> str:
     return f"{sign}${abs(amount):,}"
 
 
+def entity_url(entity_id: str) -> str:
+    """Return the portal link for an entity, escaping the whole id.
+
+    Jinja's ``urlencode`` leaves ``/`` alone, so an id containing ``/`` or
+    ``..`` could change the link path; here every reserved character is
+    escaped and the id stays one path segment.
+
+    Args:
+        entity_id (str): Entity identifier.
+
+    Returns:
+        str: Root-relative URL of the entity page.
+    """
+    return f"/entities/{quote(entity_id, safe='')}"
+
+
 templates.env.filters["friendly_time"] = friendly_time
 templates.env.filters["friendly_date"] = friendly_date
 templates.env.filters["money"] = money
 templates.env.filters["document_url"] = document_url
+templates.env.filters["entity_url"] = entity_url
 templates.env.filters["amount"] = format_amount
 
 

@@ -204,7 +204,8 @@ CREATE TABLE refresh_log (
 | Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
 | GET | `/` | Home dashboard | Viewer, Admin |
-| GET | `/documents` | Document folder view | Viewer, Admin |
+| GET | `/documents` | Document folder view, by category or by entity (`?view=`) | Viewer, Admin |
+| GET | `/documents/folders` | Folder view switch and folders (HTMX partial) | Viewer, Admin |
 | GET | `/documents/search` | Search by name (HTMX partial) | Viewer, Admin |
 | GET | `/documents/{id}/preview` | Inline PDF proxy | Viewer, Admin |
 | GET | `/documents/{id}/download` | File download proxy | Viewer, Admin |

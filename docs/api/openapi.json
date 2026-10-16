@@ -616,7 +616,7 @@
     },
     "/documents": {
       "get": {
-        "description": "Render documents grouped by category, with optional name search.\n\nWorks without JavaScript: the search form submits here with ``q``.\nAuthentication: Viewer or Admin (ADR-005). Viewers never see\nconfidential documents.\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n\nReturns:\n    Response: Rendered documents page.",
+        "description": "Render documents in category or entity folders, with name search.\n\nWorks without JavaScript: the search form submits here with ``q`` and\n``view``, and the view links are plain links. Authentication: Viewer or\nAdmin (ADR-005). Viewers never see confidential documents, in either view.\n\nArgs:\n    request (Request): Current request.\n    q (OptionalSearch): Optional name search text.\n    view (ViewChoice): ``category`` (default) or ``entity``.\n\nReturns:\n    Response: Rendered documents page.",
         "operationId": "documents_index_documents_get",
         "parameters": [
           {
@@ -636,6 +636,22 @@
               ],
               "description": "Optional name search.",
               "title": "Q"
+            }
+          },
+          {
+            "description": "Group folders by category (default) or by entity.",
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "category",
+              "description": "Group folders by category (default) or by entity.",
+              "enum": [
+                "category",
+                "entity"
+              ],
+              "title": "View",
+              "type": "string"
             }
           }
         ],
@@ -662,6 +678,56 @@
           }
         },
         "summary": "Document folders",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/documents/folders": {
+      "get": {
+        "description": "Return the view switch and folders used by the Documents page.\n\nAuthentication: Viewer or Admin (ADR-005). Viewers never see confidential\ndocuments, in either view.\n\nArgs:\n    request (Request): Current request.\n    view (ViewChoice): ``category`` (default) or ``entity``.\n\nReturns:\n    Response: HTML fragment with the view links and the folders.",
+        "operationId": "documents_folders_documents_folders_get",
+        "parameters": [
+          {
+            "description": "Group folders by category (default) or by entity.",
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "category",
+              "description": "Group folders by category (default) or by entity.",
+              "enum": [
+                "category",
+                "entity"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Document folders (HTMX partial)",
         "tags": [
           "documents"
         ]
