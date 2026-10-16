@@ -46,13 +46,37 @@ jobs:
       upstream: origin/${{ github.base_ref }}
 
   # Weekly health scan: full codebase, informational only.
-  # Remove no-fail once existing qlty debt is resolved.
+  #
+  # This job is inline on purpose. The shared python-qlty-gate.yml workflow
+  # always passes --fail-level to qlty, and when no-fail is true it also passes
+  # --no-fail; the qlty CLI rejects that pair ("the argument '--fail-level
+  # <FAIL_LEVEL>' cannot be used with '--no-fail'"), which failed the scheduled
+  # run of 2026-10-12. Use this inline job until the shared workflow stops
+  # sending both flags, then go back to calling it.
+  # Remove --no-fail once existing qlty debt is resolved.
   qlty-health:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    uses: ByronWilliamsCPA/.github/.github/workflows/python-qlty-gate.yml@b7c661ec3bfeb04370ce3a9c748bd8c4e93bfe89  # v10.1.9
+    name: Qlty Health Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
-    with:
-      fail-level: high
-      check-all: true
-      no-fail: true
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          # #ASSUME: qlty check reads source files only and needs no Git credentials.
+          # #VERIFY: re-enable credentials only if a later step pushes or calls the API.
+          persist-credentials: false
+
+      - name: Install Qlty CLI
+        uses: qltysh/qlty-action/install@08a0a862c159eae9b9003081da6663d96efef637  # v2.3.0
+
+      - name: Run qlty check (informational)
+        run: qlty check --all --no-fail
