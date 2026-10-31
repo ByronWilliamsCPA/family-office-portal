@@ -38,7 +38,7 @@ jobs:
   # would require.
   qlty-gate:
     if: github.event_name == 'pull_request'
-    uses: ByronWilliamsCPA/.github/.github/workflows/python-qlty-gate.yml@b7c661ec3bfeb04370ce3a9c748bd8c4e93bfe89  # v10.1.9
+    uses: ByronWilliamsCPA/.github/.github/workflows/python-qlty-gate.yml@74cfc8e9d1ea1f6babc40bea102b3071af620942  # v11.0.1
     permissions:
       contents: read
     with:
