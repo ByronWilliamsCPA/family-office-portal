@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 Byron Williams
+# SPDX-License-Identifier: MIT
+#
+# Browser checks at tablet size (tests/e2e). Advisory: this is NOT a required
+# status check. It starts the real app against made-up data, builds the
+# Tailwind stylesheet, and looks at every page in headless Chromium at
+# 1024x768. Screenshots are uploaded as an artifact for a person to look at.
+#
+# The auth test secret is generated inside the tests at run time and never
+# stored. Nothing here reads a repository secret.
+---
+name: Browser checks (tablet size)
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'templates/**'
+      - 'static/**'
+      - 'tests/e2e/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Tablet-size browser checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Same version and checksum as the Dockerfile (TAILWIND_VERSION and
+      # TAILWIND_SHA256); bump all of them together.
+      TAILWIND_VERSION: v4.1.13
+      TAILWIND_SHA256: b9ed9f8f640d3323711f9f68608aa266dff3adbc42e867c38ea2d009b973be11  # pragma: allowlist secret
+      # Missing Chromium or tailwindcss must fail this job, not skip the tests.
+      E2E_REQUIRE_BROWSER_STACK: "1"
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies (dev extra)
+        run: uv sync --frozen --extra dev
+
+      - name: Install the Tailwind standalone CLI (checksum verified)
+        run: |
+          mkdir -p "${RUNNER_TEMP}/tailwind"
+          curl -fsSL -o "${RUNNER_TEMP}/tailwind/tailwindcss" \
+            "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-x64"
+          echo "${TAILWIND_SHA256}  ${RUNNER_TEMP}/tailwind/tailwindcss" | sha256sum -c -
+          chmod +x "${RUNNER_TEMP}/tailwind/tailwindcss"
+          echo "${RUNNER_TEMP}/tailwind" >> "$GITHUB_PATH"
+
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run the browser checks
+        env:
+          E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
+        run: uv run pytest -m e2e --no-cov -p no:cacheprovider
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: tablet-screenshots
+          path: ${{ runner.temp }}/e2e-screenshots
+          if-no-files-found: ignore

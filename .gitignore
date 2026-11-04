@@ -52,6 +52,9 @@ htmlcov/
 # Tailwind compiled output (generated at build time by `tailwindcss -o static/css/output.css`)
 static/css/output.css
 
+# Browser-test screenshots (tests/e2e; uploaded as a CI artifact, never committed)
+e2e-screenshots/
+
 # OS
 .DS_Store
 Thumbs.db
