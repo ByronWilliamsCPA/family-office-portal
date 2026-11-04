@@ -212,6 +212,12 @@ the builder stage and runs as UID 65532. `.github/workflows/build-image.yml`
 smoke-tests, pushes, and signs `ghcr.io/byronwilliamscpa/family-office-portal`
 with `sha-<short>` tags for the homelab-infra stack to pin.
 
+## Operations
+
+[docs/operations/runbook.md](docs/operations/runbook.md) is the operations runbook: what
+runs where, start-up checks, backups and restore, scheduling the indexer commands,
+health and staleness, the balance intake, secrets, and troubleshooting.
+
 ## Architecture
 
 Key design decisions are documented as ADRs in `docs/architecture/adr/`:
