@@ -309,4 +309,6 @@ def test_a_per_minute_limit_above_the_per_hour_limit_is_refused() -> None:
 
 def test_equal_minute_and_hour_limits_are_allowed() -> None:
     """Equal limits are consistent, so they pass."""
-    assert Limits(per_minute=10, per_hour=10) == Limits(per_minute=10, per_hour=10)
+    limits = Limits(per_minute=10, per_hour=10)
+    assert limits.per_minute == 10
+    assert limits.per_hour == 10
