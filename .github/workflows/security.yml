@@ -62,7 +62,9 @@ jobs:
         run: uv run bandit -c pyproject.toml -r app
 
       - name: Run pip-audit
-        # Any accepted vulnerability must be documented in
-        # docs/known-vulnerabilities.md and listed in [tool.pip-audit] in
-        # pyproject.toml; no ignore flags here.
+        # No accepted vulnerability is open, so there are no ignore flags.
+        # pip-audit does not read an ignore list from pyproject.toml: an
+        # accepted vulnerability needs a dated entry in
+        # docs/known-vulnerabilities.md AND the same --ignore-vuln flag here
+        # and in security-analysis.yml.
         run: uv run pip-audit

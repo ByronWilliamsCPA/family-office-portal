@@ -22,8 +22,11 @@ older than 60 days regardless of reassessment status.
 
 ## Active Entries
 
-_None._ No accepted vulnerability is open; `[tool.pip-audit]` in `pyproject.toml`
-carries an empty `ignore-vuln` list.
+_None._ No accepted vulnerability is open, so the security workflows run
+`pip-audit` with no `--ignore-vuln` flags. When one is accepted, add its entry
+here and the same flag in both `.github/workflows/security.yml` and
+`.github/workflows/security-analysis.yml` (pip-audit does not read an ignore
+list from `pyproject.toml`).
 
 ## Resolved Entries
 

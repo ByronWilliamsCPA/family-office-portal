@@ -87,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- The `py@1.11.0` exemption (PYSEC-2022-42969) is closed: the upstream advisory was withdrawn on 2026-06-09 and `pip-audit` reports nothing against the lock without it. The `ignore-vuln` entry in `pyproject.toml` and the `--ignore-vuln` flags in `.github/workflows/security.yml` and `.github/workflows/security-analysis.yml` are removed, and the entry moved to Resolved in `docs/known-vulnerabilities.md`
+- The `py@1.11.0` exemption (PYSEC-2022-42969) is closed: the upstream advisory was withdrawn on 2026-06-09 and `pip-audit` reports nothing against the lock without it. The `[tool.pip-audit]` table in `pyproject.toml` (pip-audit never read it, so only the workflow flags ever suppressed anything) and the `--ignore-vuln` flags in `.github/workflows/security.yml` and `.github/workflows/security-analysis.yml` are removed, and the entry moved to Resolved in `docs/known-vulnerabilities.md`
 
 ### Removed
 

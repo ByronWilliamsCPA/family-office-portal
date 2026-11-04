@@ -213,12 +213,3 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
 ]
-
-# ---------------------------------------------------------------------------
-# pip-audit
-# ---------------------------------------------------------------------------
-# Each entry paired with a dated entry in docs/known-vulnerabilities.md.
-# Empty on purpose: no accepted vulnerability is open.
-
-[tool.pip-audit]
-ignore-vuln = []
