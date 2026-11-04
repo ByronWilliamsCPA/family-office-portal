@@ -92,16 +92,17 @@ jobs:
           uv run bandit -r app -c pyproject.toml
 
       - name: pip-audit Vulnerability Scan
-        # PYSEC-2022-42969 (py@1.11.0, transitive via interrogate, dev-only):
-        # mitigation accepted and tracked in docs/known-vulnerabilities.md.
-        # Quarterly reassessment is enforced by project policy; the OpenSSF
-        # release gate still blocks releases for any entry older than 60 days.
+        # No accepted vulnerability is open, so there are no ignore flags.
+        # pip-audit does not read an ignore list from pyproject.toml: an
+        # accepted vulnerability needs a dated entry in
+        # docs/known-vulnerabilities.md AND the same --ignore-vuln flag here
+        # and in security.yml. The OpenSSF release gate blocks releases for
+        # any entry older than 60 days.
         run: |
           uv run pip-audit \
             --format json \
-            --output pip-audit-report.json \
-            --ignore-vuln PYSEC-2022-42969
-          uv run pip-audit --ignore-vuln PYSEC-2022-42969
+            --output pip-audit-report.json
+          uv run pip-audit
 
       - name: Upload Security Reports
         if: always()

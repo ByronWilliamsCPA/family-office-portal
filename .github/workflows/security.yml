@@ -62,8 +62,9 @@ jobs:
         run: uv run bandit -c pyproject.toml -r app
 
       - name: Run pip-audit
-        # PYSEC-2022-42969: ReDoS in py.path.svnwc; py 1.x is unmaintained and
-        # has no fix. We pull `py` only as a transitive of `interrogate`, do
-        # not touch SVN, and document the deferral in
-        # docs/known-vulnerabilities.md.
-        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
+        # No accepted vulnerability is open, so there are no ignore flags.
+        # pip-audit does not read an ignore list from pyproject.toml: an
+        # accepted vulnerability needs a dated entry in
+        # docs/known-vulnerabilities.md AND the same --ignore-vuln flag here
+        # and in security-analysis.yml.
+        run: uv run pip-audit
