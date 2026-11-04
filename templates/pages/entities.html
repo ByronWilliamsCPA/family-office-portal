@@ -11,8 +11,8 @@
 {% if entities %}
 <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200 mt-6">
   {% for e in entities %}
-  <li class="px-5 py-4 flex flex-wrap justify-between gap-2">
-    <a class="text-blue-800 underline" href="/entities/{{ e['id'] }}">{{ e['name'] }}</a>
+  <li class="px-5 py-2 flex flex-wrap justify-between gap-2">
+    <a class="inline-block py-2 text-blue-800 underline" href="/entities/{{ e['id'] }}">{{ e['name'] }}</a>
     <span class="text-slate-500">{% if e['next_date'] %}Next date: {{ e['next_date'] | friendly_date }}{% endif %}</span>
   </li>
   {% endfor %}
