@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, ValidationError
+from pydantic import Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.chat.limits import Limits
@@ -135,6 +135,24 @@ class ChatSettings(BaseSettings):
     chat_rate_limit_per_minute: int = Field(default=DEFAULT_RATE_LIMIT_PER_MINUTE, gt=0)
     chat_rate_limit_per_hour: int = Field(default=DEFAULT_RATE_LIMIT_PER_HOUR, gt=0)
 
+    @model_validator(mode="after")
+    def _minute_limit_fits_in_the_hour(self) -> ChatSettings:
+        """Reject a per-minute limit above the per-hour limit.
+
+        Returns:
+            ChatSettings: This instance, unchanged.
+
+        Raises:
+            ChatConfigError: If the minute limit is above the hour limit; the
+                message names both variables and no value.
+        """
+        if self.chat_rate_limit_per_minute > self.chat_rate_limit_per_hour:
+            msg = (
+                "CHAT_RATE_LIMIT_PER_MINUTE must not be above CHAT_RATE_LIMIT_PER_HOUR"
+            )
+            raise ChatConfigError(msg)
+        return self
+
     def connection(self) -> ChatConnection | None:
         """Return the model connection, or None when its URL is unset.
 
@@ -219,7 +237,12 @@ def check_chat_settings() -> str | None:
     try:
         load_chat_settings().connection()
     except ValidationError as exc:
-        names = sorted({str(error["loc"][0]).upper() for error in exc.errors()})
+        errors = exc.errors()
+        if any(not error["loc"] for error in errors):
+            # A rule across settings (no single variable): its message names
+            # the variables and never a value.
+            return str(errors[0]["msg"]).removeprefix("Value error, ")
+        names = sorted({str(error["loc"][0]).upper() for error in errors})
         return f"invalid value for {', '.join(names)}"
     except ChatConfigError as exc:
         return str(exc)

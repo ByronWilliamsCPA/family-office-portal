@@ -282,7 +282,7 @@ def test_an_hour_old_question_is_pruned_between_sweeps() -> None:
     """The user's own call prunes old stamps even when no sweep is due."""
     clock = FakeClock()
     limiter = ChatLimiter(clock=clock)
-    tight = Limits(per_minute=6, per_hour=1)
+    tight = Limits(per_minute=1, per_hour=1)
     _ask(limiter, "user-a", tight)
     clock.advance(3599.0)
     _ask(limiter, "user-b", tight)  # sweeps; the first stamp is still in range
@@ -299,3 +299,14 @@ def test_another_users_call_sweeps_an_abandoned_slot() -> None:
     clock.advance(ABANDONED_AFTER_SECONDS)
     _ask(limiter, "user-b")
     assert limiter.in_flight_count == 0
+
+
+def test_a_per_minute_limit_above_the_per_hour_limit_is_refused() -> None:
+    """The minute cap could never be reached if it exceeded the hour cap."""
+    with pytest.raises(ValueError, match=r"per_minute must not be above per_hour"):
+        Limits(per_minute=61, per_hour=60)
+
+
+def test_equal_minute_and_hour_limits_are_allowed() -> None:
+    """Equal limits are consistent, so they pass."""
+    assert Limits(per_minute=10, per_hour=10) == Limits(per_minute=10, per_hour=10)

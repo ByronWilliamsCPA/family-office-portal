@@ -22,6 +22,7 @@ import anyio
 import httpx
 import pytest
 from PIL import Image
+from starlette.requests import ClientDisconnect
 from structlog.testing import capture_logs
 
 from app.chat import service
@@ -1184,8 +1185,8 @@ async def test_the_hourly_limit_comes_from_the_setting(
     clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With per-hour 3 and per-minute 100, the fourth question waits an hour."""
-    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "100")
+    """With per-hour 3 and per-minute 3, the fourth question waits an hour."""
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "3")
     monkeypatch.setenv("CHAT_RATE_LIMIT_PER_HOUR", "3")
     async with client as ac:
         for _ in range(3):
@@ -1354,6 +1355,72 @@ async def test_the_slot_is_released_when_the_handler_raises(
             await _limited(ac)
         assert limiter.in_flight_count == 0
         assert (await _limited(ac)).status_code == 200
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_client_disconnect_while_reading_frees_the_slot_and_stays_counted(
+    client: AsyncClient,
+    model: FakeModel,
+    limiter: ChatLimiter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that drops mid-read gives the slot back; the question counts.
+
+    The question is not refunded because it may have done work by then, so a
+    dropped request uses one question of the quota. State stays consistent:
+    no slot is held and the user is not locked out.
+    """
+    real = chat_route.chat_connection
+    dropped = False
+
+    def drop() -> ChatConnection | None:
+        # Called while the form is open, so this is a drop mid-read.
+        nonlocal dropped
+        if not dropped:
+            dropped = True
+            raise ClientDisconnect
+        return real()
+
+    monkeypatch.setattr(chat_route, "chat_connection", drop)
+    async with client as ac:
+        with pytest.raises(ClientDisconnect):
+            await _limited(ac)
+        assert limiter.in_flight_count == 0
+        for _ in range(5):
+            assert (await _limited(ac)).status_code == 200
+        assert (await _limited(ac)).status_code == 429
+    assert len(model.requests) == 5
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_cancelled_request_while_reading_frees_the_slot_and_stays_counted(
+    client: AsyncClient,
+    limiter: ChatLimiter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling while the form is open frees the slot; the question counts."""
+    started = asyncio.Event()
+    real = chat_route.answer_question
+
+    async def park(question: ChatQuestion, deps: ChatDeps) -> ChatOutcome:
+        # The form is still open here, as it is during a read.
+        started.set()
+        await asyncio.sleep(60)
+        return await real(question, deps)
+
+    monkeypatch.setattr(chat_route, "answer_question", park)
+    async with client as ac:
+        task = asyncio.create_task(_limited(ac))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert limiter.in_flight_count == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert limiter.in_flight_count == 0
+        monkeypatch.setattr(chat_route, "answer_question", real)
+        for _ in range(5):
+            assert (await _limited(ac)).status_code == 200
+        assert (await _limited(ac)).status_code == 429
 
 
 @pytest.mark.usefixtures("chat_env", "searcher")

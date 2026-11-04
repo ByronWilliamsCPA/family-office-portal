@@ -189,7 +189,8 @@ but on its own one user could hold both slots and starve the other.
   someone else.
 - **Sliding-window quota per user.** At most 6 questions in any 60 seconds
   (`CHAT_RATE_LIMIT_PER_MINUTE`) and 60 in any hour
-  (`CHAT_RATE_LIMIT_PER_HOUR`). Over the limit gets 429 with "You have asked
+  (`CHAT_RATE_LIMIT_PER_HOUR`); the app refuses to start if the minute limit
+  is above the hour limit. Over the limit gets 429 with "You have asked
   several questions very quickly. Please wait a minute and try again." (or an
   hourly sentence with the wait in minutes) and a `Retry-After` header. 6 a
   minute lets a person follow up and rephrase without noticing the limit; 60
@@ -207,13 +208,27 @@ but on its own one user could hold both slots and starve the other.
   model. A refused request makes no search or model call and holds no slot.
 - **Release.** The in-flight slot is released in a `finally` block on success,
   a plain error, a timeout, a model error, a client disconnect and task
-  cancellation. A slot not released within five minutes is treated as
+  cancellation. A question cut off part-way by a disconnect or cancellation is
+  not refunded, because it may already have done work. A slot not released within five minutes is treated as
   abandoned, so a hung upload cannot lock a person out.
 - **Response.** HTTP 429 with the sentence rendered like the panel's other
   refusals: a fragment for HTMX (the panel opts in to swapping a 429), the
   whole Home page for a normal post. The question text is not read, echoed or
   logged. The log line (`chat_rate_limited`) carries the reason and the retry
   seconds only.
+
+Accepted limits (recorded, not new decisions):
+
+- Requests refused before any work (a blank question, a bad picture, a body
+  over the size cap, a refusal from the form parser) are refunded and are not
+  throttled. A signed-in person can therefore send them one at a time, each up
+  to the body cap, bounded only by the one-question-at-a-time rule.
+- The page's 429 handler applies to any 429 reply under the chat panel,
+  including one from a proxy in front of the app, and shows that reply's body
+  as page content. The proxy must therefore not return a 429 body that an
+  outsider can control.
+- The limiter assumes a single event loop and a single worker process, as
+  noted below.
 
 Still deferred:
 

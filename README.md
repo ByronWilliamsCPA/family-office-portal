@@ -143,7 +143,7 @@ request is open: a document search and the chat model. Design and limits are in
 | `LLM_TIMEOUT_SECONDS` | `30` | Longest one model call may take; a number above zero |
 | `CHAT_INSTRUCTIONS_PATH` | unset | File holding the chat instructions; keep it outside the repository, readable by the app |
 | `CHAT_ENABLED_FOR` | `admin` | Who sees the panel: `admin`, `all` (Admins and Viewers) or `none` |
-| `CHAT_RATE_LIMIT_PER_MINUTE` | `6` | Most questions one person may ask in any 60 seconds; a whole number above zero |
+| `CHAT_RATE_LIMIT_PER_MINUTE` | `6` | Most questions one person may ask in any 60 seconds; a whole number above zero, and not above the per-hour value |
 | `CHAT_RATE_LIMIT_PER_HOUR` | `60` | Most questions one person may ask in any hour; a whole number above zero |
 
 The panel is connected only when the URL and key form a valid connection and the

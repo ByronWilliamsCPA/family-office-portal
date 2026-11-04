@@ -26,6 +26,11 @@ What counts, decided on purpose:
   ``ABANDONED_AFTER_SECONDS`` is treated as abandoned, so a request that hung
   (for example a stalled upload) cannot lock a person out for good.
 
+A request that ends mid-way (the client disconnects or the task is cancelled
+after the quota was taken) releases its slot but is not refunded: it may have
+already done work, so it stays counted. Tests: ``test_a_client_disconnect_*``
+and ``test_a_cancelled_request_*`` in ``tests/integration/test_chat_route.py``.
+
 Memory stays bounded: each user keeps at most ``per_hour`` timestamps (a
 refused request adds none), timestamps older than an hour are pruned on
 every call for that user, and a sweep at most once a minute drops every user
@@ -90,13 +95,18 @@ class Limits:
         """Reject a limit that is not a positive whole number.
 
         Raises:
-            ValueError: If ``per_minute`` or ``per_hour`` is below one.
+            ValueError: If ``per_minute`` or ``per_hour`` is below one, or
+                ``per_minute`` is above ``per_hour`` (the minute cap could
+                never be reached).
         """
         if self.per_minute < 1:
             msg = "per_minute must be at least 1"
             raise ValueError(msg)
         if self.per_hour < 1:
             msg = "per_hour must be at least 1"
+            raise ValueError(msg)
+        if self.per_minute > self.per_hour:
+            msg = "per_minute must not be above per_hour"
             raise ValueError(msg)
 
 

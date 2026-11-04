@@ -281,3 +281,26 @@ def test_bad_rate_limits_are_a_startup_problem(
     assert check_chat_settings() == f"invalid value for {name}"
     with pytest.raises(ValidationError):
         ChatSettings()
+
+
+def test_a_per_minute_limit_above_the_per_hour_limit_is_a_startup_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check names both variables and no value."""
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "90")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_HOUR", "60")
+    problem = check_chat_settings()
+    assert problem is not None
+    assert "CHAT_RATE_LIMIT_PER_MINUTE" in problem
+    assert "CHAT_RATE_LIMIT_PER_HOUR" in problem
+    assert "90" not in problem
+    with pytest.raises(ValidationError):
+        ChatSettings()
+
+
+def test_equal_rate_limits_are_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A minute limit equal to the hour limit is consistent."""
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "20")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_HOUR", "20")
+    assert check_chat_settings() is None
+    assert ChatSettings().rate_limits() == Limits(per_minute=20, per_hour=20)
