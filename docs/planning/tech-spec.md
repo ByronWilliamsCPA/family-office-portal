@@ -9,8 +9,9 @@ says otherwise, `CLAUDE.md` takes precedence.
 ## TL;DR
 
 Python/FastAPI server rendering Jinja2 templates with HTMX and Tailwind CSS, backed
-by a SQLite read-through cache populated by a scheduled refresher that calls four backend
-services (`llc-manager`, `pp-security-master`, `xero_crypto`, `family_office`). Authentik
+by a SQLite read-through cache populated by a scheduled refresher. Four backends are
+configured (`llc-manager`, `pp-security-master`, `xero_crypto`, `data-ingestor`); the
+refresher calls the first three, and no client calls `data-ingestor` yet. Authentik
 forward auth at the reverse proxy handles login; the portal validates the signed JWT it
 forwards (ADR-005). A separate scheduled command from the same image embeds document
 chunks and writes them to a Qdrant collection for document search (ADR-006); the web
@@ -96,7 +97,8 @@ Server-rendered monolith with a background refresh scheduler. See [ADR-001](../a
   │  llc-manager      → entities/compliance/dates   │
   │  pp-security-master → holdings/performance      │
   │  xero_crypto      → crypto positions (USD)      │
-  │  family_office    → document metadata           │
+  │  llc-manager docs → document metadata           │
+  │  data-ingestor    → configured, not called yet  │
   └─────────────────────────────────────────────────┘
 
   Document index (ADR-006), separate scheduled command, same image:
@@ -168,7 +170,7 @@ CREATE TABLE positions (
     fetched_at      TEXT NOT NULL
 );
 
--- Document metadata from family_office / document backend
+-- Document metadata from the llc-manager documents endpoint
 -- NOTE: actual files are NOT stored in SQLite; only metadata and proxy URL
 CREATE TABLE documents (
     id          TEXT PRIMARY KEY,
@@ -185,10 +187,12 @@ CREATE TABLE documents (
 -- Refresh job audit log
 CREATE TABLE refresh_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    service     TEXT NOT NULL,             -- 'llc-manager' | 'pp-security-master' |
-                                           --   'xero_crypto' | 'family_office'
+    service     TEXT NOT NULL,             -- 'llc-manager' | 'llc-manager-documents' |
+                                           --   'pp-security-master' | 'xero_crypto' |
+                                           --   'balances' | 'balances-daily'
     status      TEXT NOT NULL,             -- 'success' | 'error'
-    error_msg   TEXT,
+    message     TEXT,                      -- error text on failure
+    rows        INTEGER,                   -- rows written on success
     ran_at      TEXT NOT NULL              -- ISO8601 datetime
 );
 ```
@@ -408,7 +412,7 @@ or an error message visible to primary users. Backend errors during refresh are 
 | Entities (`llc-manager`) | 8 hours | "last updated [time]" |
 | Holdings/Performance (`pp-security-master`) | 4 hours | "last updated [time]" |
 | Crypto positions (`xero_crypto`) | 4 hours | "last updated [time]" |
-| Documents (`family_office`) | 24 hours | "last updated [time]" |
+| Documents (`llc-manager` documents endpoint) | 24 hours | "last updated [time]" |
 | Account balances (delivered to `POST /api/v1/balances`) | 24 hours, judged per provider: the oldest provider's latest delivery | "last updated [time]" |
 
 ### Logging

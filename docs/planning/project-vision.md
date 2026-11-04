@@ -103,7 +103,7 @@ graceful degradation when any backend is slow.
 - **Authentication**: Authentik forward auth at the reverse proxy (passwordless; no
   password credentials in the portal); see ADR-005
 - **Backend services**: `llc-manager` v0.1.0, `pp-security-master` (alpha),
-  `xero_crypto` v1.0.0, `family_office` (active) -- portal is a read-only consumer
+  `xero_crypto` v1.0.0, `data-ingestor` (configured, not called yet); document metadata comes from `llc-manager` -- portal is a read-only consumer
 - **Navigation depth**: maximum two levels anywhere in the information architecture
 - **Top nav**: exactly five sections; no sub-menus
 - **Device**: tablet (iPad-class) primary; desktop secondary
