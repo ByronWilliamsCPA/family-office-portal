@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Status**: Active | **Version**: 1.5.0 | **Updated**: 2026-10-06
+> **Status**: Active | **Version**: 1.6.0 | **Updated**: 2026-11-04
 >
 > Project-specific rules for the family-office-portal FastAPI application.
 > Global standards are in `~/.claude/CLAUDE.md` and apply everywhere.
@@ -71,7 +71,8 @@ app/
                        # scheduled indexer and tax-law commands (ADR-006),
                        # and the internal search function (ADR-008)
   chat/                # Question panel (ADR-009): settings, balance table,
-                       # prompt, image prep, model client, answer rendering
+                       # prompt, image prep, model client, answer rendering,
+                       # and the per-user question limiter (limits.py)
   middleware/          # Authentik forward-auth JWT validation middleware (ADR-005)
   routes/              # One module per section: home, documents, finances,
                        # portfolio, entities, health, admin; plus balances
@@ -93,6 +94,10 @@ static/
   css/input.css        # Tailwind source; output.css is built in the Docker image
 tests/
   conftest.py          # SQLite fixture DB, httpx AsyncClient
+  e2e/                 # Playwright browser checks at 1024x768 (opt-in; see
+                       # Testing requirements and tests/e2e/README.md)
+.github/workflows/
+  e2e.yml              # Runs tests/e2e in CI; advisory, not a required check
 ```
 
 Component-to-file mapping from `docs/planning/tech-spec.md`:
@@ -153,11 +158,12 @@ Key documents to read before making architectural or data-model decisions:
 - **HTMX**: Loaded as a static asset (`static/htmx.min.js`). Do not load HTMX from
   a CDN in production templates.
 - **Charts**: Chart.js v4 vendored in `static/`. Do not add other chart libraries.
-- **Scheduler**: APScheduler v3 configured in-process at FastAPI startup. Four
-  refresh functions exist (`refresh_entities`, `refresh_holdings`,
-  `refresh_positions`, `refresh_documents`); only entities and documents are
-  scheduled until the holdings and positions backends ship their endpoints.
-  Admins can still trigger any of them. A fifth job, `snapshot_balances_daily`,
+- **Scheduler**: APScheduler v3 configured in-process at FastAPI startup. All four
+  refresh functions are scheduled (`refresh_entities` every 4 hours,
+  `refresh_holdings` and `refresh_positions` every 2 hours,
+  `refresh_documents` every 12 hours; `JOB_INTERVAL_HOURS` in
+  `app/scheduler.py`), and each also runs once at startup. A backend with no URL
+  is skipped. Admins can trigger any of them. A fifth job, `snapshot_balances_daily`,
   copies stored balances into `balances_daily` once at startup and then daily
   at midday in `DISPLAY_TIMEZONE` (a fixed local time, so daylight saving
   cannot skip a date), with a 3600 s misfire grace. Each job runs at most once
@@ -315,6 +321,25 @@ Never implement password-based auth, OAuth flows, or session cookies.
 - Store no questions or answers, and log timings and counts only.
 - `CHAT_ENABLED_FOR` gates the route (404) and the panel; set
   `include_confidential` only from the signed-in role.
+- Rate limits (ADR-009, "Rate limiting"): `app.chat.limits.LIMITER` allows each
+  person at most `CHAT_RATE_LIMIT_PER_MINUTE` questions in any 60 seconds and
+  `CHAT_RATE_LIMIT_PER_HOUR` in any hour, and one question in flight. The key is
+  the signed-in username from the request's principal; never log, echo or
+  message it (the `chat_rate_limited` log line carries only the reason and the
+  retry time).
+- Order of checks in `POST /chat/ask`: role gate (404), cross-site check (403),
+  declared body size (413), then the limiter (429 with `Retry-After`), and only
+  then the form is read. A refused request records nothing.
+- Call `Ticket.refund` only for a request refused before any work (blank or
+  too long question, bad picture, chat not connected, body over the cap); a
+  question that reached search or the model counts even if it then fails. Always
+  hold the ticket with `with ticket:` so the in-flight slot is released on
+  success, refusal, timeout, error, disconnect and cancellation.
+- #ASSUME: the limiter is in process memory, so the portal runs one uvicorn
+  worker on one event loop; with more workers a person could ask that many times
+  as many questions, and a restart resets every quota. #VERIFY the deployment
+  keeps `--workers 1` (the Dockerfile does) and that a reset on restart is
+  acceptable.
 
 ## Environment variables
 
@@ -342,7 +367,10 @@ answers 404 when it is unset). Chat (ADR-009): `LLM_BASE_URL` and
 `LLM_API_KEY` (unset; a URL without its key, or an invalid URL, non-ASCII key
 or non-finite timeout, exits 1), `LLM_MODEL` (empty),
 `LLM_TIMEOUT_SECONDS` (30), `CHAT_INSTRUCTIONS_PATH` (unset), `CHAT_ENABLED_FOR`
-(`admin`).
+(`admin`), `CHAT_RATE_LIMIT_PER_MINUTE` (6) and `CHAT_RATE_LIMIT_PER_HOUR` (60).
+Each rate limit is a whole number above zero, and the per-minute value may not
+exceed the per-hour value; otherwise startup exits 1, naming the variables and
+no value.
 
 ## Frontend conventions
 
@@ -360,6 +388,10 @@ or non-finite timeout, exits 1), `LLM_MODEL` (empty),
   only draw a chart from data already in the page (`static/balance_trend.js`).
   No other libraries. All content must be readable with JavaScript disabled
   (HTMX degrades to full-page reload; charts always have a table beside them).
+- **Tap targets**: every link, button and field outside a sentence is at least
+  44 by 44 pixels at 1024x768; links inside a sentence are exempt.
+  `tests/e2e/test_tablet_pages.py` enforces it, so give a new control enough
+  padding or a minimum height and width.
 
 ## Testing requirements
 
@@ -382,6 +414,15 @@ Test types required:
 `asyncio_mode = "auto"` is set in `pyproject.toml`, so every `async def test_*`
 function runs automatically. Do not add `@pytest.mark.asyncio` to individual tests.
 Use `httpx.AsyncClient` (already a project dependency) as the FastAPI test client.
+
+**Browser (e2e) suite**: `tests/e2e/` drives the real app in headless Chromium at
+1024x768 with Playwright and axe-core (dev-only extras; the production image never
+installs them). Tests carry the `e2e` marker and `addopts` in `pyproject.toml`
+excludes them (`-m 'not e2e'`), so `uv run pytest` skips them. Run them with
+`uv run pytest -m e2e --no-cov`; this needs the `tailwindcss` CLI on `PATH` and
+`uv run playwright install chromium` (see `tests/e2e/README.md`). `--no-cov` is
+needed because the app runs in a subprocess. The CI job (`e2e.yml`) is not a
+required check.
 
 ## Model Selection
 

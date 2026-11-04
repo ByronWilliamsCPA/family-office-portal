@@ -93,3 +93,6 @@ docs/superpowers/plans/
 # Qlty code quality tool (keep config, ignore generated output)
 .qlty/*
 !.qlty/qlty.toml
+
+# Built wheel files (never commit build output)
+*.whl
