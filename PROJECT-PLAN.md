@@ -187,14 +187,14 @@ exactly what they are seeing without blocking the page render.
 - `pp-security-master` alpha instability surfaces as stale data, not errors. **#ASSUME**
   API contract is unstable; treat all 500 responses as expected.
 
-Refresh cadences from ADR-003:
+Refresh cadences (the values in `app/scheduler.py` and `app/cache.py`; ADR-003 gives the original proposal):
 
 | Service | Cadence | Staleness threshold |
 | --- | --- | --- |
 | `llc-manager` | Every 4 hours | 8 hours |
-| `pp-security-master` | Every 1 hour | 4 hours |
+| `pp-security-master` | Every 2 hours | 4 hours |
 | `xero_crypto` | Every 2 hours | 4 hours |
-| `family_office` | On document events (24-hour poll fallback) | 24 hours |
+| `llc-manager` documents endpoint | Every 12 hours | 24 hours |
 
 See [ADR-003](docs/architecture/adr/adr-003-backend-data-aggregation.md) for the full
 decision record.
@@ -413,11 +413,11 @@ so that I can tell at a glance whether any action is needed without calling anyo
 
 #### Goal
 
-Integrate `family_office` document backend to populate the Documents section and link
+Integrate the `llc-manager` documents endpoint to populate the Documents section and link
 documents to entity detail pages. Documents are the highest-frequency use case for primary
 users ("Where is the estate plan?").
 
-**Backend dependency**: `family_office` must expose `GET /api/v1/documents` returning
+**Backend dependency**: `llc-manager` must expose `GET /api/v1/documents` returning
 document metadata (name, category, date, proxy URL). Confirm API contract and URL stability
 before Phase 2 begins. Actual documents are not stored in the portal; only metadata and a
 proxy URL are cached in SQLite. **#ASSUME** PDF URLs are accessible via HTTP proxy, not
@@ -425,7 +425,7 @@ filesystem paths.
 
 #### Deliverables
 
-- `refresh_documents` job calling `family_office` every 24 hours (poll fallback)
+- `refresh_documents` job calling the `llc-manager` documents endpoint every 12 hours
 - Documents section: folder view by category (all six categories), name search via HTMX
   partial
 - Inline PDF preview (proxied through portal; user does not leave the portal or open a
@@ -483,7 +483,7 @@ the portal, so that I can answer "where is [document]?" without calling anyone.
 #### Dependencies
 
 - Requires: Phase 1 complete.
-- Requires: `family_office` HTTP API contract confirmed; proxy URL format and TTL confirmed.
+- Requires: `llc-manager` documents HTTP API contract confirmed; proxy URL format and TTL confirmed.
   **#EDGE** If proxy URLs have short TTLs or require re-authorization, document refresh
   cadence may need adjustment.
 - Blocks: Phase 3 (home dashboard expects documents widget complete).
@@ -526,7 +526,7 @@ must be added before display.
 #### Deliverables
 
 - `refresh_positions` job (`xero_crypto`, every 2 hours)
-- `refresh_holdings` job (`pp-security-master`, every 1 hour)
+- `refresh_holdings` job (`pp-security-master`, every 2 hours)
 - Finances section: net worth total, asset allocation chart (pie), account list in USD
 - Portfolio section: performance chart vs S&P 500 (line, 1-month/6-month/1-year),
   holdings table (plain English names), sector allocation chart
@@ -706,7 +706,7 @@ addressing the navigation constraint.**
 | Risk | Probability | Impact | Mitigation |
 | --- | --- | --- | --- |
 | `pp-security-master` API contract unstable (alpha) | High | Medium | Cache layer absorbs failures as staleness (ADR-003); Phase 3 integrates this backend last, after the cache pattern is proven in Phases 1-2 |
-| `family_office` document proxy URLs not stable | Medium | High | Confirm URL format and TTL with backend team before Phase 2 begins; treat short-lived URLs as a blocking dependency |
+| `llc-manager` document proxy URLs not stable | Medium | High | Confirm URL format and TTL with backend team before Phase 2 begins; treat short-lived URLs as a blocking dependency |
 | Authentik forward-auth setup delay | Low | High | Agree the ADR-005 contract with homelab-infra in Phase 0 Week 1; it blocks every subsequent phase; escalate immediately if the provider is not in place by end of Week 1 |
 | Tablet layout issues with Chart.js | Medium | Low | Validate chart rendering at 1024x768 during Phase 3; Chart.js is responsive by default; allocate 3 hours for E2E chart validation |
 | Backend API contract disagreements | Medium | Medium | Publish required endpoint shapes (Tech Spec Section 4) to backend teams before Phase 1; treat unconfirmed contracts as Phase blockers |
