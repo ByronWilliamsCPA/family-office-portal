@@ -176,11 +176,58 @@ header names a different host than the request gets 403 as well.
 latest complete day and is already the figure the Balances page shows. When
 that table is empty the totals are summed from `account_balances`.
 
-### Deferred
+### Rate limiting
 
-There is no per-user rate limit. The semaphore and the model timeout bound
-the load for a household of a few people. Add a limit before enabling chat
-for a larger group.
+Chat is enabled for Viewers as well as Admins, so each signed-in user is
+limited in the portal (`app/chat/limits.py`), in memory and without a new
+dependency. The process-wide semaphore of two model calls is still in place,
+but on its own one user could hold both slots and starve the other.
+
+- **One question at a time per user.** A second question while one is being
+  answered gets 429 with "Your last question is still being answered. Please
+  wait for it to finish." This is what keeps the second model slot free for
+  someone else.
+- **Sliding-window quota per user.** At most 6 questions in any 60 seconds
+  (`CHAT_RATE_LIMIT_PER_MINUTE`) and 60 in any hour
+  (`CHAT_RATE_LIMIT_PER_HOUR`). Over the limit gets 429 with "You have asked
+  several questions very quickly. Please wait a minute and try again." (or an
+  hourly sentence with the wait in minutes) and a `Retry-After` header. 6 a
+  minute lets a person follow up and rephrase without noticing the limit; 60
+  an hour bounds a runaway tablet or script to a few hours of model time.
+- **Key.** The signed-in username from the verified token, the same identity
+  the role check uses. It is never logged or shown. Admin and Viewer are
+  treated alike.
+- **What counts.** A refused request is not recorded, so retrying while
+  limited never extends the wait. A question rejected before any work (blank,
+  too long, a bad picture, a body over the size cap, chat not connected) is
+  refunded and does not count. A question that reaches search or the model
+  counts even if that call then fails.
+- **Order.** Role gate (404), cross-site check (403), declared body size
+  (413), limiter (429), then reading the form, validation, search and the
+  model. A refused request makes no search or model call and holds no slot.
+- **Release.** The in-flight slot is released in a `finally` block on success,
+  a plain error, a timeout, a model error, a client disconnect and task
+  cancellation. A slot not released within five minutes is treated as
+  abandoned, so a hung upload cannot lock a person out.
+- **Response.** HTTP 429 with the sentence rendered like the panel's other
+  refusals: a fragment for HTMX (the panel opts in to swapping a 429), the
+  whole Home page for a normal post. The question text is not read, echoed or
+  logged. The log line (`chat_rate_limited`) carries the reason and the retry
+  seconds only.
+
+Still deferred:
+
+- Counters live in memory, so a restart resets them. #EDGE the model-service
+  semaphore and timeout still bound the load across a restart.
+- The limiter is per process. #ASSUME one uvicorn worker. #VERIFY the
+  container command keeps a single worker; with N workers a user could ask N
+  times as many questions.
+- There is no per-IP or per-tenant limit and no shared budget across users,
+  since sign-in is required and the audience is a handful of people.
+- Limits are fixed windows of 60 seconds and one hour, set by the two
+  variables above; there is no per-role setting.
+
+### Deferred
 
 Open assumptions:
 

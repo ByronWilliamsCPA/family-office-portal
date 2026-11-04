@@ -1,7 +1,8 @@
 {# One question and its answer. Model text is shown as escaped plain text;
-   the only links are the portal's own citation links. #}
+   the only links are the portal's own citation links. A question turned away
+   by the rate limit has no question text and shows only its sentence. #}
 <article class="border-t border-stone-200 pt-4 mt-4" aria-label="Answer">
-  <p class="font-semibold">You asked: {{ outcome.question }}</p>
+  {% if outcome.question %}<p class="font-semibold">You asked: {{ outcome.question }}</p>{% endif %}
   {% if outcome.error %}
   <p class="mt-2 text-amber-800" role="alert">{{ outcome.error }}</p>
   {% else %}

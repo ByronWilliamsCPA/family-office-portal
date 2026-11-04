@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from app.chat.limits import Limits
 from app.chat.settings import (
     DEFAULT_TIMEOUT_SECONDS,
     ChatConfigError,
@@ -28,6 +29,8 @@ CHAT_VARS = (
     "LLM_TIMEOUT_SECONDS",
     "CHAT_INSTRUCTIONS_PATH",
     "CHAT_ENABLED_FOR",
+    "CHAT_RATE_LIMIT_PER_MINUTE",
+    "CHAT_RATE_LIMIT_PER_HOUR",
 )
 
 
@@ -44,6 +47,9 @@ def test_defaults_are_off_and_admin_only() -> None:
     assert settings.instructions_file() is None
     assert settings.llm_timeout_seconds == DEFAULT_TIMEOUT_SECONDS == 30.0
     assert settings.chat_enabled_for == "admin"
+    assert settings.chat_rate_limit_per_minute == 6
+    assert settings.chat_rate_limit_per_hour == 60
+    assert settings.rate_limits() == Limits(per_minute=6, per_hour=60)
 
 
 def test_connection_is_built_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,3 +259,25 @@ def test_secret_is_not_in_settings_repr(monkeypatch: pytest.MonkeyPatch) -> None
     settings = ChatSettings()
     assert isinstance(settings.llm_api_key, SecretStr)
     assert key not in repr(settings)
+
+
+def test_rate_limits_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both limits are read from their variables."""
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "3")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_HOUR", "20")
+    assert ChatSettings().rate_limits() == Limits(per_minute=3, per_hour=20)
+    assert check_chat_settings() is None
+
+
+@pytest.mark.parametrize(
+    "name", ["CHAT_RATE_LIMIT_PER_MINUTE", "CHAT_RATE_LIMIT_PER_HOUR"]
+)
+@pytest.mark.parametrize("value", ["0", "-1", "2.5", "many", ""])
+def test_bad_rate_limits_are_a_startup_problem(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    """A limit that is not a whole number above zero names its variable."""
+    monkeypatch.setenv(name, value)
+    assert check_chat_settings() == f"invalid value for {name}"
+    with pytest.raises(ValidationError):
+        ChatSettings()

@@ -9,6 +9,7 @@ written by the test.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -25,6 +26,7 @@ from structlog.testing import capture_logs
 
 from app.chat import service
 from app.chat.client import ChatClient
+from app.chat.limits import MSG_BUSY, MSG_TOO_FAST, ChatLimiter
 from app.chat.service import (
     MSG_BALANCES_DOWN,
     MSG_CUT_SHORT,
@@ -40,6 +42,7 @@ from app.chat.service import (
 )
 from app.routes import chat as chat_route
 from tests.unit.chat_fakes import (
+    FakeClock,
     FakeModel,
     FakeSearcher,
     doc_result,
@@ -56,10 +59,37 @@ if TYPE_CHECKING:
 
     from httpx import AsyncClient
 
+    from app.chat.service import ChatDeps, ChatOutcome, ChatQuestion
     from app.chat.settings import ChatConnection
 
 HX = {"HX-Request": "true"}
 QUESTION = "What does the operating agreement say about distributions?"
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    """Return the fake clock the route's limiter reads.
+
+    Returns:
+        FakeClock: Advance it to move past a limit window.
+    """
+    return FakeClock()
+
+
+@pytest.fixture(autouse=True)
+def limiter(clock: FakeClock, monkeypatch: pytest.MonkeyPatch) -> ChatLimiter:
+    """Give every test a fresh limiter on a fake clock.
+
+    Args:
+        clock: The fake clock.
+        monkeypatch: Pytest monkeypatch fixture.
+
+    Returns:
+        ChatLimiter: The limiter the route uses in this test.
+    """
+    fresh = ChatLimiter(clock=clock)
+    monkeypatch.setattr(chat_route, "LIMITER", fresh)
+    return fresh
 
 
 @pytest.fixture
@@ -1084,3 +1114,465 @@ def test_service_module_exposes_limits() -> None:
     """The question limit and collections match the search interface."""
     assert service.MAX_QUESTION_CHARS == 1000
     assert service.CHAT_COLLECTIONS == ("family-docs", "tax-law")
+
+
+# --------------------------------------------------------------------------- #
+# Per-user limits: a quota per minute and hour, and one question at a time
+# --------------------------------------------------------------------------- #
+
+
+async def _limited(ac: AsyncClient, question: str = QUESTION) -> httpx.Response:
+    """Post one question with HTMX headers and return the raw response."""
+    return await ac.post("/chat/ask", data={"question": question}, headers=HX)
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_the_seventh_question_in_a_minute_gets_a_plain_429(
+    client: AsyncClient, model: FakeModel, clock: FakeClock
+) -> None:
+    """Six pass; the seventh is refused with 429, Retry-After and no model call."""
+    async with client as ac:
+        for _ in range(6):
+            await _post(ac)
+        marker_question = "limit-marker-question about the trust"
+        response = await _limited(ac, marker_question)
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "60"
+        assert MSG_TOO_FAST in response.text
+        assert marker_question not in response.text
+        assert "Traceback" not in response.text
+        assert "Too Many Requests" not in response.text
+        assert "HX-Trigger" not in response.headers
+        assert len(model.requests) == 6
+        clock.advance(60.0)
+        assert (await _limited(ac)).status_code == 200
+    assert len(model.requests) == 7
+
+
+@pytest.mark.usefixtures("chat_env", "searcher", "model")
+async def test_retry_after_counts_down(client: AsyncClient, clock: FakeClock) -> None:
+    """The retry hint is whole seconds until the oldest question expires."""
+    async with client as ac:
+        for _ in range(6):
+            await _post(ac)
+        clock.advance(25.0)
+        response = await _limited(ac)
+    assert response.headers["retry-after"] == "35"
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_limited_post_without_htmx_returns_the_home_page_with_429(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """A normal browser post gets the whole Home page and the plain sentence."""
+    async with client as ac:
+        for _ in range(6):
+            await _post(ac)
+        response = await ac.post("/chat/ask", data={"question": QUESTION})
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "60"
+    assert 'id="chat-heading"' in response.text
+    assert MSG_TOO_FAST in response.text
+    assert QUESTION not in response.text
+    assert len(model.requests) == 6
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_the_hourly_limit_comes_from_the_setting(
+    client: AsyncClient,
+    model: FakeModel,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With per-hour 3 and per-minute 100, the fourth question waits an hour."""
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "100")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_HOUR", "3")
+    async with client as ac:
+        for _ in range(3):
+            await _post(ac)
+            clock.advance(10.0)
+        response = await _limited(ac)
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "3570"
+        assert "about 60 minutes" in response.text
+        assert len(model.requests) == 3
+        clock.advance(3570.0)
+        assert (await _limited(ac)).status_code == 200
+
+
+@pytest.mark.usefixtures("chat_env", "searcher", "model")
+async def test_the_minute_limit_comes_from_the_setting(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CHAT_RATE_LIMIT_PER_MINUTE=2 refuses the third question."""
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "2")
+    async with client as ac:
+        await _post(ac)
+        await _post(ac)
+        assert (await _limited(ac)).status_code == 429
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_users_are_independent_and_roles_are_treated_alike(
+    client: AsyncClient,
+    model: FakeModel,
+    viewer_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One person at the limit does not block another; Viewer is limited too."""
+    monkeypatch.setenv("CHAT_ENABLED_FOR", "all")
+    async with client as ac:
+        for _ in range(6):
+            await _post(ac)
+        assert (await _limited(ac)).status_code == 429
+        # The Viewer has their own budget, and gets the same limit.
+        for _ in range(6):
+            response = await ac.post(
+                "/chat/ask",
+                data={"question": QUESTION},
+                headers={**HX, **viewer_headers},
+            )
+            assert response.status_code == 200
+        response = await ac.post(
+            "/chat/ask", data={"question": QUESTION}, headers={**HX, **viewer_headers}
+        )
+        assert response.status_code == 429
+        assert MSG_TOO_FAST in response.text
+    assert len(model.requests) == 12
+
+
+def _hold_the_first_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[asyncio.Event, asyncio.Event]:
+    """Make ``answer_question`` wait for a signal; return (started, proceed)."""
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+    real = chat_route.answer_question
+    waited = False
+
+    async def slow(question: ChatQuestion, deps: ChatDeps) -> ChatOutcome:
+        nonlocal waited
+        if not waited:
+            waited = True
+            started.set()
+            await proceed.wait()
+        return await real(question, deps)
+
+    monkeypatch.setattr(chat_route, "answer_question", slow)
+    return started, proceed
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_second_question_while_one_runs_is_refused_then_allowed(
+    client: AsyncClient,
+    model: FakeModel,
+    limiter: ChatLimiter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same user cannot take the second model slot; they can right after."""
+    started, proceed = _hold_the_first_answer(monkeypatch)
+    async with client as ac:
+        first = asyncio.create_task(_limited(ac))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert limiter.in_flight_count == 1
+        refused = await _limited(ac, "second-question-marker")
+        assert refused.status_code == 429
+        assert MSG_BUSY in refused.text
+        assert "second-question-marker" not in refused.text
+        assert 1 <= int(refused.headers["retry-after"]) <= 30
+        assert model.requests == []
+        proceed.set()
+        assert (await first).status_code == 200
+        assert limiter.in_flight_count == 0
+        assert (await _limited(ac)).status_code == 200
+    assert len(model.requests) == 2
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_another_user_can_ask_while_one_question_runs(
+    client: AsyncClient,
+    model: FakeModel,
+    viewer_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The in-flight rule is per user, so two people can each have one."""
+    monkeypatch.setenv("CHAT_ENABLED_FOR", "all")
+    started, proceed = _hold_the_first_answer(monkeypatch)
+    async with client as ac:
+        first = asyncio.create_task(_limited(ac))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        other = await ac.post(
+            "/chat/ask", data={"question": QUESTION}, headers={**HX, **viewer_headers}
+        )
+        assert other.status_code == 200
+        proceed.set()
+        assert (await first).status_code == 200
+    assert len(model.requests) == 2
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_the_slot_is_released_when_the_request_is_cancelled(
+    client: AsyncClient,
+    limiter: ChatLimiter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that goes away mid-question gives the slot back."""
+    started, _proceed = _hold_the_first_answer(monkeypatch)
+    async with client as ac:
+        task = asyncio.create_task(_limited(ac))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert limiter.in_flight_count == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert limiter.in_flight_count == 0
+        assert (await _limited(ac)).status_code == 200
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_the_slot_is_released_when_the_handler_raises(
+    client: AsyncClient,
+    limiter: ChatLimiter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An error that escapes the answer step still frees the slot."""
+    real = chat_route.answer_question
+
+    failed = False
+
+    async def boom(question: ChatQuestion, deps: ChatDeps) -> ChatOutcome:
+        nonlocal failed
+        if not failed:
+            failed = True
+            msg = "unexpected"
+            raise RuntimeError(msg)
+        return await real(question, deps)
+
+    monkeypatch.setattr(chat_route, "answer_question", boom)
+    async with client as ac:
+        with pytest.raises(RuntimeError, match="unexpected"):
+            await _limited(ac)
+        assert limiter.in_flight_count == 0
+        assert (await _limited(ac)).status_code == 200
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+@pytest.mark.parametrize("failure", ["unavailable", "timeout", "unreadable", "garbage"])
+async def test_model_down_shows_a_plain_message_and_frees_the_slot(
+    client: AsyncClient,
+    model: FakeModel,
+    limiter: ChatLimiter,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """A failing model gives HTTP 200, one plain sentence, no trace, no lock."""
+    expected = {
+        "unavailable": MSG_MODEL_DOWN,
+        "timeout": MSG_MODEL_TIMEOUT,
+        "unreadable": MSG_MODEL_BAD,
+        "garbage": MSG_MODEL_BAD,
+    }[failure]
+    if failure == "unavailable":
+        model.raise_error = httpx.ConnectError("no route to model")
+    elif failure == "timeout":
+        model.raise_error = httpx.ReadTimeout("slow model")
+    elif failure == "unreadable":
+        model.answer = ""
+    else:
+
+        def garbage(connection: ChatConnection) -> ChatClient:
+            def handler(_request: httpx.Request) -> httpx.Response:
+                return httpx.Response(200, text="<html>not json</html>")
+
+            return ChatClient(connection, transport=httpx.MockTransport(handler))
+
+        monkeypatch.setattr(chat_route, "build_chat_client", garbage)
+    async with client as ac:
+        response = await _limited(ac)
+        assert response.status_code == 200
+        assert expected in response.text
+        assert "Traceback" not in response.text
+        assert "html>not json" not in response.text
+        assert limiter.in_flight_count == 0
+        # The next question is not locked out as "still being answered".
+        again = await _limited(ac)
+        assert again.status_code == 200
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_a_hung_model_call_times_out_and_frees_the_slot(
+    client: AsyncClient,
+    limiter: ChatLimiter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The model timeout ends a question that never answers; slot is freed."""
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.05")
+
+    def hang(connection: ChatConnection) -> ChatClient:
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(5)
+            return httpx.Response(200)
+
+        return ChatClient(connection, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(chat_route, "build_chat_client", hang)
+    async with client as ac:
+        response = await _limited(ac)
+    assert response.status_code == 200
+    assert MSG_MODEL_TIMEOUT in response.text
+    assert limiter.in_flight_count == 0
+
+
+@pytest.mark.usefixtures("chat_env", "searcher", "model")
+@pytest.mark.parametrize("question", ["", "   ", "x" * 1001])
+async def test_questions_refused_before_any_work_are_not_counted(
+    client: AsyncClient, model: FakeModel, question: str
+) -> None:
+    """Blank and overlong questions leave the whole quota to real ones."""
+    async with client as ac:
+        for _ in range(20):
+            response = await _limited(ac, question)
+            assert response.status_code == 200
+        for _ in range(6):
+            assert (await _limited(ac)).status_code == 200
+        assert (await _limited(ac)).status_code == 429
+    assert len(model.requests) == 6
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_picture_errors_and_oversize_bodies_are_not_counted(
+    client: AsyncClient, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refusals for pictures and body size use none of the quota."""
+    two = [
+        ("image", ("a.png", b"x", "image/png")),
+        ("image", ("b.png", b"x", "image/png")),
+    ]
+    async with client as ac:
+        for _ in range(10):
+            response = await ac.post(
+                "/chat/ask", data={"question": QUESTION}, files=two, headers=HX
+            )
+            assert response.status_code == 200
+        real_cap = chat_route.MAX_BODY_BYTES
+        monkeypatch.setattr(chat_route, "MAX_BODY_BYTES", 400)
+        for _ in range(10):
+            response = await ac.post(
+                "/chat/ask",
+                data={"question": QUESTION},
+                files=[("image", ("a.png", b"x" * 1000, "image/png"))],
+            )
+            assert response.status_code == 413
+        monkeypatch.setattr(chat_route, "MAX_BODY_BYTES", real_cap)
+        for _ in range(6):
+            assert (await _limited(ac)).status_code == 200
+    assert len(model.requests) == 6
+
+
+@pytest.mark.usefixtures("chat_env", "searcher")
+async def test_form_cap_refusals_are_not_counted(
+    client: AsyncClient, model: FakeModel
+) -> None:
+    """Too many files or fields is refused by the parser and uses no quota."""
+    one = ("image", ("a.png", b"\x89PNG", "image/png"))
+    async with client as ac:
+        for _ in range(10):
+            response = await ac.post(
+                "/chat/ask", data={"question": QUESTION}, files=[one, one, one]
+            )
+            assert response.status_code == 400
+        for _ in range(6):
+            assert (await _limited(ac)).status_code == 200
+    assert len(model.requests) == 6
+
+
+@pytest.mark.usefixtures("portal_env", "searcher")
+async def test_not_connected_questions_are_not_counted(
+    client: AsyncClient, limiter: ChatLimiter
+) -> None:
+    """With chat not connected, nothing is counted and nothing is held."""
+    async with client as ac:
+        for _ in range(10):
+            response = await _limited(ac)
+            assert response.status_code == 200
+            assert MSG_NOT_CONNECTED in response.text
+    assert limiter.in_flight_count == 0
+
+
+@pytest.mark.usefixtures("chat_env", "searcher", "model")
+async def test_the_role_gate_and_cross_site_check_come_before_the_limiter(
+    client: AsyncClient,
+    limiter: ChatLimiter,
+    viewer_headers: dict[str, str],
+) -> None:
+    """404 and 403 are answered first and use none of the quota."""
+    async with client as ac:
+        for _ in range(10):
+            denied = await ac.post(
+                "/chat/ask", data={"question": QUESTION}, headers=viewer_headers
+            )
+            assert denied.status_code == 404
+            cross = await ac.post(
+                "/chat/ask",
+                data={"question": QUESTION},
+                headers={"Sec-Fetch-Site": "cross-site"},
+            )
+            assert cross.status_code == 403
+        assert limiter.tracked_users == 0
+        for _ in range(6):
+            assert (await _limited(ac)).status_code == 200
+        # Even at the limit, a cross-site post is a 403, not a 429.
+        cross = await ac.post(
+            "/chat/ask",
+            data={"question": QUESTION},
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+        assert cross.status_code == 403
+
+
+@pytest.mark.usefixtures("chat_env")
+async def test_a_refused_request_makes_no_search_or_model_call(
+    client: AsyncClient, model: FakeModel, searcher: FakeSearcher
+) -> None:
+    """Over the limit, neither the search nor the model is touched."""
+    async with client as ac:
+        for _ in range(6):
+            await _post(ac)
+        searches, calls = len(searcher.requests), len(model.requests)
+        for _ in range(5):
+            assert (await _limited(ac)).status_code == 429
+    assert len(searcher.requests) == searches
+    assert len(model.requests) == calls
+
+
+@pytest.mark.usefixtures("chat_env", "searcher", "model")
+async def test_refusals_are_logged_without_identity_or_text(
+    client: AsyncClient,
+) -> None:
+    """The log line carries the reason and retry seconds only."""
+    marker = "log-marker-question"
+    async with client as ac:
+        for _ in range(6):
+            await _post(ac)
+        with capture_logs() as logs:
+            await _limited(ac, marker)
+    refused = [e for e in logs if e["event"] == "chat_rate_limited"]
+    assert len(refused) == 1
+    assert set(refused[0]) <= {"event", "log_level", "reason", "retry_after"}
+    assert refused[0]["reason"] == "per_minute"
+    assert refused[0]["retry_after"] == 60
+    dumped = str(logs).lower()
+    assert marker not in dumped
+    assert "admin" not in dumped
+    assert "example.com" not in dumped
+
+
+@pytest.mark.usefixtures("chat_env", "searcher", "model")
+async def test_the_panel_lets_a_429_sentence_show_and_keeps_the_question(
+    client: AsyncClient,
+) -> None:
+    """HTMX would drop a 429; the panel opts in to swapping it."""
+    async with client as ac:
+        page = (await ac.get("/")).text
+    assert "htmx:before-swap" in page or "hx-on::before-swap" in page
+    assert "429" in page

@@ -38,14 +38,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, ValidationError
+from pydantic import Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.chat.limits import Limits
 from app.url_check import is_http_url
 
 _UNSET = SecretStr("")
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_RATE_LIMIT_PER_MINUTE = 6
+DEFAULT_RATE_LIMIT_PER_HOUR = 60
 
 ChatAudience = Literal["admin", "all", "none"]
 
@@ -115,6 +118,10 @@ class ChatSettings(BaseSettings):
             finite number above zero.
         chat_instructions_path (str): The instructions file. Empty means off.
         chat_enabled_for (ChatAudience): Who sees chat.
+        chat_rate_limit_per_minute (int): Most questions one person may ask in
+            any 60 seconds; above zero.
+        chat_rate_limit_per_hour (int): Most questions one person may ask in
+            any hour; above zero.
     """
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False, frozen=True)
@@ -125,6 +132,8 @@ class ChatSettings(BaseSettings):
     llm_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     chat_instructions_path: str = ""
     chat_enabled_for: ChatAudience = "admin"
+    chat_rate_limit_per_minute: int = Field(default=DEFAULT_RATE_LIMIT_PER_MINUTE, gt=0)
+    chat_rate_limit_per_hour: int = Field(default=DEFAULT_RATE_LIMIT_PER_HOUR, gt=0)
 
     def connection(self) -> ChatConnection | None:
         """Return the model connection, or None when its URL is unset.
@@ -165,6 +174,17 @@ class ChatSettings(BaseSettings):
         """
         value = self.chat_instructions_path.strip()
         return Path(value) if value else None
+
+    def rate_limits(self) -> Limits:
+        """Return the per-person question limits.
+
+        Returns:
+            Limits: Per-minute and per-hour quotas.
+        """
+        return Limits(
+            per_minute=self.chat_rate_limit_per_minute,
+            per_hour=self.chat_rate_limit_per_hour,
+        )
 
     def allows(self, *, is_admin: bool) -> bool:
         """Say whether the feature flag shows chat to this role.

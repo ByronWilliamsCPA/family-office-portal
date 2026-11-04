@@ -143,6 +143,8 @@ request is open: a document search and the chat model. Design and limits are in
 | `LLM_TIMEOUT_SECONDS` | `30` | Longest one model call may take; a number above zero |
 | `CHAT_INSTRUCTIONS_PATH` | unset | File holding the chat instructions; keep it outside the repository, readable by the app |
 | `CHAT_ENABLED_FOR` | `admin` | Who sees the panel: `admin`, `all` (Admins and Viewers) or `none` |
+| `CHAT_RATE_LIMIT_PER_MINUTE` | `6` | Most questions one person may ask in any 60 seconds; a whole number above zero |
+| `CHAT_RATE_LIMIT_PER_HOUR` | `60` | Most questions one person may ask in any hour; a whole number above zero |
 
 The panel is connected only when the URL and key form a valid connection and the
 instructions file is readable. A URL without a key, or an unusable URL, stops
@@ -150,10 +152,12 @@ startup, and the error names the variable. Answering also needs document search
 (below); without it the panel says search is not connected yet. A person who is not
 in the chosen audience sees no panel.
 
-There is currently no per-user rate limit; the only throttle is a cap of two model
-calls at a time across the whole app, so one user can hold both. Keep
-`CHAT_ENABLED_FOR` at `admin` until a per-user limit exists, and do not open chat to
-a wider group before then.
+Each person is limited to the two quotas above and to one question at a time, so
+one user cannot hold both model slots. A question over a limit is refused with HTTP
+429 and a plain sentence, makes no search or model call, and a question refused
+before any work (blank, too long, bad picture) does not count. The counters are in
+memory, so they reset on a restart, and they are per process: run a single uvicorn
+worker. See the "Rate limiting" section of ADR-009.
 
 ### Document search and the indexer
 
