@@ -19,14 +19,14 @@ list of gaps. The first wave of repository work merged on 2026-11-04: the
 Portfolio refresh jobs are scheduled, the question panel has a per-user rate
 limit, every page has resilience tests, a browser suite checks every page at
 tablet size, and the stale documentation was corrected. What is left in this
-repository is the entity status labels (A5, blocked on B3), the runbook (A8, in
-review) and the release housekeeping (A9). The section "Path to the initial
-release" lists everything in order.
+repository is the entity status labels (A5, blocked on B3) and the release
+housekeeping (A9). The operations runbook (A8) merged the same day. The section
+"Path to the initial release" lists everything in order.
 
 Phase numbers are stable identifiers, not a sequence. Phases 0 to 3 are built in
 code; Portfolio still needs its backends connected. Phase 4 (resilience and
-polish) is mostly built: what remains is the status labels, the runbook, the
-release housekeeping and the checks on the real tablet.
+polish) is mostly built: what remains is the status labels, the release
+housekeeping and the checks on the real tablet.
 
 ## Progress log
 
@@ -41,6 +41,7 @@ release housekeeping and the checks on the real tablet.
 | 2026-11-04 | #76 | Documentation drift fixed in the tech spec, the plan's cadences and a docstring (A3) |
 | 2026-11-04 | #77 | Per-user question rate limit and one question in flight per user (A10) |
 | 2026-11-04 | #78 | Playwright tablet and accessibility suite, 11 templates raised to 44 pixel tap targets (A7) |
+| 2026-11-04 | #79 | Operations runbook in `docs/operations/runbook.md` (A8) |
 
 ## Where the code stands (2026-11-04)
 
@@ -116,13 +117,13 @@ Each item is one small pull request.
 | A5 | **Open, blocked on B3.** Entity status labels: colour plus plain-English text, and "due within 60 days" | Phase 1 acceptance criterion; also needs the compliance fields from llc-manager (see B3) |
 | A6 | **Done (#75).** 45 page tests: each page renders with the cache stale or its backend returning 500 and shows the "last updated" label, never an error page | Phase 4 criterion |
 | A7 | **Done except two parts (#78).** Playwright is a dev-only extra. The suite (`-m e2e`, `tests/e2e/`) checks every page at 1024x768 (layout, text clipping, headings, labels, tap targets of 44 pixels, JavaScript-off readability, the back button, the two-click rule, axe-core accessibility), and 11 templates were raised to 44 pixel tap targets. Left: the CI job (`e2e.yml`) is not a required check, and 1366x768 and the real tablet are still checked by hand (C5) | Phase 4 criterion |
-| A8 | **In review (PR #79).** Deployment runbook in `docs/operations/`: required settings, one worker, timezone, secrets by name, backup and restore of the SQLite file (the daily balance history is not a cache), key rotation, how to read the admin refresh status | No operations document exists on `main` yet |
+| A8 | **Done (#79).** Deployment runbook at `docs/operations/runbook.md`: required settings, one worker, timezone, secrets by name, backup and restore of the SQLite file (the daily balance history is not a cache), scheduling the indexer, key rotation, how to read the admin refresh status. Written from the code and the Dockerfile; the backup, restore and scheduling examples have not been run on the real deployment (its "Not yet proven" list stays open) | The runbook is only as good as its first real run |
 | A9 | First release housekeeping: move `[Unreleased]` in the changelog under 0.1.0, tag, and confirm the image tag the deployment pins | Nothing is tagged yet |
 | A10 | **Done (#77).** Per-user rate limit for the question panel (`CHAT_RATE_LIMIT_PER_MINUTE` 6 and `CHAT_RATE_LIMIT_PER_HOUR` 60 by default) and one question in flight per user, recorded in ADR-009 ("Rate limiting" and "Accepted limits"). The model-down message is a plain sentence and is covered by tests; the check with the real service stopped stays in C8 | Required: the panel is on for everyone (O2) |
 | A11 | **Done (#74).** `refresh_holdings` and `refresh_positions` are in `JOBS` on a 2 hour interval, and the Portfolio empty-state sentence is fixed | Required: Portfolio is in the release (O4) |
 
-A1 to A4, A6, A7, A10 and A11 are done. A5 waits for llc-manager (B3), A8 is in
-review, and A9 comes last.
+A1 to A4, A6, A7, A8, A10 and A11 are done. A5 waits for llc-manager (B3), and
+A9 comes last.
 
 ### B. Work outside this repository
 
@@ -166,7 +167,7 @@ These need the deployed portal, real data or the real tablet.
 1. A1 to A4 (done).
 2. B1 to B3, then deploy (B2) with Documents, Entities and Home. This is the
    first point the primary users can open the portal.
-3. A5, A8 and A9 while the first deployment runs (A6 and A7 are done); C1 to C3 as soon as it is up.
+3. A5 and A9 while the first deployment runs (A6, A7 and A8 are done); C1 to C3 as soon as it is up.
 4. B5 (search stack) and B6 (model route); the rate limit (A10) is in place
    before the panel is switched on for everyone; then C7 and C8.
 5. B7 (Portfolio backends; A11 is done); then C9.
@@ -352,7 +353,7 @@ crypto positions from `xero_crypto`, both read through the refresh jobs.
 
 ## Phase 4: Resilience and polish
 
-**Status: mostly built.** Remaining: A5, A8, A9, the plain-language session prompt, and C5 to C9.
+**Status: mostly built.** Remaining: A5, A9, the plain-language session prompt, and C5 to C9.
 
 ### Objective
 
@@ -369,7 +370,7 @@ state, add browser tests, and prepare production deployment.
 - [x] Test coverage gate in CI (80% overall)
 - [x] Admin refresh-status endpoint for all services
 - [x] Production image built, smoke-tested and signed in CI
-- [ ] Deployment runbook (A8, in review as PR #79)
+- [x] Deployment runbook (A8, #79; its commands are not yet run on the real deployment)
 - [ ] Changelog under a version, tag, and the OpenSSF baseline files reviewed (A9)
   (LICENSE, SECURITY.md, CONTRIBUTING.md and README exist)
 - [ ] Plain-language prompt when the session expires
@@ -415,7 +416,7 @@ says search is off) and B6 to turn it on, and the checks in C8.
 | Question panel enabled for everyone before a rate limit exists | Low | Medium | Mitigated: the per-user limit and one question at a time are in code (A10, #77). The limiter is in memory, so it assumes one worker, which the Dockerfile sets |
 | Search stack not deployed | Medium | High | B5 is on the critical path; without it search is off and the question panel cannot answer from documents |
 | PDF preview misbehaves in the tablet's browser | Medium | High | Test on the real tablet early (C2); download remains as the fallback |
-| The SQLite file is lost and the daily balance history with it | Low | High | Backup and restore in the runbook (A8, in review as PR #79); the file is not a cache |
+| The SQLite file is lost and the daily balance history with it | Low | High | Backup and restore in the runbook (A8, #79; not yet run on the real deployment); the file is not a cache |
 | Tablet layout problems that tests on a desktop never show | Medium | Medium | Browser checks at 1024x768 are built (A7, #78) but run in a non-required CI job; a look on the tablet is still needed (C5) |
 | A provider stops delivering and its last rows stay | Low | Low | Accepted limitation: documented in the balance storage code; a retire action can be added if it happens |
 
