@@ -38,6 +38,10 @@ pre-commit install
 pre-commit install --hook-type commit-msg
 ```
 
+The app does not read `.env` itself, so a copied `.env` is not loaded automatically.
+Export its values into the process environment, or pass the file to Docker (for
+example `docker run --env-file .env` or the compose `env_file` option).
+
 The `.secrets.baseline` file is committed to the repository and updated only when
 new secrets are intentionally introduced. Do not regenerate it on first checkout.
 
