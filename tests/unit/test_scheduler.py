@@ -23,13 +23,19 @@ from __future__ import annotations
 import secrets
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from apscheduler.triggers.interval import (  # pyright: ignore[reportMissingTypeStubs]  # APScheduler 3 ships no stubs
+    IntervalTrigger,
+)
 from structlog.testing import capture_logs
+
+from app import cache
 
 scheduler = pytest.importorskip("app.scheduler")
 db = pytest.importorskip("app.db")
@@ -966,6 +972,140 @@ def test_build_scheduler_registers_every_job() -> None:
     jobs = {job.id: job for job in sched.get_jobs()}
     assert set(jobs) == set(scheduler.JOBS)
     assert all(job.max_instances == 1 for job in jobs.values())
+
+
+PORTFOLIO_JOBS = {"refresh_holdings", "refresh_positions"}
+
+
+def test_build_scheduler_schedules_the_portfolio_jobs() -> None:
+    """Holdings and positions run on a 2 hour interval, once at startup too.
+
+    # noqa
+    """
+    sched = scheduler.build_scheduler()
+    jobs = {job.id: job for job in sched.get_jobs()}
+    assert set(jobs) >= PORTFOLIO_JOBS
+    now = datetime.now(timezone.utc)
+    for name in sorted(PORTFOLIO_JOBS):
+        job = jobs[name]
+        assert isinstance(job.trigger, IntervalTrigger)
+        assert job.trigger.interval == timedelta(hours=2)
+        assert job.max_instances == 1
+        assert job.coalesce is True
+        assert abs(job.next_run_time - now) < timedelta(seconds=30)
+
+
+def test_build_scheduler_keeps_the_existing_jobs() -> None:
+    """Scheduling the portfolio jobs leaves the other three as they were.
+
+    # noqa
+    """
+    sched = scheduler.build_scheduler()
+    jobs = {job.id: job for job in sched.get_jobs()}
+    assert set(jobs) == {
+        "refresh_entities",
+        "refresh_documents",
+        "snapshot_balances_daily",
+        "refresh_holdings",
+        "refresh_positions",
+    }
+    assert jobs["refresh_entities"].trigger.interval == timedelta(hours=4)
+    assert jobs["refresh_documents"].trigger.interval == timedelta(hours=12)
+
+
+def test_jobs_intervals_and_triggers_stay_consistent() -> None:
+    """Every scheduled job has a cadence, and each cadence beats its threshold.
+
+    # noqa
+    """
+    interval_jobs = set(scheduler.JOBS) - {"snapshot_balances_daily"}
+    assert interval_jobs == set(scheduler.JOB_INTERVAL_HOURS)
+    # Admin trigger names map to the same callables the scheduler runs.
+    for name in PORTFOLIO_JOBS:
+        assert scheduler.TRIGGERS[name.removeprefix("refresh_")] is scheduler.JOBS[name]
+    assert (
+        scheduler.JOB_INTERVAL_HOURS["refresh_holdings"]
+        < cache.STALENESS_HOURS["holdings"]
+    )
+    assert (
+        scheduler.JOB_INTERVAL_HOURS["refresh_positions"]
+        < cache.STALENESS_HOURS["positions"]
+    )
+
+
+def _seed_portfolio_cache(path: Path) -> None:
+    """Cache one holding, one performance row and one position.
+
+    Args:
+        path: SQLite file to seed.
+    """
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO holdings (id, security_name, sector, current_value, "
+            "allocation_pct, fetched_at) VALUES "
+            "('h-old', 'Kept Fund', 'Diversified', 100.0, 5.0, '2026-05-01T00:00:00')"
+        )
+        conn.execute(
+            "INSERT INTO performance (date, total_value, benchmark, fetched_at) "
+            "VALUES ('2026-05-01', 1000.0, 900.0, '2026-05-01T00:00:00')"
+        )
+        conn.execute(
+            "INSERT INTO positions (id, asset, quantity, usd_value, fetched_at) "
+            "VALUES ('p-old', 'ETH', 5.0, 15000.0, '2026-05-01T00:00:00')"
+        )
+
+
+def _failing_client(failure: str) -> MagicMock:
+    """Build a client mock whose request fails the given way.
+
+    Args:
+        failure: ``500`` for a server error or ``timeout`` for a timeout.
+
+    Returns:
+        MagicMock: Client mock for ``httpx.Client``.
+    """
+    client = _mock_client(_mock_response({}, status_code=500))
+    if failure == "timeout":
+        client.get.side_effect = httpx.ReadTimeout("slow backend")
+    return client
+
+
+@pytest.mark.parametrize("failure", ["500", "timeout"])
+@pytest.mark.parametrize(
+    ("job", "service"),
+    [("refresh_holdings", "pp-security-master"), ("refresh_positions", "xero_crypto")],
+)
+def test_failed_portfolio_refresh_keeps_cached_rows_and_logs_error(
+    initialized_db: Path, job: str, service: str, failure: str
+) -> None:
+    """A 500 or timeout leaves the last good rows and records one error.
+
+    # noqa
+    """
+    _seed_portfolio_cache(initialized_db)
+
+    with patch("httpx.Client", return_value=_failing_client(failure)):
+        getattr(scheduler, job)()
+
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        holdings = conn.execute("SELECT security_name FROM holdings").fetchall()
+        performance = conn.execute("SELECT date FROM performance").fetchall()
+        positions = conn.execute("SELECT asset FROM positions").fetchall()
+    assert holdings == [("Kept Fund",)]
+    assert performance == [("2026-05-01",)]
+    assert positions == [("ETH",)]
+    rows = _log_rows(initialized_db)
+    assert [(r[0], r[1]) for r in rows] == [(service, "error")]
+
+
+def test_refresh_holdings_failure_does_not_raise(initialized_db: Path) -> None:
+    """The scheduler thread never sees an exception from an alpha backend 500.
+
+    # noqa
+    """
+    del initialized_db
+    with patch("httpx.Client", return_value=_failing_client("500")):
+        scheduler.refresh_holdings()
 
 
 def test_refresh_follows_pages_until_total(initialized_db: Path) -> None:

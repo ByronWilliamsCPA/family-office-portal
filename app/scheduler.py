@@ -691,12 +691,22 @@ def snapshot_balances_daily() -> None:
         lock.release()
 
 
-# Scheduled jobs. ``refresh_holdings`` and ``refresh_positions`` stay
-# callable from the admin trigger but are not scheduled: no backend serves
-# their endpoints yet, and account balances arrive through the intake endpoint
-# instead of a pull.
+# Scheduled jobs. Every job except ``snapshot_balances_daily`` runs on the
+# interval in ``JOB_INTERVAL_HOURS``; each job also runs once at startup.
+# Account balances arrive through the intake endpoint instead of a pull.
+# #ASSUME: external resources: pp-security-master is alpha, so its contract
+# (``/api/v1/portfolio/summary``) can change and its 500 responses are
+# expected. A failed refresh keeps the last cached rows and the page shows
+# them as out of date.
+# #VERIFY: check ``refresh_log`` and the Portfolio page after the first real
+# delivery from pp-security-master and xero_crypto.
+# #EDGE: timing: a connected backend is called at every startup (the job runs
+# once on start), so a restart loop makes repeated calls to the backend.
+# #VERIFY: confirm the backends tolerate one call per restart.
 JOBS: dict[str, Callable[[], None]] = {
     "refresh_entities": refresh_entities,
+    "refresh_holdings": refresh_holdings,
+    "refresh_positions": refresh_positions,
     "refresh_documents": refresh_documents,
     "snapshot_balances_daily": snapshot_balances_daily,
 }
