@@ -34,6 +34,33 @@ SYNTHETIC_INSTRUCTIONS = (
 )
 
 
+class FakeClock:
+    """A settable clock for the limiter, so tests never sleep.
+
+    Attributes:
+        now (float): The current time in seconds.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        """Return the current fake time.
+
+        Returns:
+            float: Seconds.
+        """
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        """Move the clock forward.
+
+        Args:
+            seconds (float): How far to move it.
+        """
+        self.now += seconds
+
+
 def write_instructions(directory: Path) -> Path:
     """Write a short synthetic instructions file.
 

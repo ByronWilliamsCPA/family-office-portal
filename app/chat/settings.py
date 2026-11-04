@@ -38,14 +38,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, ValidationError
+from pydantic import Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.chat.limits import Limits
 from app.url_check import is_http_url
 
 _UNSET = SecretStr("")
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_RATE_LIMIT_PER_MINUTE = 6
+DEFAULT_RATE_LIMIT_PER_HOUR = 60
 
 ChatAudience = Literal["admin", "all", "none"]
 
@@ -115,6 +118,10 @@ class ChatSettings(BaseSettings):
             finite number above zero.
         chat_instructions_path (str): The instructions file. Empty means off.
         chat_enabled_for (ChatAudience): Who sees chat.
+        chat_rate_limit_per_minute (int): Most questions one person may ask in
+            any 60 seconds; above zero.
+        chat_rate_limit_per_hour (int): Most questions one person may ask in
+            any hour; above zero.
     """
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False, frozen=True)
@@ -125,6 +132,26 @@ class ChatSettings(BaseSettings):
     llm_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     chat_instructions_path: str = ""
     chat_enabled_for: ChatAudience = "admin"
+    chat_rate_limit_per_minute: int = Field(default=DEFAULT_RATE_LIMIT_PER_MINUTE, gt=0)
+    chat_rate_limit_per_hour: int = Field(default=DEFAULT_RATE_LIMIT_PER_HOUR, gt=0)
+
+    @model_validator(mode="after")
+    def _minute_limit_fits_in_the_hour(self) -> ChatSettings:
+        """Reject a per-minute limit above the per-hour limit.
+
+        Returns:
+            ChatSettings: This instance, unchanged.
+
+        Raises:
+            ChatConfigError: If the minute limit is above the hour limit; the
+                message names both variables and no value.
+        """
+        if self.chat_rate_limit_per_minute > self.chat_rate_limit_per_hour:
+            msg = (
+                "CHAT_RATE_LIMIT_PER_MINUTE must not be above CHAT_RATE_LIMIT_PER_HOUR"
+            )
+            raise ChatConfigError(msg)
+        return self
 
     def connection(self) -> ChatConnection | None:
         """Return the model connection, or None when its URL is unset.
@@ -166,6 +193,17 @@ class ChatSettings(BaseSettings):
         value = self.chat_instructions_path.strip()
         return Path(value) if value else None
 
+    def rate_limits(self) -> Limits:
+        """Return the per-person question limits.
+
+        Returns:
+            Limits: Per-minute and per-hour quotas.
+        """
+        return Limits(
+            per_minute=self.chat_rate_limit_per_minute,
+            per_hour=self.chat_rate_limit_per_hour,
+        )
+
     def allows(self, *, is_admin: bool) -> bool:
         """Say whether the feature flag shows chat to this role.
 
@@ -199,7 +237,12 @@ def check_chat_settings() -> str | None:
     try:
         load_chat_settings().connection()
     except ValidationError as exc:
-        names = sorted({str(error["loc"][0]).upper() for error in exc.errors()})
+        errors = exc.errors()
+        if any(not error["loc"] for error in errors):
+            # A rule across settings (no single variable): its message names
+            # the variables and never a value.
+            return str(errors[0]["msg"]).removeprefix("Value error, ")
+        names = sorted({str(error["loc"][0]).upper() for error in errors})
         return f"invalid value for {', '.join(names)}"
     except ChatConfigError as exc:
         return str(exc)

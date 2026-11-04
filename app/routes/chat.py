@@ -14,6 +14,13 @@ document proxy (ADR-007) and document search (ADR-008).
 Who can use it is set by ``CHAT_ENABLED_FOR`` (Admin only by default). For
 anyone else the route answers 404, as if it did not exist.
 
+Order of checks: role gate (404), cross-site check (403), declared body size
+(413, nothing counted), per-user limiter (429), then the form and the
+validation and model call. A question refused before any work (blank, too
+long, a bad picture, a body over the cap, chat not connected) is refunded and
+does not count against the quota. The in-flight slot is released in a
+``finally`` block on every outcome.
+
 #CRITICAL: security: only ``question`` and one ``image`` are read from the
 form; every other field (for example ``chat_template_kwargs``) is ignored,
 and ``include_confidential`` comes from the signed-in role. #VERIFY:
@@ -27,10 +34,14 @@ deployed browsers send Fetch Metadata headers (all current ones do).
 #ASSUME: security: the sign-in cookie is ``SameSite=Lax`` or stricter, so a
 cross-site form post does not carry it. #VERIFY the cookie attribute at the
 auth proxy before relying on it.
-#EDGE: abuse: there is no per-user rate limit; the only throttle is the
-process-wide cap of two model calls, so one user can hold both slots. Per-user
-limiting is deferred (ADR-009). #VERIFY the audience stays small (Admin only
-by default) before widening ``CHAT_ENABLED_FOR``.
+#EDGE: abuse: each signed-in user gets a sliding-window quota and one question
+at a time (``app.chat.limits``, ADR-009), so one user cannot hold both model
+slots. The limiter runs after the role and cross-site checks and before the
+form is read; a refused post gets 429 with ``Retry-After`` and makes no
+search or model call. The counters are in memory and per process.
+#ASSUME: one uvicorn worker. #VERIFY the deployment keeps a single worker.
+#EDGE: a restart resets the counters. #VERIFY that is acceptable: the model
+semaphore and timeout still bound the load.
 #EDGE: disk: a multipart upload is spooled to a temporary file as it
 arrives. The route refuses a declared body over ``MAX_BODY_BYTES`` and stops
 reading a streamed body once it passes that size. #VERIFY any reverse-proxy
@@ -42,15 +53,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import (
     Response,  # noqa: TC002  # FastAPI reads return annotations at runtime
 )
 
 from app.chat.client import ChatClient
 from app.chat.images import MAX_UPLOAD_BYTES
+from app.chat.limits import LIMITER, Refusal, Ticket, refusal_message
 from app.chat.service import (
     MSG_NOT_CONNECTED,
     ChatDeps,
@@ -58,6 +72,7 @@ from app.chat.service import (
     ChatQuestion,
     answer_question,
     chat_connection,
+    check_question,
 )
 from app.chat.settings import load_chat_settings
 from app.retrieval.search import build_search_service
@@ -68,6 +83,8 @@ if TYPE_CHECKING:
     from starlette.datastructures import FormData
 
     from app.chat.settings import ChatConnection
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -80,6 +97,7 @@ _MAX_FORM_FIELDS = 8
 # One picture, plus room for the question and the multipart framing.
 MAX_BODY_BYTES = MAX_UPLOAD_BYTES + 64 * 1024
 _TOO_LARGE = 413
+_TOO_MANY = 429
 ANSWERED_EVENT = "chat-answered"
 
 
@@ -174,15 +192,21 @@ async def _image_bytes(form: FormData) -> bytes | str | None:
     return data
 
 
-async def _outcome(request: Request, form: FormData) -> ChatOutcome:
+async def _outcome(request: Request, form: FormData, ticket: Ticket) -> ChatOutcome:
     raw_question = form.get("question")
     question = raw_question.strip() if isinstance(raw_question, str) else ""
     connection = chat_connection()
     if connection is None:
+        ticket.refund()
         return ChatOutcome(question=question, error=MSG_NOT_CONNECTED)
     image = await _image_bytes(form)
     if isinstance(image, str):
+        ticket.refund()
         return ChatOutcome(question=question, error=image)
+    problem = check_question(question)
+    if problem is not None:
+        ticket.refund()
+        return ChatOutcome(question=question, error=problem)
     return await answer_question(
         ChatQuestion(
             text=question,
@@ -197,6 +221,117 @@ async def _outcome(request: Request, form: FormData) -> ChatOutcome:
     )
 
 
+def _user_key(request: Request) -> str:
+    """Return the limiter key: the signed-in username, never logged.
+
+    Args:
+        request (Request): Current request.
+
+    Returns:
+        str: The username, or a shared fallback when there is none (the auth
+        middleware always sets one, so the fallback only makes a missing
+        identity share one strict budget).
+    """
+    principal = getattr(request.state, "principal", None)
+    return str(getattr(principal, "username", "") or "unknown")
+
+
+async def _respond(
+    request: Request,
+    outcome: ChatOutcome,
+    *,
+    status_code: int = status.HTTP_200_OK,
+    headers: dict[str, str] | None = None,
+) -> Response:
+    """Render one outcome as an HTMX fragment or as the whole Home page.
+
+    Args:
+        request (Request): Current request.
+        outcome (ChatOutcome): What to show.
+        status_code (int): HTTP status code.
+        headers (dict[str, str] | None): Extra response headers.
+
+    Returns:
+        Response: The answer fragment for HTMX, else the Home page.
+    """
+    extra = dict(headers or {})
+    if request.headers.get("hx-request") == "true":
+        if outcome.paragraphs:
+            extra["HX-Trigger"] = ANSWERED_EVENT
+        return templates.TemplateResponse(
+            request,
+            "partials/chat_turn.html",
+            {"outcome": outcome},
+            status_code=status_code,
+            headers=extra,
+        )
+    context: dict[str, Any] = await home_context(request)
+    response = render(
+        request,
+        "pages/home.html",
+        section="home",
+        status_code=status_code,
+        chat_outcome=outcome,
+        **context,
+    )
+    response.headers.update(extra)
+    return response
+
+
+async def _limited(request: Request, refusal: Refusal) -> Response:
+    """Answer a post the limiter turned away: 429 and one plain sentence.
+
+    Nothing from the request is read or echoed, and the log line carries the
+    reason and the wait only.
+
+    Args:
+        request (Request): Current request.
+        refusal (Refusal): What the limiter decided.
+
+    Returns:
+        Response: A 429 with ``Retry-After``, as a fragment or a page.
+    """
+    logger.info(
+        "chat_rate_limited", reason=refusal.reason, retry_after=refusal.retry_after
+    )
+    return await _respond(
+        request,
+        ChatOutcome(question="", error=refusal_message(refusal)),
+        status_code=_TOO_MANY,
+        headers={"Retry-After": str(refusal.retry_after)},
+    )
+
+
+async def _read_and_answer(request: Request, ticket: Ticket) -> ChatOutcome:
+    """Read the form and answer, refunding the quota when no work was done.
+
+    Args:
+        request (Request): Current request.
+        ticket (Ticket): The caller's limiter ticket.
+
+    Returns:
+        ChatOutcome: The answer, or a plain error.
+
+    Raises:
+        HTTPException: 413 when the body outgrows the cap.
+        StarletteHTTPException: The form parser's own refusal (too many files
+            or fields), after the question is refunded.
+    """
+    try:
+        async with _capped(request).form(
+            max_files=_MAX_FORM_FILES, max_fields=_MAX_FORM_FIELDS
+        ) as form:
+            return await _outcome(request, form, ticket)
+    except _BodyTooLargeError:
+        ticket.refund()
+        raise HTTPException(status_code=_TOO_LARGE) from None
+    except StarletteHTTPException:
+        # The form parser's own refusal (too many files or fields), raised as
+        # Starlette's base class, not FastAPI's.
+        ticket.refund()
+        raise
+
+
 @router.post(
     "/ask",
     summary="Ask a question (HTMX partial, or the Home page without HTMX)",
@@ -206,6 +341,7 @@ async def _outcome(request: Request, form: FormData) -> ChatOutcome:
         403: {"description": "Cross-site post"},
         404: {"description": "Chat is not enabled for this role"},
         413: {"description": "Request body too large"},
+        429: {"description": "Too many questions, or one still being answered"},
     },
 )
 async def ask(request: Request) -> Response:
@@ -223,7 +359,8 @@ async def ask(request: Request) -> Response:
     Raises:
         HTTPException: 404 when chat is not enabled for the caller's role,
             403 for a cross-site post, 413 when the body is over
-            ``MAX_BODY_BYTES``.
+            ``MAX_BODY_BYTES``. A question turned away by the per-user limit
+            is returned as a 429 response, not raised.
     """
     if not load_chat_settings().allows(is_admin=is_admin(request)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -231,19 +368,9 @@ async def ask(request: Request) -> Response:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if _declared_too_large(request):
         raise HTTPException(status_code=_TOO_LARGE)
-    try:
-        async with _capped(request).form(
-            max_files=_MAX_FORM_FILES, max_fields=_MAX_FORM_FIELDS
-        ) as form:
-            outcome = await _outcome(request, form)
-    except _BodyTooLargeError:
-        raise HTTPException(status_code=_TOO_LARGE) from None
-    if request.headers.get("hx-request") == "true":
-        headers = {"HX-Trigger": ANSWERED_EVENT} if outcome.paragraphs else {}
-        return templates.TemplateResponse(
-            request, "partials/chat_turn.html", {"outcome": outcome}, headers=headers
-        )
-    context: dict[str, Any] = await home_context(request)
-    return render(
-        request, "pages/home.html", section="home", chat_outcome=outcome, **context
-    )
+    ticket = LIMITER.acquire(_user_key(request), load_chat_settings().rate_limits())
+    if isinstance(ticket, Refusal):
+        return await _limited(request, ticket)
+    with ticket:
+        outcome = await _read_and_answer(request, ticket)
+        return await _respond(request, outcome)

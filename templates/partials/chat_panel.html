@@ -4,8 +4,12 @@
    below the earlier ones. The form is cleared only when an answer arrives
    (the route sends an HX-Trigger header), so a failed question can be sent
    again. A failed request (an error status or no connection) shows the
-   hidden "not available" sentence. Nothing is stored. #}
-<section class="bg-white rounded-xl border border-stone-200 p-6 md:col-span-2" aria-labelledby="chat-heading">
+   hidden "not available" sentence. A "too many questions" reply (status 429)
+   carries its own plain sentence, so the section below lets HTMX show it
+   instead of treating it as a failure; the question stays in the box.
+   Nothing is stored. #}
+<section class="bg-white rounded-xl border border-stone-200 p-6 md:col-span-2" aria-labelledby="chat-heading"
+         hx-on::before-swap="if (event.detail.xhr.status === 429) { event.detail.shouldSwap = true; event.detail.isError = false; }">
   <h2 id="chat-heading" class="text-xl font-semibold mb-2">Ask a question</h2>
   {% if not chat.connected %}
   {{ not_connected("Answers to questions") }}
