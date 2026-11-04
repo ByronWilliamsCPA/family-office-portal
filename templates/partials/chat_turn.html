@@ -33,7 +33,7 @@
   <h3 class="mt-4 font-semibold">Sources</h3>
   <ul class="mt-1 space-y-1">
     {% for source in outcome.citations %}
-    <li>{% if source.href %}<a class="text-blue-800 underline" href="{{ source.href }}">{{ source.label }}</a>{% else %}{{ source.label }}{% endif %}</li>
+    <li>{% if source.href %}<a class="inline-block py-2 text-blue-800 underline" href="{{ source.href }}">{{ source.label }}</a>{% else %}{{ source.label }}{% endif %}</li>
     {% endfor %}
   </ul>
   {% endif %}

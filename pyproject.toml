@@ -40,6 +40,8 @@ dev = [
     "commitizen>=3.27",
     "hypothesis>=6.110",
     "freezegun>=1.5",
+    "playwright==1.64.0",
+    "axe-playwright-python==0.1.8",
 ]
 
 # ---------------------------------------------------------------------------
@@ -200,7 +202,14 @@ require-yield-section-when-yielding-values = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=app --cov-report=term-missing"
+# Browser tests (tests/e2e) are opt-in: they need Chromium and the tailwindcss
+# CLI, and they exercise the app in a subprocess, so they add nothing to the
+# coverage gate. Run them with ``pytest -m e2e --no-cov`` (see
+# tests/e2e/README.md); a ``-m`` on the command line replaces this default.
+addopts = "--cov=app --cov-report=term-missing -m 'not e2e'"
+markers = [
+    "e2e: real-browser checks at tablet size (opt-in; excluded from the default run)",
+]
 
 [tool.coverage.run]
 branch = true

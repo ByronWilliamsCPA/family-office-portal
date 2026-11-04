@@ -16,18 +16,18 @@
 {% if folders %}
   {% for folder in folders %}
   <section class="mb-8" aria-labelledby="folder-{{ loop.index }}">
-    <h2 id="folder-{{ loop.index }}" class="text-xl font-semibold mb-3">
-      {%- if folder.entity_id %}<a class="text-blue-800 underline" href="{{ folder.entity_id | entity_url }}">{{ folder.title }}</a>
+    <h2 id="folder-{{ loop.index }}" class="text-xl font-semibold mb-1">
+      {%- if folder.entity_id %}<a class="inline-block py-2 text-blue-800 underline" href="{{ folder.entity_id | entity_url }}">{{ folder.title }}</a>
       {%- else %}{{ folder.title }}{% endif -%}
     </h2>
     <ul class="divide-y divide-stone-200 bg-white rounded-xl border border-stone-200">
       {% for doc in folder.documents %}
-      <li class="px-5 py-4 flex justify-between gap-4">
-        <a class="text-blue-800 underline" href="{{ doc['id'] | document_url }}">{{ doc['name'] }}</a>
-        <span class="flex gap-4">
+      <li class="px-5 py-2 flex justify-between gap-4">
+        <a class="inline-block py-2 text-blue-800 underline" href="{{ doc['id'] | document_url }}">{{ doc['name'] }}</a>
+        <span class="flex items-center gap-4">
           {% if view == "entity" %}<span class="text-slate-500">{{ doc['category'] }}</span>{% endif %}
           {% if doc['document_date'] %}<span class="text-slate-500">{{ doc['document_date'] | friendly_date }}</span>{% endif %}
-          <a class="text-blue-800 underline" href="{{ doc['id'] | document_url('download') }}">Download</a>
+          <a class="inline-block py-2 text-blue-800 underline" href="{{ doc['id'] | document_url('download') }}">Download</a>
         </span>
       </li>
       {% endfor %}
