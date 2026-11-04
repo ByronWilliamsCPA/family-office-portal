@@ -9,15 +9,20 @@ says otherwise, `CLAUDE.md` takes precedence.
 
 Most of the code for a first release is built and merged: the sign-in check, the
 five sections, balance intake and totals, document browsing with inline preview
-and download, document search, and an optional question panel. What stands
-between that code and a portal the two primary users can open on a tablet is
-mostly deployment, checks against real data and real hardware, and a short list
-of small gaps. The section "Path to the initial release" lists them in order.
+and download, document search, and the question panel. The owner decided on
+2026-11-03 that the initial release includes all of it: Home, Documents with
+search, Finances, Portfolio, Entities, and the question panel for everyone.
+What stands between that code and a portal the two primary users can open on a
+tablet is deployment (including the search stack, the model route and the
+Portfolio backends), checks against real data and real hardware, and a short
+list of gaps: scheduling the Portfolio refresh jobs, a rate limit for the
+question panel, and a few documentation fixes. The section "Path to the initial
+release" lists them in order.
 
 Phase numbers are stable identifiers, not a sequence. Phases 0 to 2 are built in
-code. Phase 3 is half built: Finances works on delivered balances, Portfolio
-waits for a backend. Phase 4 (resilience and polish) has barely started and is
-where most remaining repository work sits.
+code. Phase 3 is built apart from the Portfolio jobs, which are not scheduled
+and need their backends connected. Phase 4 (resilience and polish) has barely
+started and is where most remaining repository work sits.
 
 ## Where the code stands (2026-11-03)
 
@@ -28,9 +33,9 @@ where most remaining repository work sits.
 | Documents | Built: folders, name search, inline preview, download through the file proxy (ADR-007), confidential documents hidden from Viewers | Open a PDF in the tablet's browser; time a large file |
 | Finances | Built on delivered balances: totals, per owner, cash, 90-day trend, manual marks page for admins | Totals exclude home, vehicles and loans (stated on the page); real collector delivery |
 | Entities | List and detail built | Green, yellow and red status and "due within 60 days" labels |
-| Portfolio | Holdings table from cache only | Refresh jobs exist but are not scheduled; no performance or sector charts |
-| Document search and indexer (ADR-006, ADR-008) | Built; off until its settings exist | Search stack deployed, only if search is in the first release |
-| Question panel (ADR-009) | Built; off unless configured; admins only by default | Model route and instructions file, only if the panel is in the first release |
+| Portfolio | Built: holdings table from cache only; in the initial release | Refresh jobs exist but are not scheduled (A11); the empty-state sentence reads wrongly once the backend is connected; no performance or sector charts |
+| Document search and indexer (ADR-006, ADR-008) | Built; off until its settings exist; in the initial release | Search stack deployed (B5) |
+| Question panel (ADR-009) | Built; off unless configured; admins only by default; in the initial release for everyone | Search (B5), model route and instructions file (B6), a rate limit (A10), a check of the model-down message |
 | Image and CI | CI builds, smoke-tests, signs and pushes an image from `main` | No deployment definition lives in this repository |
 | Tests | Unit, integration and fuzz tests; coverage gate in CI | No resilience page tests, no browser tests, no accessibility checks |
 
@@ -40,8 +45,9 @@ where most remaining repository work sits.
 | --- | --- | --- |
 | M0: Dev environment and auth shell | Code done | Needs the proxy and identity provider wiring in homelab-infra and a real header check |
 | M1: Entities section live | Partly done | List and detail work; status labels missing; needs llc-manager connected |
-| M2: Documents section live | Code done | Needs llc-manager connected and the real-file checks below |
-| M3: Finances and Portfolio live | Finances code done; Portfolio deferred | Finances needs the collector delivering; Portfolio needs its backend |
+| M2: Documents section live | Code done | Needs llc-manager connected, the search stack (B5) and the real-file and real-search checks below |
+| M3: Finances and Portfolio live | Finances code done; Portfolio code done, jobs unscheduled | Finances needs the collector delivering; Portfolio needs its jobs scheduled (A11) and its backends connected (B7) |
+| M3a: Question panel live for everyone | Code done | Needs search (B5), the model route (B6), a rate limit (A10) and the panel checks below |
 | M4: Initial release available | Open | See the path below |
 | M5: Production-ready (two weeks unattended) | Open | Follows M4 |
 
@@ -49,21 +55,33 @@ where most remaining repository work sits.
 
 ## Initial release
 
-**Proposed scope, for the owner to confirm.** The initial release is the portal
+**Scope confirmed by the owner on 2026-11-03.** The initial release is the portal
 two tablet users can open at an address under `*.williamshome.family`, sign in
-to, and use without help for the four jobs they care about most:
+to, and use without help for the jobs they care about most:
 
-- Home with account totals and the most recent documents
-- Documents: find a document and open or download it
+- Home with account totals, the most recent documents and the question panel
+- Documents: find a document by folder, by name or by what it says, and open or
+  download it
 - Finances: account totals from delivered balances
+- Portfolio: holdings and crypto positions from their backends
 - Entities: list and detail
+- The question panel, available to every signed-in user (`CHAT_ENABLED_FOR=all`)
 
-Out of the initial release, shown as "Not connected yet" or left switched off:
+Two dependencies follow from this scope:
 
-- Portfolio holdings and performance (waits for its backend to serve data)
-- Crypto positions as a separate figure (same reason)
-- Document search and the question panel, unless the owner puts them in scope
-  (see decisions O1 and O2 below)
+- The question panel cannot work without document search: with search off, its
+  answer says so. B5 is therefore on the critical path for both.
+- Portfolio shows data only when `pp-security-master` and `xero_crypto` are
+  connected (B7) and their refresh jobs are scheduled (A11). If a backend is
+  down, the section shows its last cached figures with a "last updated" label,
+  never an error.
+
+Still outside the initial release:
+
+- Portfolio performance and sector charts
+- Net worth that includes home, vehicles and loans (the Finances page says what
+  is left out)
+- A change-from-last-month indicator
 
 ## Path to the initial release
 
@@ -74,18 +92,19 @@ Each item is one small pull request.
 | ID | Work | Why it matters |
 | --- | --- | --- |
 | A1 | Add `.env.example` listing every setting by name with its default | The README tells readers to copy it; the file does not exist |
-| A2 | Update the README: question panel, search and indexer settings, manual marks page, and the trusted proxy range (the README and the Dockerfile disagree) | A wrong proxy range misreads client addresses |
-| A3 | Fix documentation drift: document and holdings cadences in this roadmap and the tech spec, the old "family_office" documents row, and a Phase 0 docstring in the routes package | Plans that disagree with the code mislead the next reader |
-| A4 | Close the `py` entry in `docs/known-vulnerabilities.md`; the audit of the locked dependencies reports nothing | A stale entry past its reassessment date trips the release gate |
+| A2 | Update the README: question panel, search and indexer settings, manual marks page, and the trusted proxy range. The README example uses a narrower private range and leaves out the one-worker flag; the Dockerfile uses a broader private range with one worker and a comment to narrow it once the proxy network range is pinned. Make the two agree | A wrong proxy range misreads client addresses; a second worker runs every scheduled job twice |
+| A3 | Fix documentation drift: `docs/planning/tech-spec.md` still names a backend called `family_office` (lines 13, 99, 171, 189 and 411), but the code's four backends are llc-manager, pp-security-master, xero_crypto and data-ingestor, and documents come from llc-manager; also the stale "stubs at Phase 0" sentence in the docstring of `app/routes/__init__.py`. The refresh cadences for entities (4 hours) and documents (12 hours) already match the code; the docs say nothing about holdings and positions beyond their 4 hour staleness threshold, so state their 2 hour interval once A11 schedules them | Plans that disagree with the code mislead the next reader |
+| A4 | The `py` entry (PYSEC-2022-42969) in `docs/known-vulnerabilities.md` is overdue: first detected 2026-05-07, reassessment due 2026-07-06. `py` 1.11.0 is in the lock file only through `interrogate` (dev extra). Re-run the audit against the exported lock, then either remove the ignore in `pyproject.toml` and the entry if the advisory no longer reports, or reassess it with new dates and a tracked reference | A stale entry past its reassessment date trips the release gate |
 | A5 | Entity status labels: colour plus plain-English text, and "due within 60 days" | Phase 1 acceptance criterion; also needs the compliance fields from llc-manager (see B3) |
 | A6 | Resilience tests: each page renders with the cache stale or its backend returning 500, and shows the "last updated" label, never an error page | Phase 4 criterion; today only the refresh jobs are tested for this |
-| A7 | Tablet and accessibility checks in a browser: render every page at 1024x768, run an accessibility scan, and keep the result in CI | Phase 4 criterion; the layout has never been viewed at tablet size |
+| A7 | Browser checks with Playwright (dev-only dependency, decision O3): every page at 1024x768, the back button, readability with JavaScript off, and accessibility basics, kept in CI | Phase 4 criterion; the layout has never been viewed at tablet size |
 | A8 | Deployment runbook in `docs/`: required settings, one worker, timezone, secrets by name, backup and restore of the SQLite file (the daily balance history is not a cache), key rotation, how to read the admin refresh status | No operations document exists |
 | A9 | First release housekeeping: move `[Unreleased]` in the changelog under 0.1.0, tag, and confirm the image tag the deployment pins | Nothing is tagged yet |
-| A10 | Chat rate limiting (ADR-009 defers it) | Only if Viewers get the question panel |
+| A10 | Per-user rate limiting for the question panel (ADR-009 says to add one before enabling chat for a larger group). Also verify the behaviour when the model service is down: a plain-English message, no error page | Required: the panel is on for everyone (O2) |
+| A11 | Schedule `refresh_holdings` and `refresh_positions`: `app/scheduler.py` defines a 2 hour interval for both but leaves them out of `JOBS`. Fix the Portfolio empty-state sentence, which reads wrongly once the backend is connected | Required: Portfolio is in the release (O4) |
 
 A1 to A4 are small and independent; do them first. A7 adds a browser-test
-dependency, which is decision O3.
+dependency (decision O3). A10 and A11 are required by decisions O2 and O4.
 
 ### B. Work outside this repository
 
@@ -95,8 +114,9 @@ dependency, which is decision O3.
 | B2 | Deploy the image: SQLite volume, `DISPLAY_TIMEZONE`, the sign-in secret, the intake key, one worker, trusted proxy range, and a name under `*.williamshome.family` | homelab-infra |
 | B3 | llc-manager reachable from the portal with a URL and key; confirm the entity compliance fields and the document type strings it returns | llc-manager, homelab-infra |
 | B4 | The balance collector delivers directly to the portal on the internal network (a forward-auth route in front would refuse it); confirm each provider's delivery cadence against the 24-hour staleness threshold | collector service, homelab-infra |
-| B5 | Only if search is in scope: vector store, embedding service, chunk files, and the indexer command on a schedule | homelab-infra |
-| B6 | Only if the question panel is in scope: model route, instructions file path, `CHAT_ENABLED_FOR` | homelab-infra |
+| B5 | Search stack: vector store, embedding service, chunk files, the indexer command on a schedule, and the tax-law command, both run from the same image and kept off the web process (ADR-006). Required for search and for the question panel | homelab-infra |
+| B6 | Question panel: model route, the instructions file kept outside the repository, and `CHAT_ENABLED_FOR=all` | homelab-infra |
+| B7 | Connect pp-security-master and xero_crypto: base URLs and keys; confirm the endpoints and fields they serve match what the refresh jobs read | homelab-infra, pp-security-master, xero_crypto |
 
 ### C. Checks that fakes cannot prove
 
@@ -110,25 +130,32 @@ These need the deployed portal, real data or the real tablet.
 | C4 | The Finances total matches the source of truth to the cent, and migration 2 runs on the real database | Balance intake `#VERIFY` |
 | C5 | The page layout, the chart and the tables at 1024x768 on the tablet | Frontend conventions |
 | C6 | Both primary users find any document in under two minutes without help | Phase 4 success criterion |
+| C7 | Search: index one real document, then find it by what it says | Document search `#VERIFY` (ADR-008) |
+| C8 | Question panel: one real question answered with a source; an out-of-scope question is refused; with the model service stopped, a plain-English message appears and no error page | Question panel `#VERIFY` (ADR-009) |
+| C9 | Portfolio: the holdings and crypto figures match the source systems; a backend returning 500 shows the last figures with a "last updated" label | Portfolio data `#VERIFY` |
 
-### D. Decisions for the owner (O1 to O4)
+### D. Decisions (made 2026-11-03)
 
-| ID | Decision | Recommendation |
+| ID | Decision | Consequence |
 | --- | --- | --- |
-| O1 | Is document search in the initial release? | No. Ship name search and folders first; search needs the vector store and embedding service deployed (B5) |
-| O2 | Is the question panel in the initial release, and for whom? | Leave it off or admin-only until the model route exists and the panel has been tried on real documents |
-| O3 | Add a browser-test dependency (Playwright) for A7? | Yes, as a dev-only dependency; it is the only way to check the tablet layout in CI |
-| O4 | Is Portfolio out of the initial release? | Yes, shown as "Not connected yet" until its backend serves data |
+| O1 | Document search is in the initial release | B5 (vector store, embedding service, scheduled indexer, tax-law commands off the web process) is on the critical path; search is also a prerequisite of the question panel |
+| O2 | The question panel is in the initial release, for everyone (`CHAT_ENABLED_FOR=all`) | B5 and B6 (model route, instructions file outside the repository) are required; A10 (per-user rate limiting) becomes required; verify the behaviour when the model service is down |
+| O3 | Playwright is added as a dev-only dependency | A7 proceeds: tablet size 1024x768, back button, readability with JavaScript off, accessibility basics |
+| O4 | Portfolio is in the initial release | A11 (schedule the holdings and positions jobs, fix the empty-state sentence) and B7 (connect pp-security-master and xero_crypto) are required; pp-security-master stays alpha, so its 500 responses must show as stale data, never as errors |
 
 ### Suggested order
 
-1. A1 to A4 (small, no dependencies), and decisions O1 to O4.
+1. A1 to A4 (small, no dependencies).
 2. B1 to B3, then deploy (B2) with Documents, Entities and Home. This is the
    first point the primary users can open the portal.
 3. A5 to A9 while the first deployment runs; C1 to C3 as soon as it is up.
-4. B4 once the collector can deliver; then C4 and the Finances section is live.
-5. C5 and C6 on the tablet; tag 0.1.0 (A9). That is the initial release.
-6. Search (B5) and the question panel (B6, A10) afterwards, if scoped in.
+4. B5 (search stack) and B6 (model route), with A10 (rate limit) before the
+   panel is switched on for everyone; then C7 and C8.
+5. A11 and B7 (Portfolio); then C9.
+6. B4 once the collector can deliver; then C4 and the Finances section is live.
+7. C5 and C6 on the tablet; tag 0.1.0 (A9). That is the initial release.
+
+Steps 4 to 6 are independent of each other and can run in parallel.
 
 ---
 
@@ -253,12 +280,13 @@ detail pages. Documents are the highest-frequency use case for primary users
 
 ## Phase 3: Finances and Portfolio
 
-**Status: Finances built on delivered balances; Portfolio deferred.**
-Remaining: B4, C4 for Finances; the backend and a scheduled job for Portfolio.
+**Status: Finances built on delivered balances; Portfolio built, jobs not
+scheduled; both in the initial release.**
+Remaining: B4, C4 for Finances; A11, B7 and C9 for Portfolio.
 
 ### Objective
 
-Show a single account total and how it is made up, and later the investment
+Show a single account total and how it is made up, and the investment
 holdings. Balances arrive from a collector through the key-authenticated intake
 (ADR-003 and ADR-005 amendments of 2026-10-05); the portal never contacts the
 upstream commercial systems. Holdings come from `pp-security-master` (alpha) and
@@ -276,8 +304,9 @@ crypto positions from `xero_crypto`, both read through the refresh jobs.
 - [x] Manual marks page for admins
 - [x] Staleness label judged per provider (24 hours)
 - [x] `refresh_holdings` and `refresh_positions` functions, triggerable by an admin
-- [ ] Holdings and positions jobs on a schedule (when the backends serve data)
+- [ ] Holdings and positions jobs on a schedule (A11), with the backends connected (B7)
 - [ ] Portfolio performance chart with a market comparison and a sector chart
+  (not in the initial release)
 - [ ] Net worth that includes home, vehicles and loans (not planned for the first
   release; the page says what is left out)
 
@@ -286,6 +315,7 @@ crypto positions from `xero_crypto`, both read through the refresh jobs.
 - The Finances total matches the source of truth to the cent (C4)
 - Chart and tables are readable on the tablet at 1024x768 (C5)
 - Holdings show plain-English names, not ticker symbols (with the Portfolio work)
+- Portfolio figures match the source systems (C9)
 - `pp-security-master` returning 500 shows stale data with a timestamp, not an
   error (job tests exist; page tests are A6)
 
@@ -303,7 +333,7 @@ crypto positions from `xero_crypto`, both read through the refresh jobs.
 
 ## Phase 4: Resilience and polish
 
-**Status: barely started.** Remaining: A5 to A9, C5, C6.
+**Status: barely started.** Remaining: A5 to A11, C5 to C9.
 
 ### Objective
 
@@ -315,7 +345,8 @@ state, add browser tests, and prepare production deployment.
 - [ ] Degraded and empty states tested on every page (A6)
 - [ ] Tablet layout verified at 1024x768 landscape and 1366x768 (A7, C5)
 - [ ] Accessibility check, at least WCAG 2.1 AA, for all pages (A7)
-- [ ] Browser test suite covering all sections in nominal, stale and empty states (A7)
+- [ ] Browser test suite (Playwright, dev-only) covering all sections in nominal, stale and empty states, the back button and JavaScript-off readability (A7)
+- [ ] Question panel rate limit and model-down behaviour (A10)
 - [x] Test coverage gate in CI (80% overall)
 - [x] Admin refresh-status endpoint for all services
 - [x] Production image built, smoke-tested and signed in CI
@@ -334,12 +365,14 @@ state, add browser tests, and prepare production deployment.
 
 ## Phase 5: Ask
 
-**Status: first version built, off unless configured.**
+**Status: first version built, off unless configured; in the initial release for
+everyone.**
 
 A first version shipped as a question panel on the Home page, not a sixth
 section (ADR-009). It answers from the cached balances and the internal document
-search with a live chat model call, stores nothing, and is off for Viewers unless
-`CHAT_ENABLED_FOR` allows it. The sixth-section design stays a later option.
+search with a live chat model call and stores nothing. It is off for Viewers
+unless `CHAT_ENABLED_FOR` allows it; the initial release sets
+`CHAT_ENABLED_FOR=all`. The sixth-section design stays a later option.
 
 Design requirements kept for later work:
 
@@ -347,8 +380,8 @@ Design requirements kept for later work:
 - Source citations with every answer
 - No conversation history stored between sessions (privacy)
 
-Remaining: B5 and B6 to turn it on, A10 before Viewers use it, and the decisions
-O1 and O2.
+Remaining: B5 (search; without it the answer says search is off) and B6 to turn
+it on, A10 (rate limit) before it is enabled for everyone, and the checks in C8.
 
 ---
 
@@ -359,7 +392,9 @@ O1 and O2.
 | Deployment wiring (identity provider, proxy, trusted range) delays the first release | Medium | High | Do B1 and B2 first and check a real header (C1) before anything else |
 | The collector cannot reach the portal directly, because a forward-auth route is in front of it | Medium | High | Deliver on the internal network to the exact intake path (B4) |
 | `llc-manager` entity or document fields differ from what the pages expect | Medium | Medium | Confirm the fields and type strings (B3) before relying on A5 |
-| `pp-security-master` API unstable (alpha) | High | Low | Portfolio is outside the initial release; the cache absorbs failures as staleness |
+| `pp-security-master` API unstable (alpha) | High | Medium | Portfolio is in the initial release; the cache absorbs failures and the section shows stale data with a "last updated" label (A6 tests it) |
+| Question panel enabled for everyone before a rate limit exists | Medium | Medium | A10 is required before `CHAT_ENABLED_FOR=all` is set |
+| Search stack not deployed | Medium | High | B5 is on the critical path; without it search is off and the question panel cannot answer from documents |
 | PDF preview misbehaves in the tablet's browser | Medium | High | Test on the real tablet early (C2); download remains as the fallback |
 | The SQLite file is lost and the daily balance history with it | Low | High | Backup and restore in the runbook (A8); the file is not a cache |
 | Tablet layout problems that tests on a desktop never show | Medium | Medium | Browser checks at 1024x768 (A7) and a look on the tablet (C5) |
@@ -373,8 +408,18 @@ A feature is complete when:
 - [ ] Tests written and passing (Ruff, pytest)
 - [ ] Staleness and empty states handled (not just the happy path)
 - [ ] Template renders correctly at 1024x768 tablet viewport
+- [ ] Behaviour when a backend or the model service is down is a plain-English message or a stale label, never an error page
 - [ ] No linting errors (`ruff check` clean)
 - [ ] Merged to `main` with a conventional commit
+
+The initial release (M4) is done when:
+
+- [ ] Every item in A1 to A11 and B1 to B7 is finished
+- [ ] Checks C1 to C9 have passed on the deployed portal, with real data and the
+  real tablet
+- [ ] Both primary users can find a document, read the account total, see their
+  holdings and ask a question without help
+- [ ] `0.1.0` is tagged and the deployment pins that image tag (A9)
 
 ## Related documents
 
