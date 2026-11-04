@@ -678,6 +678,11 @@ Merge target: `main` via pull request after phase gate passes.
 **Timeline**: To be determined after Phase 4 release
 **Status**: Explicitly out of MVP scope.
 
+> **Superseded by [ADR-009](docs/architecture/adr/adr-009-chat-live-model-call.md)**:
+> Ask shipped as a question panel on Home, not a sixth section, and
+> `family_office` is not a backend of the portal. The text below is the original
+> plan, kept for the record.
+
 #### Description
 
 Adds a sixth top-level section backed by the `family_office` tax and estate law knowledge

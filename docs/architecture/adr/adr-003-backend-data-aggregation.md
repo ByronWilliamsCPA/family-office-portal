@@ -4,6 +4,7 @@
 > **Date**: 2026-05-06
 > **Amended**: 2026-09-30 (optional, keyed backend connections; see "Amendment 2026-09-30" below)
 > **Amended**: 2026-10-05 (balance intake writer; see "Amendment 2026-10-05" below)
+> **Amended**: 2026-11-04 (documents source and refresh cadences; see "Amendment 2026-11-04" below)
 > **Related**: [ADR-007](adr-007-live-document-file-proxy.md) records a bounded exception:
 > document preview and download stream the file from llc-manager per request;
 > [ADR-009](adr-009-chat-live-model-call.md) records another: the question panel
@@ -309,3 +310,44 @@ being fetched by it, so the portal cannot pull them on a schedule.
 - The "route handlers never write" rule now has this one named exception, which
   is covered by tests for authentication, atomicity and the per-provider
   behavior.
+
+## Amendment 2026-11-04: documents source and refresh cadences
+
+> **Status**: Accepted
+> **Amends**: the original text above and the 2026-09-30 amendment, which are
+> left intact for the record. Where they differ, this amendment takes
+> precedence.
+
+### What changed
+
+The original text listed `family_office` as the documents backend and set
+refresh cadences that the code never used. The code today:
+
+- Documents come from `llc-manager` (`GET /api/v1/documents`), as the
+  2026-09-30 amendment already states. `family_office` is not a backend of the
+  portal.
+- `data-ingestor` is an optional pair of settings, validated at startup. No
+  portal client calls it yet.
+- The refresh cadences are the `JOB_INTERVAL_HOURS` values in
+  `app/scheduler.py`. Each is shorter than the matching staleness threshold in
+  `app/cache.py`, so one missed run does not mark a section stale. Each job
+  also runs once at startup.
+
+| Job | Backend | Interval | Staleness threshold |
+| --- | --- | --- | --- |
+| `refresh_entities` | `llc-manager` | 4 hours | 8 hours |
+| `refresh_holdings` | `pp-security-master` | 2 hours | 4 hours |
+| `refresh_positions` | `xero_crypto` | 2 hours | 4 hours |
+| `refresh_documents` | `llc-manager` | 12 hours | 24 hours |
+
+All four jobs are scheduled. The earlier text gave `pp-security-master` one hour
+and documents an event-driven refresh; neither applies. Balances are not pulled
+at all: the intake of the 2026-10-05 amendment delivers them.
+
+### Consequences of the amendment
+
+- Plans and docs that quote a cadence quote this table or the code, not the
+  original text.
+- #ASSUME the staleness thresholds in `app/cache.py` are unchanged.
+  #VERIFY `STALENESS_HOURS` in `app/cache.py` still matches this table when a
+  cadence changes.

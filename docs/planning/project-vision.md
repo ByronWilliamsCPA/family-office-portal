@@ -84,8 +84,9 @@ graceful degradation when any backend is slow.
 
 ### Out of Scope
 
-- ❌ **Ask / Q&A feature**: deferred to a future phase; `family_office` backend exists
-  but NL interface is excluded from v1
+- ❌ **Ask / Q&A feature**: excluded from v1 as first scoped; superseded by
+  [ADR-009](../architecture/adr/adr-009-chat-live-model-call.md), which ships it as a
+  question panel on Home (`family_office` is not a backend of the portal)
 - ❌ **Direct connections to Kubera, Google Drive, or Portfolio Performance UI**: all data
   is served by backend services, not fetched by the portal directly
 - ❌ **Any write operations for primary users**: portal is read-only; no form submissions,
