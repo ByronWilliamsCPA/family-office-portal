@@ -218,8 +218,7 @@ exclude_lines = [
 # pip-audit
 # ---------------------------------------------------------------------------
 # Each entry paired with a dated entry in docs/known-vulnerabilities.md.
+# Empty on purpose: no accepted vulnerability is open.
 
 [tool.pip-audit]
-ignore-vuln = [
-    "PYSEC-2022-42969",   # py==1.11.0 ReDoS; transitive via interrogate; no fix available
-]
+ignore-vuln = []
