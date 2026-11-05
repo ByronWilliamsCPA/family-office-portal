@@ -51,7 +51,7 @@ housekeeping and the checks on the real tablet.
 | Home | Built: balances, trend, sources, coming up, recent documents, question panel | B3 (llc-manager connected); B4 (collector delivery) |
 | Documents | Built: folders, name search, inline preview, download through the file proxy (ADR-007), confidential documents hidden from Viewers | B3 (llc-manager connected); open a PDF in the tablet's browser; time a large file |
 | Finances | Built on delivered balances: totals, per owner, cash, 90-day trend, manual marks page for admins | Totals exclude home, vehicles and loans (stated on the page); real collector delivery |
-| Entities | List and detail built | Green, yellow and red status and "due within 60 days" labels |
+| Entities | List and detail built; the "Next date" column is blank for every entity today because llc-manager returns no `next_date` (verified in its schema, 2026-11-04) | Green, yellow and red status and "due within 60 days" labels, which need llc-manager backend work first (A5) |
 | Portfolio | Built: holdings table from cache only; refresh jobs scheduled every 2 hours; in the initial release | B7 (backends connected); C9; no performance or sector charts |
 | Document search and indexer (ADR-006, ADR-008) | Built; off until its settings exist; in the initial release | Search stack deployed (B5) |
 | Question panel (ADR-009) | Built; off unless configured; admins only by default; in the initial release for everyone; per-user rate limit and one question at a time (6 a minute, 60 an hour by default) | Search (B5), model route and instructions file (B6), the real check of the model-down message (C8) |
@@ -65,7 +65,7 @@ housekeeping and the checks on the real tablet.
 | M0: Dev environment and auth shell | Code done | Needs the proxy and identity provider wiring in homelab-infra and a real header check |
 | M1: Entities section live | Partly done | List and detail work; status labels missing; needs llc-manager connected |
 | M2: Documents section live | Code done | Needs llc-manager connected, the search stack (B5) and the real-file and real-search checks below |
-| M3: Finances and Portfolio live | Finances code done; Portfolio code done, jobs scheduled (A11, 2026-11-04) | Finances needs the collector delivering (B4); Portfolio needs its backends connected (B7) |
+| M3: Finances and Portfolio live | Finances code done; Portfolio code done, jobs scheduled (A11, 2026-11-04) | Finances needs the collector delivering (B4); Portfolio **at risk**: the two backends do not serve what the jobs call (B7, see "Findings of 2026-11-04") |
 | M3a: Question panel live for everyone | Code done, rate limit included (A10, 2026-11-04) | Needs search (B5), the model route (B6) and the panel checks below |
 | M4: Initial release available | Open | See the path below |
 | M5: Production-ready (two weeks unattended) | Open | Follows M4 |
@@ -82,7 +82,7 @@ to, and use without help for the jobs they care about most:
 - Documents: find a document by folder, by name or by what it says, and open or
   download it
 - Finances: account totals from delivered balances
-- Portfolio: holdings and crypto positions from their backends
+- Portfolio: holdings from their backend, on the Portfolio page; crypto positions appear in the Digital currency section of the Finances page
 - Entities: list and detail
 - The question panel, available to every signed-in user (`CHAT_ENABLED_FOR=all`)
 
@@ -92,8 +92,13 @@ Two dependencies follow from this scope:
   answer says so. B5 is therefore on the critical path for both.
 - Portfolio shows data only when `pp-security-master` and `xero_crypto` are
   connected (B7); the refresh jobs are scheduled (A11, done). If a backend is
-  down, the section shows its last cached figures with a "last updated" label,
-  never an error.
+  down after a successful refresh, the page shows its last cached figures with a
+  "last updated" label, never an error. If no refresh has ever succeeded, there
+  is no such label: the page shows "Not updated yet", or "Not connected yet"
+  when the backend URL is unset (verified in the templates). **Portfolio is at risk for the initial release (2026-11-04):**
+  read from source, `pp-security-master` serves no HTTP API and `xero_crypto`
+  serves no positions endpoint, so the jobs have nothing to call until the owner
+  chooses a way forward (see B7).
 
 Still outside the initial release:
 
@@ -114,7 +119,7 @@ Each item is one small pull request.
 | A2 | **Done (#72).** README covers the question panel, search and indexer settings and the manual marks page, and its proxy example now carries the one-worker flag and a placeholder for the proxy network range instead of a fixed narrower range. The Dockerfile still ships a broader private range with the note to narrow it once the proxy network range is pinned (B2) | A wrong proxy range misreads client addresses; a second worker runs every scheduled job twice |
 | A3 | **Done (#76 and #74).** The tech spec no longer names `family_office` (documents come from llc-manager; the four backends are llc-manager, pp-security-master, xero_crypto and data-ingestor), the stale "stubs at Phase 0" docstring is corrected, and the plan's cadences state the 2 hour interval for holdings and positions | Plans that disagree with the code mislead the next reader |
 | A4 | **Done (#73).** The advisory behind the `py` entry (PYSEC-2022-42969) was withdrawn, so the audit no longer reports it against the locked version. The ignore flags are removed from both security workflows and the entry in `docs/known-vulnerabilities.md` is marked resolved, so no overdue entry remains to trip the release gate | A stale entry past its reassessment date trips the release gate |
-| A5 | **Open, blocked on B3.** Entity status labels: colour plus plain-English text, and "due within 60 days" | Phase 1 acceptance criterion; also needs the compliance fields from llc-manager (see B3) |
+| A5 | **Open, blocked on llc-manager backend work (verified 2026-11-04).** Entity status labels: colour plus plain-English text, and "due within 60 days" | Phase 1 acceptance criterion. llc-manager's API serves no compliance fields: they exist only in its database models, with no route that returns them. See "Findings of 2026-11-04" for the fields available today and the ones A5 needs |
 | A6 | **Done (#75).** 45 page tests: each page renders with the cache stale or its backend returning 500 and shows the "last updated" label, never an error page | Phase 4 criterion |
 | A7 | **Done except two parts (#78).** Playwright is a dev-only extra. The suite (`-m e2e`, `tests/e2e/`) checks every page at 1024x768 (layout, text clipping, headings, labels, tap targets of 44 pixels, JavaScript-off readability, the back button, the two-click rule, axe-core accessibility), and 11 templates were raised to 44 pixel tap targets. Left: the CI job (`e2e.yml`) is not a required check, and 1366x768 and the real tablet are still checked by hand (C5) | Phase 4 criterion |
 | A8 | **Done (#79).** Deployment runbook at `docs/operations/runbook.md`: required settings, one worker, timezone, secrets by name, backup and restore of the SQLite file (the daily balance history is not a cache), scheduling the indexer, key rotation, how to read the admin refresh status. Written from the code and the Dockerfile; the backup, restore and scheduling examples have not been run on the real deployment (its "Not yet proven" list stays open) | The runbook is only as good as its first real run |
@@ -122,20 +127,20 @@ Each item is one small pull request.
 | A10 | **Done (#77).** Per-user rate limit for the question panel (`CHAT_RATE_LIMIT_PER_MINUTE` 6 and `CHAT_RATE_LIMIT_PER_HOUR` 60 by default) and one question in flight per user, recorded in ADR-009 ("Rate limiting" and "Accepted limits"). The model-down message is a plain sentence and is covered by tests; the check with the real service stopped stays in C8 | Required: the panel is on for everyone (O2) |
 | A11 | **Done (#74).** `refresh_holdings` and `refresh_positions` are in `JOBS` on a 2 hour interval, and the Portfolio empty-state sentence is fixed | Required: Portfolio is in the release (O4) |
 
-A1 to A4, A6, A7, A8, A10 and A11 are done. A5 waits for llc-manager (B3), and
-A9 comes last.
+A1 to A4, A6, A7, A8, A10 and A11 are done. A5 waits for llc-manager backend
+work (B3 and the findings below), and A9 comes last.
 
 ### B. Work outside this repository
 
 | ID | Work | Owner area |
 | --- | --- | --- |
-| B1 | Identity provider application, the `fo-admin` and `fo-viewer` groups, and the forward-auth route in front of the portal | homelab-infra |
-| B2 | Deploy the image: SQLite volume, `DISPLAY_TIMEZONE`, the sign-in secret, the intake key, one worker, trusted proxy range, and a name under `*.williamshome.family` | homelab-infra |
+| B1 | Identity provider application, the `fo-admin` and `fo-viewer` groups, and the forward-auth route in front of the portal. The definitions are already authored in the infrastructure repository (verified by reading it, 2026-11-04); what remains is mostly manual work by the owner on the live systems, which this repository cannot see | homelab-infra |
+| B2 | Deploy the image: SQLite volume, `DISPLAY_TIMEZONE`, the sign-in secret, the intake key, one worker, trusted proxy range, and a name under `*.williamshome.family`. The stack definition is already authored in the infrastructure repository and deployment status is not verified from this repository. Gaps found by reading it: the proxy network is created by hand with no pinned subnet and the portal stack passes a broad Docker private range as the trusted proxy range, so the range cannot be narrowed until the owner pins the subnet; the real portal hostname differs from the roadmap's example and needs owner confirmation | homelab-infra |
 | B3 | llc-manager reachable from the portal with a URL and key; confirm the entity compliance fields and the document type strings it returns | llc-manager, homelab-infra |
-| B4 | The balance collector delivers directly to the portal on the internal network (a forward-auth route in front would refuse it); confirm each provider's delivery cadence against the 24-hour staleness threshold | collector service, homelab-infra |
-| B5 | Search stack: vector store, embedding service, chunk files, the indexer command on a schedule, and the tax-law command, both run from the same image and kept off the web process (ADR-006). Required for search and for the question panel | homelab-infra |
-| B6 | Question panel: model route, the instructions file kept outside the repository, and `CHAT_ENABLED_FOR=all` | homelab-infra |
-| B7 | Connect pp-security-master and xero_crypto: base URLs and keys; confirm the endpoints and fields they serve match what the refresh jobs read | homelab-infra, pp-security-master, xero_crypto |
+| B4 | The balance collector delivers to the portal through a separate internal route that requires a client certificate and accepts only `POST` on the exact intake path, with no forward auth (verified by reading the infrastructure repository, 2026-11-04; see the ADR-005 amendment of that date). The collector stack and the route are authored; whether they are live is not verified, and what remains is mostly manual work by the owner. Confirm each provider's delivery cadence against the 24-hour staleness threshold (see the risk register) | collector service, homelab-infra |
+| B5 | Search stack: vector store, embedding service, chunk files, the indexer command on a schedule, and the tax-law command, both run from the same image and kept off the web process (ADR-006). Required for search and for the question panel. The definitions are authored in the infrastructure repository; deployment status is not verified from here. Gaps found: the vector store is off by default (its replica count defaults to zero until the owner sets it); the scheduled jobs run from a sidecar loop with a daily time and a trigger file, not from cron (see the runbook); and nothing yet writes the chunk sets: the data-ingestor stack that would is authored, but its own README says no image is published yet | homelab-infra, data_ingestor |
+| B6 | Question panel: model route, the instructions file kept outside the repository, and `CHAT_ENABLED_FOR=all`. The model route and the portal wiring are authored in the infrastructure repository; whether the route is live is not verified from here, and what remains is mostly manual work by the owner | homelab-infra |
+| B7 | **Blocked, owner decision needed (verified in code, 2026-11-04).** pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint, so the holdings and positions refresh jobs have nothing to call. Holdings render on the Portfolio page and crypto positions in the Digital currency section of the Finances page (verified in the routes and templates), so no route or template work is needed. Base URLs and keys alone will not fix this. Two ways forward are listed under "Findings of 2026-11-04"; neither is chosen | owner, pp-security-master, xero_crypto |
 
 ### C. Checks that fakes cannot prove
 
@@ -151,7 +156,8 @@ These need the deployed portal, real data or the real tablet.
 | C6 | Both primary users find any document in under two minutes without help | Phase 4 success criterion |
 | C7 | Search: index one real document, then find it by what it says | Document search `#VERIFY` (ADR-008) |
 | C8 | Question panel: one real question answered with a source; an out-of-scope question is refused; with the model service stopped, a plain-English message appears and no error page | Question panel `#VERIFY` (ADR-009) |
-| C9 | Portfolio: the holdings and crypto figures match the source systems; a backend returning 500 shows the last figures with a "last updated" label | Portfolio data `#VERIFY` |
+| C9 | The holdings figures on the Portfolio page and the crypto figures in the Digital currency section of the Finances page match the source systems; a backend returning 500 after a successful refresh shows the last figures with a "last updated" label (with no successful refresh yet the page says "Not updated yet" instead; cannot start until B7 is unblocked) | Portfolio data `#VERIFY` |
+| C10 | Entities and Home: confirm that individual and household entries do not appear on the Entities list or in Home's "coming up" list. llc-manager's entity types include both kinds (verified), and the portal applies no entity-type filter to those two pages (verified); whether llc-manager's list returns them is not verified | Entity cache `#VERIFY` |
 
 ### D. Decisions (made 2026-11-03)
 
@@ -160,7 +166,48 @@ These need the deployed portal, real data or the real tablet.
 | O1 | Document search is in the initial release | B5 (vector store, embedding service, scheduled indexer, tax-law commands off the web process) is on the critical path; search is also a prerequisite of the question panel |
 | O2 | The question panel is in the initial release, for everyone (`CHAT_ENABLED_FOR=all`) | B5 and B6 (model route, instructions file outside the repository) are required; A10 (per-user rate limiting) becomes required; verify the behaviour when the model service is down |
 | O3 | Playwright is added as a dev-only dependency | A7 proceeds: tablet size 1024x768, back button, readability with JavaScript off, accessibility basics |
-| O4 | Portfolio is in the initial release | A11 (schedule the holdings and positions jobs, fix the empty-state sentence) and B7 (connect pp-security-master and xero_crypto) are required; pp-security-master stays alpha, so its 500 responses must show as stale data, never as errors |
+| O4 | Portfolio is in the initial release | A11 (schedule the holdings and positions jobs, fix the empty-state sentence) and B7 (connect pp-security-master and xero_crypto) are required; pp-security-master stays alpha, so its 500 responses must show as stale data, never as errors. **Update 2026-11-04:** B7 is blocked because the backends do not serve what the jobs call; Portfolio in the initial release is at risk until the owner chooses a way forward |
+
+### Findings of 2026-11-04 (backends and infrastructure)
+
+Two read-only investigations compared this repository with the backend
+repositories and with the infrastructure repository. "Verified in code" means
+read at the named source; "not verified against a running system" means nothing
+was contacted. The backend heads read were the latest fetched on 2026-11-04.
+
+**llc-manager entities (A5).** Verified in code. The entity list returns identity
+and formation data: legal name, entity type, formation state, formation date,
+active flag, addresses, bank account references and similar. It returns no
+compliance fields. They exist only in database models that no route serves:
+registrations (annual report due date, next renewal date, expiration date, good
+standing flag, status), tax filings (due date, extended due date, filed date,
+status) and registered agents. A5 needs a due date and a status per entity, so
+llc-manager needs backend work first (a read-only compliance endpoint, or
+computed fields on the entity). The status vocabulary the portal expects
+(`current`, `due_soon`, `overdue`) has to be agreed with llc-manager's owner.
+Deriving "due soon" in the portal from document dates is not an option: formation
+document dates are not due dates. Until then the entity "Next date" column is blank
+for every entity, and Home's "coming up" list is empty, because llc-manager returns
+no `next_date`.
+
+**Portfolio (B7, O4).** Verified in code. The holdings job calls
+`/api/v1/portfolio/summary` on pp-security-master, which has no HTTP service at
+its current head. The positions job calls `/api/v1/positions` on xero_crypto,
+which has no such route (its routes sit under a different prefix) and no
+`X-API-Key` scheme. Options for the owner, not chosen here:
+
+1. Add the endpoints to the backends (and the key scheme to xero_crypto), then
+   keep the jobs as they are.
+2. Feed Portfolio some other way, for example through the balance collector, and
+   change this repository's jobs to match.
+
+**Deployment (B1, B2, B4, B5, B6).** The infrastructure repository already holds
+the definitions for the portal stack, the identity application, the collector,
+the model route and the intake route. Not verified against a running system:
+that any of it is deployed or live. Remaining work is mostly manual steps by the
+owner on the live systems (creating networks and host directories, setting
+variables, copying configuration files, creating users). Gaps are listed in B2
+and B5 above.
 
 ### Suggested order
 
@@ -309,7 +356,7 @@ Show a single account total and how it is made up, and the investment
 holdings. Balances arrive from a collector through the key-authenticated intake
 (ADR-003 and ADR-005 amendments of 2026-10-05); the portal never contacts the
 upstream commercial systems. Holdings come from `pp-security-master` (alpha) and
-crypto positions from `xero_crypto`, both read through the refresh jobs.
+crypto positions from `xero_crypto` (shown in the Finances page's Digital currency section), both read through the refresh jobs.
 
 **Alpha risk**: `pp-security-master` may have API instability. The cache layer
 (ADR-003) means instability shows as stale data, not user-visible errors.
@@ -335,7 +382,7 @@ crypto positions from `xero_crypto`, both read through the refresh jobs.
 - The Finances total matches the source of truth to the cent (C4)
 - Chart and tables are readable on the tablet at 1024x768 (C5)
 - Holdings show plain-English names, not ticker symbols (with the Portfolio work)
-- Portfolio figures match the source systems (C9)
+- Holdings (Portfolio page) and crypto positions (Finances page) match the source systems (C9)
 - `pp-security-master` returning 500 shows stale data with a timestamp, not an
   error (job tests and page tests exist)
 
@@ -412,7 +459,9 @@ says search is off) and B6 to turn it on, and the checks in C8.
 | Deployment wiring (identity provider, proxy, trusted range) delays the first release | Medium | High | Do B1 and B2 first and check a real header (C1) before anything else |
 | The collector cannot reach the portal directly, because a forward-auth route is in front of it | Medium | High | Deliver on the internal network to the exact intake path (B4) |
 | `llc-manager` entity or document fields differ from what the pages expect | Medium | Medium | Confirm the fields and type strings (B3) before relying on A5 |
-| `pp-security-master` API unstable (alpha) | High | Medium | Portfolio is in the initial release; the cache absorbs failures and the section shows stale data with a "last updated" label (A6 tests it, #75) |
+| `pp-security-master` API unstable (alpha) | High | Medium | Portfolio is in the initial release; the cache absorbs failures and a previously populated section shows stale data with a "last updated" label (A6 tests it, #75). Superseded in part by the next row |
+| Portfolio has no data source: pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint (verified in code, 2026-11-04) | High | High | The owner chooses a way forward (B7). Until then no refresh has succeeded, so the Portfolio page and the Digital currency section show no figures, with "Not updated yet" (or "Not connected yet" when the backend URL is unset) and no "last updated" label, never an error page |
+| The 24-hour balances staleness threshold has no margin against a daily collector: freshness is the oldest delivery among providers, so one provider that is late turns the whole Finances section stale (verified in the cache code; collector cadence from its documentation and stack defaults) | Medium | Medium | Owner option: raise the threshold (for example to 36 or 48 hours), or run the collector twice a day. Not decided |
 | Question panel enabled for everyone before a rate limit exists | Low | Medium | Mitigated: the per-user limit and one question at a time are in code (A10, #77). The limiter is in memory, so it assumes one worker, which the Dockerfile sets |
 | Search stack not deployed | Medium | High | B5 is on the critical path; without it search is off and the question panel cannot answer from documents |
 | PDF preview misbehaves in the tablet's browser | Medium | High | Test on the real tablet early (C2); download remains as the fallback |
