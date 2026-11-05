@@ -201,6 +201,25 @@ shared lock file serves both, so even a slow run cannot overlap the next one.
 `CHUNKS_DIR` should be a read-only mount. With the settings unset the commands log
 `indexer_not_connected` or `tax_law_not_connected` and exit 2.
 
+### How the infrastructure repository runs them (2026-11-04)
+
+The deployment definitions in the infrastructure repository do not use cron or a
+systemd timer for these two commands. Verified by reading its portal stack
+definition (not verified against a running system): a sidecar container started
+from the same portal image runs a small loop. Once a day at the time in
+`RETRIEVAL_JOBS_DAILY_AT` (24-hour `HH:MM`, UTC; empty means no scheduled run) it
+runs the indexer and then the tax-law command, one at a time under a lock, and
+each job is stopped after `RETRIEVAL_JOB_TIMEOUT_SECONDS`. A run can also be
+started by creating a trigger file inside the sidecar container; the loop picks
+the file up when it is idle or when the current cycle ends, so a manual run never
+overlaps a scheduled one. The sidecar reports a failed cycle by turning unhealthy,
+not by restarting, so watch its health status or its log.
+
+Do not start the two commands by hand with `docker exec` while the sidecar is
+running: that bypasses its lock. The cron and timer recipes below apply to a
+deployment that does not use the sidecar. The portal-side commands and exit codes
+above are the same either way.
+
 ### Cron
 
 `flock -n -E 99` skips a run when another holds the lock and exits 99, which cannot
@@ -314,10 +333,13 @@ read `/admin/refresh-status` again to see the result.
 
 ## Balance intake
 
-A collector on the internal network delivers account balances to
-`POST /api/v1/balances`. This is the only route that is not behind a signed-in
-identity; the proxy's forward auth must not sit in front of it, and no public route
-should forward to it.
+A collector delivers account balances to `POST /api/v1/balances`. This is the only
+route that is not behind a signed-in identity; the proxy's forward auth must not sit
+in front of it, and no public route should forward to it. In the infrastructure
+repository's definitions (verified by reading them, not against a running system)
+the collector reaches the portal through a separate internal Traefik route that
+requires a client certificate and accepts only `POST` on that exact path, not
+directly on a Docker network; see the 2026-11-04 amendment in ADR-005.
 
 - **Authentication**: the header `X-API-Key` must equal `BALANCE_INTAKE_API_KEY`,
   compared in constant time before the body is read. The setting must be at least 32
@@ -342,6 +364,10 @@ should forward to it.
   never deleted.
 - **Checking a delivery landed**: read `/admin/refresh-status` and look at the
   `balances` entry, or open Finances and read the "as of" dates.
+- **Setting names differ**: the portal calls the intake key `BALANCE_INTAKE_API_KEY`;
+  the collector stack in the infrastructure repository calls the same value
+  `PORTAL_ADMIN_API_KEY`. The two must hold the same value (verified by name in the
+  stack definition; the values are never written down here).
 
 In your own commands and notes, write the key as `<intake-key>`. To rotate it, see
 "Secrets".
@@ -506,5 +532,7 @@ These can be confirmed only on the real deployment:
 - That the Finances totals match the source system to the cent.
 - The collector's real payload against the intake's validation.
 - That the backends accept one call per restart and honour their key checks.
-- That no public route forwards `/api/v1/balances`.
+- That no public route forwards `/api/v1/balances`, and that the internal intake route
+  refuses a caller without a client certificate (ADR-005, 2026-11-04 amendment).
+- That the sidecar loop runs the indexer and tax-law commands at the configured time.
 - The narrowed `--forwarded-allow-ips` value working with the pinned proxy network.

@@ -5,6 +5,7 @@
 > **Supersedes**: [ADR-002](adr-002-authentication-cloudflare-zero-trust.md)
 > **Amended**: 2026-09-29 (HS256 forward-auth token; see "Amendment 2026-09-29" below)
 > **Amended**: 2026-10-05 (balance intake key; see "Amendment 2026-10-05" below)
+> **Amended**: 2026-11-04 (balance intake path; see "Amendment 2026-11-04" below)
 
 ## TL;DR
 
@@ -131,7 +132,8 @@ it is configured from this repository.
 
 > Contract item 3: superseded by the 2026-09-29 amendment below. Contract
 > items 1 and 12: amended for the balance intake route by the 2026-10-05
-> amendment below.
+> amendment below, and again by the 2026-11-04 amendment, which says how the
+> collector reaches that route.
 
 Contract item 13 is a requirement on homelab-infra, not an infrastructure
 design. A provider shared across applications issues every application behind
@@ -544,3 +546,74 @@ that token. A third class is added.
   homelab-infra that no public route forwards `/api/v1/balances` to the
   portal, that the collector reaches the portal on the internal network
   only, and which containers share that network.
+
+## Amendment 2026-11-04: the balance intake arrives through an internal mutual-TLS route
+
+> **Status**: Accepted
+> **Amends**: contract items 1 and 12 as restated by the 2026-10-05 amendment,
+> and the `#VERIFY` that closes that amendment. The earlier text is left intact
+> for the record. Where they differ, this amendment takes precedence for the
+> collector's network path. The key check, the exact method and path exemption
+> and the disabled-when-unset behaviour are unchanged.
+
+### What changed
+
+The 2026-10-05 amendment said that no Traefik route publishes
+`/api/v1/balances` and that the collector calls the portal directly on its
+internal Docker network. The infrastructure repository implements a different
+mechanism. Verified by reading its Traefik file-provider configuration and its
+collector stack definition (not verified against a running system):
+
+- A dedicated Traefik router serves the balance intake on its own internal
+  hostname, separate from the portal's public hostname. Its rule matches that
+  host, the exact path `/api/v1/balances` and the method `POST` only, so every
+  other path or method on that host is answered by Traefik with a 404.
+- The router sits on Traefik's internal entrypoint with a TLS option that
+  requires a client certificate (mutual TLS). The collector presents a
+  certificate issued by the internal certificate authority.
+- The router has no forward auth. It empties every identity header the portal
+  could read, so a caller cannot supply one, and it applies a strict rate
+  limit. The portal's own `X-API-Key` check, unchanged, authorizes the
+  delivery.
+- The collector's stack attaches only to its own egress network and shares no
+  network with the portal. It posts to an https address on that internal
+  entrypoint, not to the portal container.
+- The portal's public router still passes every request through the forward-auth
+  chain.
+
+### Contract items restated
+
+| # | Contract item, as amended | Portal setting or check |
+| --- | --- | --- |
+| 1 | Every request for the portal's public hostname that arrives through Traefik passes forward auth to the Authentik outpost. The one exception is `POST /api/v1/balances`, which reaches the portal only through a separate internal route that requires a client certificate and pins the exact path and method | Portal returns 403 to anything without a valid token, except `POST /api/v1/balances`, which answers 401 or 404 by its own key check |
+| 12 | The portal publishes no host port. It is reachable only through Traefik, over the dedicated proxy network that Traefik and the portal alone share. The balance intake is no longer reachable from other containers by design; the collector is not on that network | Deployment |
+
+### Consequences of the amendment
+
+- Transport from the collector to Traefik is mutually authenticated and
+  encrypted. The hop from Traefik to the portal is plain HTTP on the dedicated
+  proxy network, so the intake key still travels unencrypted on that last hop.
+  `#ASSUME` no other container is attached to that network and able to read its
+  traffic. The network's membership is a deployment property, not something this
+  repository can check.
+- The portal's intake key is still the only credential the portal itself
+  checks. The client certificate is checked by Traefik, not by the portal, so a
+  misconfigured TLS option would leave only the key. The infrastructure
+  repository's own notes mark the TLS option as `#CRITICAL`.
+- The route is added by copying a file by hand into Traefik's live
+  configuration directory, so a merged change in the infrastructure repository
+  does not by itself change the running system, and a running system may differ
+  from the definitions.
+
+### Open verification
+
+`#VERIFY` on the running system, none of which has been done:
+
+1. A request to the intake host without a client certificate fails the TLS
+   handshake (no HTTP status is returned).
+2. With a valid client certificate, any path other than `/api/v1/balances` and
+   any method other than `POST` is answered with 404 by Traefik.
+3. The portal's public hostname refuses `/api/v1/balances` without a signed-in
+   session (forward auth), and no other route forwards that path to the portal.
+4. Which containers are attached to the proxy network that Traefik and the
+   portal share (the `#ASSUME` above).
