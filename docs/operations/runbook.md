@@ -2,8 +2,12 @@
 
 > **Status**: Active | **Audience**: the technical owner who runs the portal alone
 >
-> Everything here was checked against the code in this repository. Settings are
-> named, never valued. Placeholders such as `<portal-container>` and
+> Evidence comes at three levels, and the text says which one applies where. (1)
+> Checked against the portal code in this repository: most of this document.
+> (2) Checked against the infrastructure repository's deployment definitions, by
+> reading its files: the sidecar scheduling and the balance intake route, which
+> are marked as such. (3) Not verified against a live deployment: everything in
+> "Not yet proven" at the end. Settings are named, never valued. Placeholders such as `<portal-container>` and
 > `<proxy-network-cidr>` stand for values that belong to your deployment.
 > Anything that can only be confirmed on the real deployment is listed at the end
 > under "Not yet proven".
@@ -333,9 +337,9 @@ read `/admin/refresh-status` again to see the result.
 
 ## Balance intake
 
-A collector delivers account balances to `POST /api/v1/balances`. This is the only
-route that is not behind a signed-in identity; the proxy's forward auth must not sit
-in front of it, and no public route should forward to it. In the infrastructure
+A collector delivers account balances to `POST /api/v1/balances`. Apart from
+`/health` and `/static/` (public, per ADR-005), it is the only route that is not
+behind a signed-in identity; the proxy's forward auth must not sit in front of it, and no public route should forward to it. In the infrastructure
 repository's definitions (verified by reading them, not against a running system)
 the collector reaches the portal through a separate internal Traefik route that
 requires a client certificate and accepts only `POST` on that exact path, not

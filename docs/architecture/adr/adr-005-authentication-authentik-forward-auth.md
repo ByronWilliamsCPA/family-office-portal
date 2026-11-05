@@ -10,7 +10,10 @@
 ## TL;DR
 
 Authentik authenticates every request before it reaches the portal, through a
-Traefik forward-auth middleware in front of the portal. The portal validates
+Traefik forward-auth middleware in front of the portal, with one exception:
+`POST /api/v1/balances` arrives through a separate internal mutual-TLS route
+with no forward auth and relies on that client certificate plus the portal's
+`X-API-Key` check (see the 2026-10-05 and 2026-11-04 amendments). The portal validates
 the signed `X-authentik-jwt` header on every non-public request and maps the
 token's Authentik groups to its two roles. The portal holds no passwords,
 sessions, cookies, or OAuth flows. Everything on the Authentik and Traefik side

@@ -82,7 +82,7 @@ to, and use without help for the jobs they care about most:
 - Documents: find a document by folder, by name or by what it says, and open or
   download it
 - Finances: account totals from delivered balances
-- Portfolio: holdings and crypto positions from their backends
+- Portfolio: holdings from their backend, on the Portfolio page; crypto positions appear in the Digital currency section of the Finances page
 - Entities: list and detail
 - The question panel, available to every signed-in user (`CHAT_ENABLED_FOR=all`)
 
@@ -92,8 +92,10 @@ Two dependencies follow from this scope:
   answer says so. B5 is therefore on the critical path for both.
 - Portfolio shows data only when `pp-security-master` and `xero_crypto` are
   connected (B7); the refresh jobs are scheduled (A11, done). If a backend is
-  down, the section shows its last cached figures with a "last updated" label,
-  never an error. **Portfolio is at risk for the initial release (2026-11-04):**
+  down after a successful refresh, the page shows its last cached figures with a
+  "last updated" label, never an error. If no refresh has ever succeeded, there
+  is no such label: the page shows "Not updated yet", or "Not connected yet"
+  when the backend URL is unset (verified in the templates). **Portfolio is at risk for the initial release (2026-11-04):**
   read from source, `pp-security-master` serves no HTTP API and `xero_crypto`
   serves no positions endpoint, so the jobs have nothing to call until the owner
   chooses a way forward (see B7).
@@ -138,7 +140,7 @@ work (B3 and the findings below), and A9 comes last.
 | B4 | The balance collector delivers to the portal through a separate internal route that requires a client certificate and accepts only `POST` on the exact intake path, with no forward auth (verified by reading the infrastructure repository, 2026-11-04; see the ADR-005 amendment of that date). The collector stack and the route are authored; whether they are live is not verified, and what remains is mostly manual work by the owner. Confirm each provider's delivery cadence against the 24-hour staleness threshold (see the risk register) | collector service, homelab-infra |
 | B5 | Search stack: vector store, embedding service, chunk files, the indexer command on a schedule, and the tax-law command, both run from the same image and kept off the web process (ADR-006). Required for search and for the question panel. The definitions are authored in the infrastructure repository; deployment status is not verified from here. Gaps found: the vector store is off by default (its replica count defaults to zero until the owner sets it); the scheduled jobs run from a sidecar loop with a daily time and a trigger file, not from cron (see the runbook); and nothing yet writes the chunk sets: the data-ingestor stack that would is authored, but its own README says no image is published yet | homelab-infra, data_ingestor |
 | B6 | Question panel: model route, the instructions file kept outside the repository, and `CHAT_ENABLED_FOR=all`. The model route and the portal wiring are authored in the infrastructure repository; whether the route is live is not verified from here, and what remains is mostly manual work by the owner | homelab-infra |
-| B7 | **Blocked, owner decision needed (verified in code, 2026-11-04).** pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint, so the Portfolio refresh jobs have nothing to call. Base URLs and keys alone will not fix this. Two ways forward are listed under "Findings of 2026-11-04"; neither is chosen | owner, pp-security-master, xero_crypto |
+| B7 | **Blocked, owner decision needed (verified in code, 2026-11-04).** pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint, so the holdings and positions refresh jobs have nothing to call. Holdings render on the Portfolio page and crypto positions in the Digital currency section of the Finances page (verified in the routes and templates), so no route or template work is needed. Base URLs and keys alone will not fix this. Two ways forward are listed under "Findings of 2026-11-04"; neither is chosen | owner, pp-security-master, xero_crypto |
 
 ### C. Checks that fakes cannot prove
 
@@ -154,7 +156,7 @@ These need the deployed portal, real data or the real tablet.
 | C6 | Both primary users find any document in under two minutes without help | Phase 4 success criterion |
 | C7 | Search: index one real document, then find it by what it says | Document search `#VERIFY` (ADR-008) |
 | C8 | Question panel: one real question answered with a source; an out-of-scope question is refused; with the model service stopped, a plain-English message appears and no error page | Question panel `#VERIFY` (ADR-009) |
-| C9 | Portfolio: the holdings and crypto figures match the source systems; a backend returning 500 shows the last figures with a "last updated" label (cannot start until B7 is unblocked) | Portfolio data `#VERIFY` |
+| C9 | The holdings figures on the Portfolio page and the crypto figures in the Digital currency section of the Finances page match the source systems; a backend returning 500 after a successful refresh shows the last figures with a "last updated" label (with no successful refresh yet the page says "Not updated yet" instead; cannot start until B7 is unblocked) | Portfolio data `#VERIFY` |
 | C10 | Entities and Home: confirm that individual and household entries do not appear on the Entities list or in Home's "coming up" list. llc-manager's entity types include both kinds (verified), and the portal applies no entity-type filter to those two pages (verified); whether llc-manager's list returns them is not verified | Entity cache `#VERIFY` |
 
 ### D. Decisions (made 2026-11-03)
@@ -354,7 +356,7 @@ Show a single account total and how it is made up, and the investment
 holdings. Balances arrive from a collector through the key-authenticated intake
 (ADR-003 and ADR-005 amendments of 2026-10-05); the portal never contacts the
 upstream commercial systems. Holdings come from `pp-security-master` (alpha) and
-crypto positions from `xero_crypto`, both read through the refresh jobs.
+crypto positions from `xero_crypto` (shown in the Finances page's Digital currency section), both read through the refresh jobs.
 
 **Alpha risk**: `pp-security-master` may have API instability. The cache layer
 (ADR-003) means instability shows as stale data, not user-visible errors.
@@ -380,7 +382,7 @@ crypto positions from `xero_crypto`, both read through the refresh jobs.
 - The Finances total matches the source of truth to the cent (C4)
 - Chart and tables are readable on the tablet at 1024x768 (C5)
 - Holdings show plain-English names, not ticker symbols (with the Portfolio work)
-- Portfolio figures match the source systems (C9)
+- Holdings (Portfolio page) and crypto positions (Finances page) match the source systems (C9)
 - `pp-security-master` returning 500 shows stale data with a timestamp, not an
   error (job tests and page tests exist)
 
@@ -457,8 +459,8 @@ says search is off) and B6 to turn it on, and the checks in C8.
 | Deployment wiring (identity provider, proxy, trusted range) delays the first release | Medium | High | Do B1 and B2 first and check a real header (C1) before anything else |
 | The collector cannot reach the portal directly, because a forward-auth route is in front of it | Medium | High | Deliver on the internal network to the exact intake path (B4) |
 | `llc-manager` entity or document fields differ from what the pages expect | Medium | Medium | Confirm the fields and type strings (B3) before relying on A5 |
-| `pp-security-master` API unstable (alpha) | High | Medium | Portfolio is in the initial release; the cache absorbs failures and the section shows stale data with a "last updated" label (A6 tests it, #75). Superseded in part by the next row |
-| Portfolio has no data source: pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint (verified in code, 2026-11-04) | High | High | The owner chooses a way forward (B7). Until then the section shows no figures; it still falls back to a "last updated" label rather than an error |
+| `pp-security-master` API unstable (alpha) | High | Medium | Portfolio is in the initial release; the cache absorbs failures and a previously populated section shows stale data with a "last updated" label (A6 tests it, #75). Superseded in part by the next row |
+| Portfolio has no data source: pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint (verified in code, 2026-11-04) | High | High | The owner chooses a way forward (B7). Until then no refresh has succeeded, so the Portfolio page and the Digital currency section show no figures, with "Not updated yet" (or "Not connected yet" when the backend URL is unset) and no "last updated" label, never an error page |
 | The 24-hour balances staleness threshold has no margin against a daily collector: freshness is the oldest delivery among providers, so one provider that is late turns the whole Finances section stale (verified in the cache code; collector cadence from its documentation and stack defaults) | Medium | Medium | Owner option: raise the threshold (for example to 36 or 48 hours), or run the collector twice a day. Not decided |
 | Question panel enabled for everyone before a rate limit exists | Low | Medium | Mitigated: the per-user limit and one question at a time are in code (A10, #77). The limiter is in memory, so it assumes one worker, which the Dockerfile sets |
 | Search stack not deployed | Medium | High | B5 is on the critical path; without it search is off and the question panel cannot answer from documents |
