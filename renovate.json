@@ -54,7 +54,9 @@
       ]
     }
   ],
+  "commitMessageAction": "update",
   "lockFileMaintenance": {
+    "commitMessageAction": "update",
     "commitMessageTopic": "Python dependency lock file"
   },
   "prConcurrentLimit": 5,
