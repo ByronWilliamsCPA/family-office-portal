@@ -387,12 +387,14 @@ async def test_portfolio_accounts_are_non_cash_usd_largest_first(
         )
         _balance(conn, "xero:e", 999_999_999, category="Cash", name="Example Bank")
         _balance(conn, "pp:f", 9_999_999, category="Investments", currency="EUR")
+        _balance(conn, "pp:g", -50_000, category="Alternatives", name="Example Loan")
     accounts = await cache.get_portfolio_accounts()
     assert [(a.name, a.category, a.value) for a in accounts] == [
         ("Example IRA", "Retirement", Decimal("9000.00")),
         ("Example Land", "Alternatives", Decimal("5000.00")),
         ("Example Coin", "Digital currency", Decimal("3000.00")),
         ("Example Fund", "Investments", Decimal("1000.00")),
+        ("Example Loan", "Alternatives", Decimal("-500.00")),
     ]
 
 
@@ -412,6 +414,29 @@ async def test_portfolio_accounts_break_ties_by_name_and_carry_as_of(
         ("Alpha", "2026-09-02"),
         ("Beta", "2026-09-01"),
     ]
+
+
+async def test_portfolio_accounts_carry_their_own_fetch_time(db_path: Path) -> None:
+    """Each account carries when its provider last delivered it."""
+    old = NOW - timedelta(hours=60)
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 5, category="Investments", fetched_at=old.isoformat())
+        _balance(conn, "xero:b", 1, category="Cash", fetched_at=NOW.isoformat())
+    accounts = await cache.get_portfolio_accounts()
+    assert [a.fetched_at for a in accounts] == [old]
+
+
+async def test_non_usd_portfolio_accounts_are_counted_not_listed(
+    db_path: Path,
+) -> None:
+    """Only non-USD rows in portfolio categories count; cash and USD do not."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 5, category="Investments", currency="EUR")
+        _balance(conn, "pp:b", 5, category="Retirement", currency="GBP")
+        _balance(conn, "xero:c", 5, category="Cash", currency="EUR")
+        _balance(conn, "pp:d", 5, category="Investments")
+    assert await cache.count_non_usd_portfolio_accounts() == 2
+    assert [a.name for a in await cache.get_portfolio_accounts()] == ["Example Account"]
 
 
 async def test_portfolio_accounts_empty_when_nothing_cached(db_path: Path) -> None:

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 OWNER = "11111111-2222-4333-8444-555555555555"
 EMPTY_ACCOUNTS = "Your investment accounts will appear here after the next update."
+NONE_REPORTED = "No investment accounts have been reported yet."
 NOT_CONNECTED = "Not connected yet"
 OUT_OF_DATE = "This may be out of date."
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -78,6 +79,11 @@ def _seed_balances(
                 for a in accounts or ACCOUNTS
             ],
         )
+
+
+def _now() -> str:
+    """Return the current UTC time as ISO text, for a fresh fetch stamp."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _seed_holding(path: Path, fetched_at: datetime) -> None:
@@ -231,22 +237,151 @@ async def test_no_balances_shows_a_friendly_empty_state(client: AsyncClient) -> 
 
 
 @pytest.mark.usefixtures("no_backend")
-async def test_only_cash_balances_show_the_empty_state(
+async def test_only_cash_balances_do_not_promise_an_update(
     client: AsyncClient, tmp_db_path: Path
 ) -> None:
-    """Cash-only data leaves nothing for this page, so the empty state shows."""
+    """Cash-only data was delivered, so the page does not say one is coming."""
     _seed_balances(tmp_db_path, accounts=[ACCOUNTS[-1]])
     async with client as ac:
         html = (await ac.get("/portfolio")).text
-    assert EMPTY_ACCOUNTS in html
+    assert NONE_REPORTED in html
+    assert EMPTY_ACCOUNTS not in html
     assert "Example Checking" not in html
+    assert "Last updated" not in html
+    assert "Not updated yet" not in html
 
 
-async def test_security_table_is_hidden_when_not_connected(
-    client: AsyncClient, tmp_db_path: Path, no_backend: None
+@pytest.mark.usefixtures("no_backend")
+async def test_stale_cash_provider_does_not_flag_the_portfolio(
+    client: AsyncClient, tmp_db_path: Path
 ) -> None:
-    """Old cached holdings are not shown once the backend is disconnected."""
-    del no_backend
+    """A stopped bank feed says nothing about accounts it does not supply."""
+    _seed_balances(tmp_db_path)
+    old = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    with closing(sqlite3.connect(tmp_db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE account_balances SET fetched_at = ? WHERE category = 'Cash'",
+            (old,),
+        )
+    async with client as ac:
+        html = (await ac.get("/portfolio")).text
+    assert "Example Brokerage" in html
+    assert "Last updated" in html
+    assert OUT_OF_DATE not in html
+
+
+@pytest.mark.usefixtures("no_backend")
+async def test_stale_non_usd_row_does_not_flag_the_portfolio(
+    client: AsyncClient, tmp_db_path: Path
+) -> None:
+    """An old row in another currency is not listed, so it cannot age the list."""
+    _seed_balances(tmp_db_path)
+    old = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    with closing(sqlite3.connect(tmp_db_path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO account_balances (account_id, account_name, entity_id, "
+            "category, source, value_cents, as_of, fetched_at, currency) VALUES "
+            "('pp:acct-eur', 'Example Euro Fund', ?, 'Investments', "
+            "'broker_report', 100, '2026-09-26', ?, 'EUR')",
+            (OWNER, old),
+        )
+    async with client as ac:
+        html = (await ac.get("/portfolio")).text
+    assert "Example Euro Fund" not in html
+    assert OUT_OF_DATE not in html
+    assert "1 account in other currencies not included." in html
+
+
+@pytest.mark.usefixtures("no_backend")
+async def test_other_currency_accounts_are_counted_in_plain_words(
+    client: AsyncClient, tmp_db_path: Path
+) -> None:
+    """Two non-USD asset rows and a non-USD cash row: only the first two count."""
+    _seed_balances(tmp_db_path)
+    with closing(sqlite3.connect(tmp_db_path)) as conn, conn:
+        conn.executemany(
+            "INSERT INTO account_balances (account_id, account_name, entity_id, "
+            "category, source, value_cents, as_of, fetched_at, currency) VALUES "
+            "(?, ?, ?, ?, 'broker_report', 100, '2026-09-26', ?, 'EUR')",
+            [
+                ("pp:eur-1", "Example Euro Fund", OWNER, "Investments", _now()),
+                ("pp:eur-2", "Example Euro IRA", OWNER, "Retirement", _now()),
+                ("xero:eur-3", "Example Euro Bank", OWNER, "Cash", _now()),
+            ],
+        )
+    async with client as ac:
+        html = (await ac.get("/portfolio")).text
+    assert "2 accounts in other currencies not included." in html
+    assert "Example Euro Fund" not in html
+
+
+@pytest.mark.usefixtures("no_backend")
+async def test_only_other_currency_accounts_say_so_instead_of_blank(
+    client: AsyncClient, tmp_db_path: Path
+) -> None:
+    """Delivered but all in another currency: no list, and the page says why."""
+    with closing(sqlite3.connect(tmp_db_path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO account_balances (account_id, account_name, entity_id, "
+            "category, source, value_cents, as_of, fetched_at, currency) VALUES "
+            "('pp:eur-1', 'Example Euro Fund', ?, 'Investments', "
+            "'broker_report', 100, '2026-09-26', ?, 'EUR')",
+            (OWNER, _now()),
+        )
+    async with client as ac:
+        html = (await ac.get("/portfolio")).text
+    assert NONE_REPORTED in html
+    assert "1 account in other currencies not included." in html
+
+
+@pytest.mark.usefixtures("no_backend")
+async def test_a_negative_account_sorts_last_and_shows_a_minus(
+    client: AsyncClient, tmp_db_path: Path
+) -> None:
+    """A negative value is listed after the positive ones with a minus sign."""
+    _seed_balances(
+        tmp_db_path,
+        accounts=[
+            ("pp:acct-1", "Example Brokerage", "Investments", "broker_report", 100_000),
+            (
+                "pp:acct-2",
+                "Example Margin Fund",
+                "Alternatives",
+                "manual_mark",
+                -50_000,
+            ),
+        ],
+    )
+    async with client as ac:
+        html = (await ac.get("/portfolio")).text
+    assert html.index("Example Brokerage") < html.index("Example Margin Fund")
+    assert "-$500" in html
+
+
+@pytest.mark.usefixtures("no_backend")
+async def test_long_account_names_cannot_push_the_value_off_the_card(
+    client: AsyncClient, tmp_db_path: Path
+) -> None:
+    """The name may wrap; the value keeps its width."""
+    _seed_balances(tmp_db_path)
+    async with client as ac:
+        html = (await ac.get("/portfolio")).text
+    assert '<span class="min-w-0 break-words">Example Brokerage</span>' in html
+    assert '<span class="shrink-0">$1,250,000</span>' in html
+
+
+@pytest.mark.parametrize("url", [None, ""], ids=["unset", "blank"])
+async def test_security_table_is_hidden_when_not_connected(
+    client: AsyncClient,
+    tmp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str | None,
+) -> None:
+    """Old cached holdings are not shown once the backend is unset or blank."""
+    if url is None:
+        monkeypatch.delenv("BACKEND_PP_SECURITY_URL")
+    else:
+        monkeypatch.setenv("BACKEND_PP_SECURITY_URL", url)
     _seed_balances(tmp_db_path)
     _seed_holding(tmp_db_path, datetime.now(timezone.utc))
     async with client as ac:

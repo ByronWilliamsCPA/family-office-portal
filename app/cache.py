@@ -460,12 +460,14 @@ class PortfolioAccount:
         category (str): Balance category, one of ``PORTFOLIO_CATEGORIES``.
         value (Decimal): Balance in dollars.
         as_of (str): Date the balance is true for, ``YYYY-MM-DD``.
+        fetched_at (datetime): When the account's provider last delivered it.
     """
 
     name: str
     category: str
     value: Decimal
     as_of: str
+    fetched_at: datetime
 
 
 def _dollars(cents: object) -> Decimal:
@@ -655,13 +657,21 @@ async def get_portfolio_accounts() -> list[PortfolioAccount]:
 
     The categories are ``PORTFOLIO_CATEGORIES``; cash is left out. Rows are
     filtered here, not in SQL, so the category list stays a single tuple and
-    the query stays one fixed parameterized string.
+    the query stays one fixed SQL string with no parameters. Equal values are
+    ordered by name using SQLite's default BINARY collation (case-sensitive,
+    by code point), the same as ``get_cash_accounts``. A negative balance sorts
+    last.
+
+    #ASSUME: financial: the balance feed is USD only for now, so only USD rows
+    are listed; other currencies are counted by
+    ``count_non_usd_portfolio_accounts``, not converted.
+    #VERIFY: add conversion before any non-USD account is delivered.
 
     Returns:
         list[PortfolioAccount]: Investment-type accounts, ties by name.
     """
     rows = await _fetch_all(
-        "SELECT account_name, category, value_cents, as_of "
+        "SELECT account_name, category, value_cents, as_of, fetched_at "
         "FROM account_balances WHERE currency = 'USD' "
         "ORDER BY value_cents DESC, account_name"
     )
@@ -671,7 +681,23 @@ async def get_portfolio_accounts() -> list[PortfolioAccount]:
             category=str(r["category"]),
             value=_dollars(r["value_cents"]),
             as_of=str(r["as_of"]),
+            fetched_at=_parse_timestamp(str(r["fetched_at"])),
         )
         for r in rows
         if r["category"] in PORTFOLIO_CATEGORIES
     ]
+
+
+async def count_non_usd_portfolio_accounts() -> int:
+    """Count accounts in the Portfolio categories that are not in USD.
+
+    Portfolio lists USD accounts only, so these are left out; the page says
+    how many, as Finances does.
+
+    Returns:
+        int: Number of non-USD rows in ``PORTFOLIO_CATEGORIES``.
+    """
+    rows = await _fetch_all(
+        "SELECT category FROM account_balances WHERE currency != 'USD'"
+    )
+    return sum(1 for r in rows if r["category"] in PORTFOLIO_CATEGORIES)

@@ -11,20 +11,24 @@
     {% for a in accounts %}
     <li>
       <div class="flex justify-between gap-4">
-        <span>{{ a.name }}</span>
-        <span>{{ a.value | money }}</span>
+        <span class="min-w-0 break-words">{{ a.name }}</span>
+        <span class="shrink-0">{{ a.value | money }}</span>
       </div>
       <p class="text-base text-slate-500">{{ a.category }}. Value from {{ a.as_of | friendly_date }}.</p>
     </li>
     {% endfor %}
   </ul>
-  {% else %}
-  <p class="text-slate-600">Your investment accounts will appear here after the next update.</p>
-  {% endif %}
   <div class="mt-4">
     {{ freshness(balances_updated, balances_stale) }}
-    {{ as_of_note(oldest_as_of, as_of_stale, 0) }}
+    {{ as_of_note(oldest_as_of, as_of_stale, excluded_currency_count) }}
   </div>
+  {% elif balances_delivered %}
+  <p class="text-slate-600">No investment accounts have been reported yet.</p>
+  {{ as_of_note(none, false, excluded_currency_count) }}
+  {% else %}
+  <p class="text-slate-600">Your investment accounts will appear here after the next update.</p>
+  <div class="mt-4">{{ freshness(none, true) }}</div>
+  {% endif %}
 </section>
 {% if connected.pp_security and holdings %}
 <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="securities-heading">

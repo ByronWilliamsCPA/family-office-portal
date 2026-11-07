@@ -125,27 +125,37 @@ async def balances_summary() -> dict[str, Any]:
 
 
 async def portfolio_accounts() -> dict[str, Any]:
-    """Return the Portfolio account list with the balance feed's freshness.
+    """Return the Portfolio account list with freshness of just those accounts.
 
-    Freshness is the same per-provider rule the Finances page uses
-    (``freshness("balances")``): one provider that stopped reporting marks the
-    list out of date while its last values stay on the page. The as-of note
-    covers only the accounts listed here, not cash.
+    Freshness follows the same per-provider rule as Finances (the oldest
+    delivery decides, so one provider that stopped reporting marks the list
+    out of date while its last values stay), but it is computed only over the
+    accounts the list shows (USD, Portfolio categories). A stopped cash feed
+    or an old non-USD row therefore cannot flag a list it does not feed. The
+    as-of note covers the same accounts.
 
     Returns:
         dict[str, Any]: ``accounts`` (``cache.PortfolioAccount`` list, largest
-        first), ``balances_updated``, ``balances_stale``, ``oldest_as_of``
-        (date text or None) and ``as_of_stale`` (bool).
+        first), ``balances_updated`` (oldest delivery among them, or None),
+        ``balances_stale``, ``oldest_as_of`` (date text or None),
+        ``as_of_stale`` (bool), ``excluded_currency_count`` (non-USD accounts
+        in the Portfolio categories) and ``balances_delivered`` (True when any
+        balance row exists, so an empty list can say nothing is reported
+        rather than that an update is coming).
     """
     accounts = await cache.get_portfolio_accounts()
+    updated = min((a.fetched_at for a in accounts), default=None)
     oldest = min((a.as_of for a in accounts), default=None)
-    state = await freshness("balances")
     return {
         "accounts": accounts,
-        "balances_updated": state["updated"],
-        "balances_stale": state["stale"],
+        "balances_updated": updated,
+        "balances_stale": cache.is_older_than(
+            updated, cache.STALENESS_HOURS["balances"]
+        ),
         "oldest_as_of": oldest,
         "as_of_stale": as_of_is_stale(oldest),
+        "excluded_currency_count": await cache.count_non_usd_portfolio_accounts(),
+        "balances_delivered": await cache.last_fetched_at("balances") is not None,
     }
 
 
