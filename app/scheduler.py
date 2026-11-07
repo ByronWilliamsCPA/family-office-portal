@@ -62,6 +62,51 @@ _MAX_MESSAGE_LENGTH = 500
 _PAGE_SIZE = 100
 _MAX_PAGES = 50
 
+# Rate limiting (HTTP 429). llc-manager is expected to allow about 60 requests
+# per minute per caller. A limited request waits for the server's ``Retry-After`` (whole
+# seconds), never longer than ``RATE_LIMIT_MAX_WAIT_SECONDS``, and a refresh
+# makes at most ``RATE_LIMIT_MAX_RETRIES`` retries in total, shared by every
+# page it reads, so the longest wait is the product of the two.
+# #ASSUME: external resources: a backend that limits callers sends 429, and
+# its ``Retry-After`` is either whole seconds or absent; the HTTP-date form
+# and any other value get the default wait. The one-minute window means a
+# wait of up to 60 seconds is enough for the quota to refill. #VERIFY: check
+# ``refresh_log`` and the ``backend_rate_limited`` log events after the first
+# real refreshes, and confirm the backend's limit and header with its owner.
+# #EDGE: timing: a retry sleeps inside the scheduler thread while holding the
+# per-service lock (not the write lock), so a manual trigger for that service
+# is skipped as already running until the refresh ends (the route still
+# answers 202). The wait is ``threading.Event.wait``: the app lifespan sets
+# the shutdown flag before ``scheduler.shutdown(wait=False)``, which ends a
+# sleeping retry of a SCHEDULED run at once and fails that refresh without
+# writing. A MANUAL trigger is not covered: ``POST /admin/refresh/{service}``
+# runs the job as a background task inside the request, and uvicorn waits for
+# request tasks before it runs the lifespan shutdown, so the flag is set too
+# late. A manual refresh waiting on a rate limit therefore keeps shutdown
+# waiting until its wait ends or the container is force-killed, up to about
+# 3 minutes plus request time. A request already in flight also runs to its
+# own timeout.
+# #VERIFY: the longest block is retries times cap (3 x 60 s) plus request
+# time, up to 4 requests per refresh at roughly ``BACKEND_TIMEOUT_SECONDS``
+# each (httpx applies that timeout per connect, read and write phase, so it is
+# a rough figure); confirm the total stays well inside the shortest job
+# interval in ``JOB_INTERVAL_HOURS``, that a stop during a scheduled run's
+# retry wait ends the process within the stop grace period, and how long a
+# stop takes during a manual refresh's retry wait (it is not interrupted).
+RATE_LIMIT_MAX_RETRIES = 3
+RATE_LIMIT_MAX_WAIT_SECONDS = 60
+RATE_LIMIT_DEFAULT_WAIT_SECONDS = 30
+_RATE_LIMIT_MIN_WAIT_SECONDS = 1
+_HTTP_TOO_MANY_REQUESTS = 429
+# Longest digit run that can be at or below the cap; anything longer is
+# clamped to the cap without calling ``int``.
+_MAX_WAIT_DIGITS = len(str(RATE_LIMIT_MAX_WAIT_SECONDS))
+
+# Set by the app lifespan just before the scheduler is shut down, so a
+# scheduled run's retry that is sleeping on a 429 ends at once. A manual
+# trigger is not interrupted (see the #EDGE note above).
+_SHUTDOWN = threading.Event()
+
 # Seconds a job may start late and still run. The daily snapshot gets a long
 # grace so a run delayed by a busy or briefly paused process is coalesced into
 # one late run instead of being dropped; every other job keeps the library
@@ -163,16 +208,141 @@ def _record(
         logger.exception("refresh_log_write_failed", service=service)
 
 
+class RefreshInterruptedError(Exception):
+    """A refresh was stopped by app shutdown while it waited on a rate limit."""
+
+
+def request_shutdown() -> None:
+    """Tell sleeping refresh retries to stop; called before the scheduler stops."""
+    _SHUTDOWN.set()
+
+
+def clear_shutdown() -> None:
+    """Clear the shutdown flag; called at app start so a restart waits again."""
+    _SHUTDOWN.clear()
+
+
+def shutdown_requested() -> bool:
+    """Report whether a shutdown has been requested.
+
+    Returns:
+        bool: True after ``request_shutdown`` and before ``clear_shutdown``.
+    """
+    return _SHUTDOWN.is_set()
+
+
+def _sleep(seconds: float) -> None:
+    """Wait for a retry, ending early if the app is shutting down.
+
+    Refresh tests replace this; only the tests of this function itself make
+    real waits, each under a second.
+
+    Args:
+        seconds (float): How long to wait.
+
+    Raises:
+        RefreshInterruptedError: If shutdown was requested before or during
+            the wait. The refresh then fails and writes nothing.
+    """
+    if _SHUTDOWN.wait(seconds):
+        msg = "Stopped by shutdown while waiting on a rate limit"
+        raise RefreshInterruptedError(msg)
+
+
+def retry_after_seconds(header: str | None) -> float:
+    """Turn a ``Retry-After`` header into a bounded wait in seconds.
+
+    Only the whole-seconds form is honored. A missing header, an HTTP-date,
+    a negative, fractional or otherwise malformed value gets
+    ``RATE_LIMIT_DEFAULT_WAIT_SECONDS``. The result is at least one second
+    and at most ``RATE_LIMIT_MAX_WAIT_SECONDS``.
+
+    This parser is deliberately separate from the one in
+    ``app/retrieval/embeddings.py``: that one accepts fractional seconds and
+    has its own cap and default, while this one takes whole seconds only.
+
+    Args:
+        header (str | None): The raw header value, or None when absent.
+
+    Returns:
+        float: Seconds to wait before the retry.
+    """
+    wait = RATE_LIMIT_DEFAULT_WAIT_SECONDS
+    if header is not None:
+        text = header.strip()
+        # ``str.isdigit`` also accepts non-ASCII digits; require ASCII.
+        if text.isascii() and text.isdigit():
+            digits = text.lstrip("0") or "0"
+            # A long run of digits is above the cap; skip ``int`` so a huge
+            # value cannot hit Python's integer-string length limit.
+            wait = (
+                RATE_LIMIT_MAX_WAIT_SECONDS
+                if len(digits) > _MAX_WAIT_DIGITS
+                else int(digits)
+            )
+    return float(
+        max(_RATE_LIMIT_MIN_WAIT_SECONDS, min(wait, RATE_LIMIT_MAX_WAIT_SECONDS))
+    )
+
+
+class _RetryBudget:
+    """Retries one refresh may still spend on rate-limited requests.
+
+    Args:
+        retries (int): Retries the refresh may spend in total.
+    """
+
+    def __init__(self, retries: int = RATE_LIMIT_MAX_RETRIES) -> None:
+        self.remaining = retries
+
+
 def _get_json(
-    client: httpx.Client, url: str, params: dict[str, Any] | None = None
+    client: httpx.Client,
+    url: str,
+    params: dict[str, Any] | None = None,
+    budget: _RetryBudget | None = None,
 ) -> Any:  # noqa: ANN401  # JSON payload
-    response = client.get(url, params=params)
+    """GET a URL and decode JSON, waiting out HTTP 429 within a bounded budget.
+
+    A 429 response waits ``retry_after_seconds`` and retries while the budget
+    has retries left. When it does not, the 429 is raised like any other
+    error status, so the refresh fails and keeps its cached rows.
+
+    Args:
+        client (httpx.Client): Open client.
+        url (str): Endpoint URL.
+        params (dict[str, Any] | None): Query parameters.
+        budget (_RetryBudget | None): Retries shared with the caller's other
+            requests; a fresh budget when omitted.
+
+    Returns:
+        Any: The decoded JSON body.
+    """
+    budget = _RetryBudget() if budget is None else budget
+    while True:
+        response = client.get(url, params=params)
+        if response.status_code != _HTTP_TOO_MANY_REQUESTS or budget.remaining <= 0:
+            break
+        budget.remaining -= 1
+        wait = retry_after_seconds(response.headers.get("Retry-After"))
+        logger.warning(
+            "backend_rate_limited",
+            path=httpx.URL(url).path,
+            wait_seconds=wait,
+            retries_left=budget.remaining,
+        )
+        _sleep(wait)
     response.raise_for_status()
     return response.json()
 
 
 def _get_items(client: httpx.Client, url: str) -> list[dict[str, Any]]:
     """Fetch a list endpoint that returns a bare list or ``{items, total}`` pages.
+
+    A rate-limited page is retried (see ``_get_json``) with one retry budget
+    for the whole fetch. If a later page stays limited, the error is raised
+    and the pages already read are discarded with it: a partial set is never
+    returned, so the caller keeps the previous cached rows.
 
     Args:
         client (httpx.Client): Open client.
@@ -187,8 +357,9 @@ def _get_items(client: httpx.Client, url: str) -> list[dict[str, Any]]:
             fails and the previous cached rows are kept, rather than
             replacing them with a partial set.
     """
+    budget = _RetryBudget()
     params: dict[str, Any] = {"page": 1, "size": _PAGE_SIZE}
-    payload: object = _get_json(client, url, params)
+    payload: object = _get_json(client, url, params, budget)
     if isinstance(payload, list):
         return [dict(item) for item in cast("list[dict[str, Any]]", payload)]
     if not isinstance(payload, dict) or "items" not in payload:
@@ -204,7 +375,7 @@ def _get_items(client: httpx.Client, url: str) -> list[dict[str, Any]]:
             msg = f"More than {_MAX_PAGES} pages; refusing a partial refresh"
             raise ValueError(msg)
         more: dict[str, Any] = dict(
-            _get_json(client, url, {"page": page, "size": _PAGE_SIZE})
+            _get_json(client, url, {"page": page, "size": _PAGE_SIZE}, budget)
         )
         batch: list[dict[str, Any]] = list(more.get("items", []))
         if not batch:
@@ -270,7 +441,13 @@ def _refresh_once(
             headers=headers,
         ) as client:
             payload = fetch(client, connection.url.rstrip("/"))
-    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+    except (
+        httpx.HTTPError,
+        RefreshInterruptedError,
+        ValueError,
+        TypeError,
+        KeyError,
+    ) as exc:
         logger.warning("refresh_failed", service=service, error=type(exc).__name__)
         _record(service, "error", message=f"{type(exc).__name__}: {exc}")
         return

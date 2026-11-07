@@ -45,7 +45,7 @@ from app.routes import (
     home,
     portfolio,
 )
-from app.scheduler import build_scheduler
+from app.scheduler import build_scheduler, clear_shutdown, request_shutdown
 from app.templating import render
 
 if TYPE_CHECKING:
@@ -104,11 +104,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     settings = load_settings()
     init_schema(settings.sqlite_path)
     scheduler = build_scheduler(settings) if settings.scheduler_enabled else None
+    clear_shutdown()
     if scheduler is not None:
         scheduler.start()  # pyright: ignore[reportUnknownMemberType]  # untyped APScheduler 3
     try:
         yield
     finally:
+        # End any scheduled refresh sleeping on a rate limit before the
+        # scheduler stops, so that sleep does not hold the process open. Set
+        # whether or not a scheduler runs.
+        request_shutdown()
         if scheduler is not None:
             scheduler.shutdown(wait=False)  # pyright: ignore[reportUnknownMemberType]
 

@@ -297,3 +297,16 @@ def client(
         base_url="http://test",
         headers=admin_headers,
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_scheduler_shutdown_flag() -> Iterator[None]:
+    """Leave the scheduler's process-wide shutdown flag clear around every test.
+
+    The app lifespan sets it on exit, and a set flag would make the next
+    rate-limited retry in the same process fail at once.
+    """
+    scheduler = importlib.import_module("app.scheduler")
+    scheduler.clear_shutdown()
+    yield
+    scheduler.clear_shutdown()

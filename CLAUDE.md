@@ -172,6 +172,16 @@ Key documents to read before making architectural or data-model decisions:
 - **Paging**: refresh jobs read `{items, total}` pages until `total` rows arrive.
   A short or runaway page set fails the refresh and keeps the old cache; never
   replace cached rows with a partial set.
+- **Backend rate limits (outbound)**: a refresh request answered with HTTP 429 waits
+  for `Retry-After` (whole seconds, at least 1 and at most
+  `RATE_LIMIT_MAX_WAIT_SECONDS`; anything else waits
+  `RATE_LIMIT_DEFAULT_WAIT_SECONDS`) and retries, at most `RATE_LIMIT_MAX_RETRIES`
+  times per refresh across all pages. Still limited means the refresh fails and the
+  old cache stays. A scheduled run's wait ends at once on app shutdown
+  (`request_shutdown`, called by the lifespan); a manual trigger's wait does not,
+  because uvicorn waits for the request task before lifespan shutdown. Refresh tests
+  replace `app.scheduler._sleep`; only the tests of `_sleep` itself make real waits,
+  each under a second.
 - **Database**: SQLite via `aiosqlite` for async reads in route handlers; synchronous
   writes in APScheduler refresh jobs. Initialize with `PRAGMA journal_mode=WAL` and
   `PRAGMA busy_timeout=5000`. No ORM; use raw SQL with parameterized queries.
