@@ -68,15 +68,18 @@ def _response(
     payload: Any = None,  # noqa: ANN401  # JSON payload
     headers: dict[str, str] | None = None,
 ) -> httpx.Response:
+    """Build a real httpx response bound to the test request."""
     return httpx.Response(status, json=payload, headers=headers or {}, request=_REQUEST)
 
 
 def _limited(retry_after: str | None = None) -> httpx.Response:
+    """Build a 429 response, with Retry-After when given."""
     headers = {} if retry_after is None else {"Retry-After": retry_after}
     return _response(429, {"detail": "rate limited"}, headers)
 
 
 def _client(*responses: httpx.Response) -> MagicMock:
+    """Build a fake client whose GETs return the given responses in order."""
     client = MagicMock()
     client.__enter__.return_value = client
     client.__exit__.return_value = False
@@ -85,11 +88,13 @@ def _client(*responses: httpx.Response) -> MagicMock:
 
 
 def _entity_ids(db_path: Path) -> set[str]:
+    """Return the ids in the entities table."""
     with closing(sqlite3.connect(db_path)) as conn:
         return {row[0] for row in conn.execute("SELECT id FROM entities")}
 
 
 def _last_log(db_path: Path, service: str) -> tuple[str, str | None]:
+    """Return the latest refresh_log status and message for a service."""
     with closing(sqlite3.connect(db_path)) as conn:
         row = conn.execute(
             "SELECT status, message FROM refresh_log WHERE service = ? "
@@ -101,6 +106,7 @@ def _last_log(db_path: Path, service: str) -> tuple[str, str | None]:
 
 
 def _seed_cached_entity(db_path: Path) -> None:
+    """Insert one cached entity that a failed refresh must leave alone."""
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             "INSERT INTO entities (id, name, fetched_at) "
@@ -110,6 +116,7 @@ def _seed_cached_entity(db_path: Path) -> None:
 
 
 def _run(job: Callable[[], None], client: MagicMock) -> None:
+    """Run a refresh job with the fake client in place of httpx.Client."""
     with patch("httpx.Client", return_value=client):
         job()
 
@@ -287,6 +294,7 @@ def test_documents_retries_exhausted_keeps_cache(
 
 
 def _page(ids: list[str], total: int) -> httpx.Response:
+    """Build one 200 page of entities out of ``total``."""
     return _response(
         200, {"items": [{"id": i, "name": f"LLC {i}"} for i in ids], "total": total}
     )
@@ -351,6 +359,8 @@ def test_retry_budget_is_shared_across_pages(
 
 
 class _Case(NamedTuple):
+    """One refresh job with its payload and cache table."""
+
     job: Callable[[], None]
     service: str
     payload: Any
@@ -380,6 +390,7 @@ _CASES = [
 
 
 def _ids(db_path: Path, ids_sql: str) -> set[str]:
+    """Return the ids a query selects."""
     with closing(sqlite3.connect(db_path)) as conn:
         return {row[0] for row in conn.execute(ids_sql)}
 

@@ -286,7 +286,11 @@ def retry_after_seconds(header: str | None) -> float:
 
 
 class _RetryBudget:
-    """Retries one refresh may still spend on rate-limited requests."""
+    """Retries one refresh may still spend on rate-limited requests.
+
+    Args:
+        retries (int): Retries the refresh may spend in total.
+    """
 
     def __init__(self, retries: int = RATE_LIMIT_MAX_RETRIES) -> None:
         self.remaining = retries
