@@ -426,6 +426,25 @@ async def test_portfolio_accounts_carry_their_own_fetch_time(db_path: Path) -> N
     assert [a.fetched_at for a in accounts] == [old]
 
 
+@pytest.mark.parametrize("bad", ["", "not a time"], ids=["empty", "garbage"])
+async def test_portfolio_account_with_unreadable_fetch_time_has_none(
+    db_path: Path, bad: str
+) -> None:
+    """An unparseable stored time becomes None instead of raising."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 5, category="Investments", fetched_at=bad)
+    accounts = await cache.get_portfolio_accounts()
+    assert [a.fetched_at for a in accounts] == [None]
+
+
+async def test_has_balances_reports_whether_any_row_exists(db_path: Path) -> None:
+    """Existence is a plain yes or no, whatever the rows are."""
+    assert await cache.has_balances() is False
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "xero:a", 5, category="Cash", currency="EUR")
+    assert await cache.has_balances() is True
+
+
 async def test_non_usd_portfolio_accounts_are_counted_not_listed(
     db_path: Path,
 ) -> None:

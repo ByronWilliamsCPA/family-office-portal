@@ -320,7 +320,8 @@ def is_older_than(latest: datetime | None, threshold_hours: int) -> bool:
     """Report whether a freshness time is missing or older than the threshold.
 
     Args:
-        latest (datetime | None): Value from ``last_fetched_at``.
+        latest (datetime | None): A freshness time (for example from
+            ``last_fetched_at``), or None.
         threshold_hours (int): Maximum acceptable age in hours.
 
     Returns:
@@ -460,14 +461,35 @@ class PortfolioAccount:
         category (str): Balance category, one of ``PORTFOLIO_CATEGORIES``.
         value (Decimal): Balance in dollars.
         as_of (str): Date the balance is true for, ``YYYY-MM-DD``.
-        fetched_at (datetime): When the account's provider last delivered it.
+        fetched_at (datetime | None): When the account's provider last
+            delivered it; None when the stored time is empty or unreadable,
+            which callers treat as "not updated yet".
     """
 
     name: str
     category: str
     value: Decimal
     as_of: str
-    fetched_at: datetime
+    fetched_at: datetime | None
+
+
+def _parse_timestamp_or_none(value: object) -> datetime | None:
+    """Parse a stored fetch time, returning None when it is empty or unreadable.
+
+    The only writer stores an offset-aware UTC ISO 8601 string in a NOT NULL
+    column, so None is not expected; it keeps one damaged row from failing the
+    whole page, which shows "Not updated yet" and the out-of-date style.
+
+    Args:
+        value (object): ``fetched_at`` as read from SQLite.
+
+    Returns:
+        datetime | None: The time, or None.
+    """
+    try:
+        return _parse_timestamp(str(value))
+    except ValueError:
+        return None
 
 
 def _dollars(cents: object) -> Decimal:
@@ -681,7 +703,7 @@ async def get_portfolio_accounts() -> list[PortfolioAccount]:
             category=str(r["category"]),
             value=_dollars(r["value_cents"]),
             as_of=str(r["as_of"]),
-            fetched_at=_parse_timestamp(str(r["fetched_at"])),
+            fetched_at=_parse_timestamp_or_none(r["fetched_at"]),
         )
         for r in rows
         if r["category"] in PORTFOLIO_CATEGORIES
@@ -701,3 +723,13 @@ async def count_non_usd_portfolio_accounts() -> int:
         "SELECT category FROM account_balances WHERE currency != 'USD'"
     )
     return sum(1 for r in rows if r["category"] in PORTFOLIO_CATEGORIES)
+
+
+async def has_balances() -> bool:
+    """Report whether any balance row is cached, in any currency or category.
+
+    Returns:
+        bool: True when ``account_balances`` has at least one row.
+    """
+    rows = await _fetch_all("SELECT EXISTS(SELECT 1 FROM account_balances) AS present")
+    return bool(rows[0]["present"])

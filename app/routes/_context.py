@@ -136,15 +136,22 @@ async def portfolio_accounts() -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: ``accounts`` (``cache.PortfolioAccount`` list, largest
-        first), ``balances_updated`` (oldest delivery among them, or None),
+        first), ``balances_updated`` (oldest delivery among them, or None when there are
+        none or one time is unreadable),
         ``balances_stale``, ``oldest_as_of`` (date text or None),
         ``as_of_stale`` (bool), ``excluded_currency_count`` (non-USD accounts
         in the Portfolio categories) and ``balances_delivered`` (True when any
         balance row exists, so an empty list can say nothing is reported
         rather than that an update is coming).
     """
+    # Read "was anything delivered" first: a delivery landing between the
+    # reads can then only add accounts to a list that already says so, never
+    # show "none reported" beside accounts that just arrived.
+    delivered = await cache.has_balances()
     accounts = await cache.get_portfolio_accounts()
-    updated = min((a.fetched_at for a in accounts), default=None)
+    times = [a.fetched_at for a in accounts]
+    # One unreadable time makes the whole list read as "not updated yet".
+    updated = None if None in times else min((t for t in times if t), default=None)
     oldest = min((a.as_of for a in accounts), default=None)
     return {
         "accounts": accounts,
@@ -155,7 +162,7 @@ async def portfolio_accounts() -> dict[str, Any]:
         "oldest_as_of": oldest,
         "as_of_stale": as_of_is_stale(oldest),
         "excluded_currency_count": await cache.count_non_usd_portfolio_accounts(),
-        "balances_delivered": await cache.last_fetched_at("balances") is not None,
+        "balances_delivered": delivered,
     }
 
 

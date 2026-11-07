@@ -23,8 +23,8 @@
     {{ as_of_note(oldest_as_of, as_of_stale, excluded_currency_count) }}
   </div>
   {% elif balances_delivered %}
-  <p class="text-slate-600">No investment accounts have been reported yet.</p>
-  {{ as_of_note(none, false, excluded_currency_count) }}
+  <p class="text-slate-600">No investment accounts{% if excluded_currency_count %} in US dollars{% endif %} have been reported yet.</p>
+  <div class="mt-4">{{ as_of_note(none, false, excluded_currency_count) }}</div>
   {% else %}
   <p class="text-slate-600">Your investment accounts will appear here after the next update.</p>
   <div class="mt-4">{{ freshness(none, true) }}</div>

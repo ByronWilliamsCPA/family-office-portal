@@ -5,6 +5,6 @@
 </p>
 {% endif %}
 {% if excluded %}
-<p class="text-base text-slate-500">{{ excluded }} account{{ 's' if excluded != 1 }} in other currencies not included.</p>
+<p class="text-base text-slate-500">{% if excluded == 1 %}1 account in another currency{% else %}{{ excluded }} accounts in other currencies{% endif %} not included.</p>
 {% endif %}
 {%- endmacro %}

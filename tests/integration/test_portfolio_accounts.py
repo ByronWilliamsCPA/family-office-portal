@@ -289,7 +289,7 @@ async def test_stale_non_usd_row_does_not_flag_the_portfolio(
         html = (await ac.get("/portfolio")).text
     assert "Example Euro Fund" not in html
     assert OUT_OF_DATE not in html
-    assert "1 account in other currencies not included." in html
+    assert "1 account in another currency not included." in html
 
 
 @pytest.mark.usefixtures("no_backend")
@@ -330,8 +330,12 @@ async def test_only_other_currency_accounts_say_so_instead_of_blank(
         )
     async with client as ac:
         html = (await ac.get("/portfolio")).text
-    assert NONE_REPORTED in html
-    assert "1 account in other currencies not included." in html
+    first = "No investment accounts in US dollars have been reported yet."
+    second = "1 account in another currency not included."
+    assert NONE_REPORTED not in html
+    assert first in html
+    assert html.index(first) < html.index(second)
+    assert re.search(r'<div class="mt-4">\s*<p[^>]*>1 account in another', html)
 
 
 @pytest.mark.usefixtures("no_backend")
@@ -429,3 +433,24 @@ async def test_stale_holdings_keep_their_own_out_of_date_label(
     assert "Sample Index Fund" in html
     assert html.count(OUT_OF_DATE) == 1
     assert "Example Brokerage" in html
+
+
+@pytest.mark.usefixtures("no_backend")
+@pytest.mark.parametrize("bad", ["", "not a time"], ids=["empty", "garbage"])
+async def test_an_unreadable_fetch_time_marks_the_list_old_not_broken(
+    client: AsyncClient, tmp_db_path: Path, bad: str
+) -> None:
+    """One bad stored time must not fail the page; it reads as not updated."""
+    _seed_balances(tmp_db_path)
+    with closing(sqlite3.connect(tmp_db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE account_balances SET fetched_at = ? "
+            "WHERE account_id = 'pp:acct-111'",
+            (bad,),
+        )
+    async with client as ac:
+        response = await ac.get("/portfolio")
+    assert response.status_code == 200
+    assert "Example Brokerage" in response.text
+    assert "Example Retirement" in response.text
+    assert "Not updated yet" in response.text
