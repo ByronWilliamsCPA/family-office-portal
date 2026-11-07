@@ -71,6 +71,20 @@ async def freshness(dataset: str) -> dict[str, Any]:
 AS_OF_WARN_DAYS = 35
 
 
+def as_of_is_stale(oldest: str | None) -> bool:
+    """Return True when the oldest as-of date is past ``AS_OF_WARN_DAYS``.
+
+    Args:
+        oldest (str | None): Oldest as-of date as ``YYYY-MM-DD``, or None.
+
+    Returns:
+        bool: False when there is no date.
+    """
+    if oldest is None:
+        return False
+    return (local_today() - date.fromisoformat(oldest)).days > AS_OF_WARN_DAYS
+
+
 async def balances_summary() -> dict[str, Any]:
     """Return the current USD account total with its fetch and as-of freshness.
 
@@ -99,18 +113,56 @@ async def balances_summary() -> dict[str, Any]:
     count = int(row["n"] or 0) if row is not None else 0
     total = None if row is None or count == 0 else from_cents(int(row["cents"]))
     oldest = str(row["oldest"]) if row is not None and row["oldest"] else None
-    as_of_stale = False
-    if oldest is not None:
-        age = local_today() - date.fromisoformat(oldest)
-        as_of_stale = age.days > AS_OF_WARN_DAYS
     state = await freshness("balances")
     return {
         "total_value": total,
         "balances_updated": state["updated"],
         "balances_stale": state["stale"],
         "oldest_as_of": oldest,
-        "as_of_stale": as_of_stale,
+        "as_of_stale": as_of_is_stale(oldest),
         "excluded_currency_count": int(row["other"] or 0) if row is not None else 0,
+    }
+
+
+async def portfolio_accounts() -> dict[str, Any]:
+    """Return the Portfolio account list with freshness of just those accounts.
+
+    Freshness follows the same per-provider rule as Finances (the oldest
+    delivery decides, so one provider that stopped reporting marks the list
+    out of date while its last values stay), but it is computed only over the
+    accounts the list shows (USD, Portfolio categories). A stopped cash feed
+    or an old non-USD row therefore cannot flag a list it does not feed. The
+    as-of note covers the same accounts.
+
+    Returns:
+        dict[str, Any]: ``accounts`` (``cache.PortfolioAccount`` list, largest
+        first), ``balances_updated`` (oldest delivery among them, or None when there are
+        none or one time is unreadable),
+        ``balances_stale``, ``oldest_as_of`` (date text or None),
+        ``as_of_stale`` (bool), ``excluded_currency_count`` (non-USD accounts
+        in the Portfolio categories) and ``balances_delivered`` (True when any
+        balance row exists, so an empty list can say nothing is reported
+        rather than that an update is coming).
+    """
+    # Read "was anything delivered" first: a delivery landing between the
+    # reads can then only add accounts to a list that already says so, never
+    # show "none reported" beside accounts that just arrived.
+    delivered = await cache.has_balances()
+    accounts = await cache.get_portfolio_accounts()
+    times = [a.fetched_at for a in accounts]
+    # One unreadable time makes the whole list read as "not updated yet".
+    updated = None if None in times else min((t for t in times if t), default=None)
+    oldest = min((a.as_of for a in accounts), default=None)
+    return {
+        "accounts": accounts,
+        "balances_updated": updated,
+        "balances_stale": cache.is_older_than(
+            updated, cache.STALENESS_HOURS["balances"]
+        ),
+        "oldest_as_of": oldest,
+        "as_of_stale": as_of_is_stale(oldest),
+        "excluded_currency_count": await cache.count_non_usd_portfolio_accounts(),
+        "balances_delivered": delivered,
     }
 
 

@@ -361,6 +361,108 @@ async def test_cash_accounts_carry_reconciled_through(db_path: Path) -> None:
     ]
 
 
+def test_every_category_is_either_in_the_portfolio_or_deliberately_left_out() -> None:
+    """A new intake category must be placed on purpose, not by accident.
+
+    Adding a category to the intake model fails this test until it is put in
+    ``PORTFOLIO_CATEGORIES`` or ``NON_PORTFOLIO_CATEGORIES``.
+    """
+    portfolio = set(cache.PORTFOLIO_CATEGORIES)
+    left_out = set(cache.NON_PORTFOLIO_CATEGORIES)
+    assert portfolio.isdisjoint(left_out)
+    assert portfolio | left_out == set(cache.CATEGORY_ORDER)
+    assert "Cash" in left_out
+
+
+async def test_portfolio_accounts_are_non_cash_usd_largest_first(
+    db_path: Path,
+) -> None:
+    """Investments, retirement, alternatives and digital currency, biggest first."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 100_000, category="Investments", name="Example Fund")
+        _balance(conn, "pp:b", 900_000, category="Retirement", name="Example IRA")
+        _balance(conn, "pp:c", 500_000, category="Alternatives", name="Example Land")
+        _balance(
+            conn, "crypto:d", 300_000, category="Digital currency", name="Example Coin"
+        )
+        _balance(conn, "xero:e", 999_999_999, category="Cash", name="Example Bank")
+        _balance(conn, "pp:f", 9_999_999, category="Investments", currency="EUR")
+        _balance(conn, "pp:g", -50_000, category="Alternatives", name="Example Loan")
+    accounts = await cache.get_portfolio_accounts()
+    assert [(a.name, a.category, a.value) for a in accounts] == [
+        ("Example IRA", "Retirement", Decimal("9000.00")),
+        ("Example Land", "Alternatives", Decimal("5000.00")),
+        ("Example Coin", "Digital currency", Decimal("3000.00")),
+        ("Example Fund", "Investments", Decimal("1000.00")),
+        ("Example Loan", "Alternatives", Decimal("-500.00")),
+    ]
+
+
+async def test_portfolio_accounts_break_ties_by_name_and_carry_as_of(
+    db_path: Path,
+) -> None:
+    """Equal values are listed by name; each account carries its as-of date."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(
+            conn, "pp:a", 100, category="Investments", name="Beta", as_of="2026-09-01"
+        )
+        _balance(
+            conn, "pp:b", 100, category="Investments", name="Alpha", as_of="2026-09-02"
+        )
+    accounts = await cache.get_portfolio_accounts()
+    assert [(a.name, a.as_of) for a in accounts] == [
+        ("Alpha", "2026-09-02"),
+        ("Beta", "2026-09-01"),
+    ]
+
+
+async def test_portfolio_accounts_carry_their_own_fetch_time(db_path: Path) -> None:
+    """Each account carries when its provider last delivered it."""
+    old = NOW - timedelta(hours=60)
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 5, category="Investments", fetched_at=old.isoformat())
+        _balance(conn, "xero:b", 1, category="Cash", fetched_at=NOW.isoformat())
+    accounts = await cache.get_portfolio_accounts()
+    assert [a.fetched_at for a in accounts] == [old]
+
+
+@pytest.mark.parametrize("bad", ["", "not a time"], ids=["empty", "garbage"])
+async def test_portfolio_account_with_unreadable_fetch_time_has_none(
+    db_path: Path, bad: str
+) -> None:
+    """An unparseable stored time becomes None instead of raising."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 5, category="Investments", fetched_at=bad)
+    accounts = await cache.get_portfolio_accounts()
+    assert [a.fetched_at for a in accounts] == [None]
+
+
+async def test_has_balances_reports_whether_any_row_exists(db_path: Path) -> None:
+    """Existence is a plain yes or no, whatever the rows are."""
+    assert await cache.has_balances() is False
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "xero:a", 5, category="Cash", currency="EUR")
+    assert await cache.has_balances() is True
+
+
+async def test_non_usd_portfolio_accounts_are_counted_not_listed(
+    db_path: Path,
+) -> None:
+    """Only non-USD rows in portfolio categories count; cash and USD do not."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 5, category="Investments", currency="EUR")
+        _balance(conn, "pp:b", 5, category="Retirement", currency="GBP")
+        _balance(conn, "xero:c", 5, category="Cash", currency="EUR")
+        _balance(conn, "pp:d", 5, category="Investments")
+    assert await cache.count_non_usd_portfolio_accounts() == 2
+    assert [a.name for a in await cache.get_portfolio_accounts()] == ["Example Account"]
+
+
+async def test_portfolio_accounts_empty_when_nothing_cached(db_path: Path) -> None:
+    """No balances at all is an empty list, not an error."""
+    assert await cache.get_portfolio_accounts() == []
+
+
 async def test_balances_freshness_follows_the_oldest_provider(db_path: Path) -> None:
     """A provider that stops reporting makes the whole section look stale.
 

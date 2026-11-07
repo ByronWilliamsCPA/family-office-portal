@@ -1,28 +1,51 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
-{% from "partials/not_connected.html" import not_connected %}
+{% from "partials/as_of.html" import as_of_note %}
 {% block title %}Portfolio - Family Office{% endblock %}
 {% block content %}
-<h1 class="text-3xl font-semibold mb-2">Portfolio</h1>
-{% if not connected.pp_security %}
-{{ not_connected("Your investments") }}
-{% else %}
-{{ freshness(updated, stale) }}
-{% if holdings %}
-<table class="w-full text-left bg-white rounded-xl border border-stone-200 mt-6">
-  <thead><tr class="text-slate-500"><th class="px-5 py-3">Investment</th><th class="px-5 py-3">Sector</th><th class="px-5 py-3 text-right">Value</th></tr></thead>
-  <tbody>
-    {% for h in holdings %}
-    <tr class="border-t border-stone-200">
-      <td class="px-5 py-3">{{ h['security_name'] }}</td>
-      <td class="px-5 py-3">{{ h['sector'] or '' }}</td>
-      <td class="px-5 py-3 text-right">{{ h['current_value'] | money }}</td>
-    </tr>
+<h1 class="text-3xl font-semibold mb-6">Portfolio</h1>
+<section class="bg-white rounded-xl border border-stone-200 p-6 mb-6" aria-labelledby="accounts-heading">
+  <h2 id="accounts-heading" class="text-xl font-semibold mb-3">Our investment accounts</h2>
+  {% if accounts %}
+  <ul class="space-y-3">
+    {% for a in accounts %}
+    <li>
+      <div class="flex justify-between gap-4">
+        <span class="min-w-0 break-words">{{ a.name }}</span>
+        <span class="shrink-0">{{ a.value | money }}</span>
+      </div>
+      <p class="text-base text-slate-500">{{ a.category }}. Value from {{ a.as_of | friendly_date }}.</p>
+    </li>
     {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p class="text-slate-600 mt-6">There are no investments to show yet. They will appear after the next update.</p>
-{% endif %}
+  </ul>
+  <div class="mt-4">
+    {{ freshness(balances_updated, balances_stale) }}
+    {{ as_of_note(oldest_as_of, as_of_stale, excluded_currency_count) }}
+  </div>
+  {% elif balances_delivered %}
+  <p class="text-slate-600">No investment accounts{% if excluded_currency_count %} in US dollars{% endif %} have been reported yet.</p>
+  <div class="mt-4">{{ as_of_note(none, false, excluded_currency_count) }}</div>
+  {% else %}
+  <p class="text-slate-600">Your investment accounts will appear here after the next update.</p>
+  <div class="mt-4">{{ freshness(none, true) }}</div>
+  {% endif %}
+</section>
+{% if connected.pp_security and holdings %}
+<section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="securities-heading">
+  <h2 id="securities-heading" class="text-xl font-semibold mb-3">Investments by security</h2>
+  <table class="w-full text-left">
+    <thead><tr class="text-slate-500"><th class="py-2">Investment</th><th class="py-2">Sector</th><th class="py-2 text-right">Value</th></tr></thead>
+    <tbody>
+      {% for h in holdings %}
+      <tr class="border-t border-stone-200">
+        <td class="py-2">{{ h['security_name'] }}</td>
+        <td class="py-2">{{ h['sector'] or '' }}</td>
+        <td class="py-2 text-right">{{ h['current_value'] | money }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="mt-4">{{ freshness(holdings_updated, holdings_stale) }}</div>
+</section>
 {% endif %}
 {% endblock %}

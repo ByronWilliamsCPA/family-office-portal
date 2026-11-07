@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Byron Williams
 # SPDX-License-Identifier: MIT
-"""Portfolio page states for a connected pp-security-master backend.
+"""Per-security table states for a connected pp-security-master backend.
+
+The account list above it is covered in ``test_portfolio_accounts.py``.
 
 pp-security-master is alpha: a failed refresh leaves the last cached rows in
 place, so the page must show them with a "last updated" label and the
@@ -19,10 +21,12 @@ if TYPE_CHECKING:
 
     from httpx import AsyncClient
 
+# With no cached holdings the page says nothing about securities; the only
+# empty state is the account list's.
 EMPTY_MESSAGE = (
     "There are no investments to show yet. They will appear after the next update."
 )
-OLD_MESSAGE = "Investments will appear here once the portfolio is connected."
+EMPTY_ACCOUNTS = "Your investment accounts will appear here after the next update."
 
 
 def _seed_holding(path: Path, fetched_at: datetime) -> None:
@@ -44,12 +48,12 @@ def _seed_holding(path: Path, fetched_at: datetime) -> None:
 async def test_connected_empty_portfolio_says_plainly_there_is_nothing_yet(
     client: AsyncClient,
 ) -> None:
-    """With no cached holdings the page explains, and keeps the freshness line."""
+    """With nothing cached the page explains once, and keeps the freshness line."""
     async with client as ac:
         response = await ac.get("/portfolio")
     assert response.status_code == 200
-    assert EMPTY_MESSAGE in response.text
-    assert OLD_MESSAGE not in response.text
+    assert EMPTY_ACCOUNTS in response.text
+    assert EMPTY_MESSAGE not in response.text
     assert "Not updated yet" in response.text
     assert "<table" not in response.text
 

@@ -198,7 +198,7 @@ async def test_page_shows_total_categories_people_and_trend(
     assert "By company and trust" in html
     assert "Example Holdings LLC" in html
     assert "Unknown entity" in html
-    assert "1 account in other currencies not included." in html
+    assert "1 account in another currency not included." in html
     assert "<table" in html
     assert "Total by day" in html
     assert "September 27, 2026" in html

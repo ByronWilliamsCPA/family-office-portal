@@ -76,6 +76,27 @@ _FRESHNESS_AGGREGATE: dict[str, str] = {"balances": "MIN"}
 # category list. Anything else follows alphabetically.
 CATEGORY_ORDER: tuple[str, ...] = get_args(BALANCE_CATEGORIES)
 UNKNOWN_ENTITY = "Unknown entity"
+
+# Which balance categories the Portfolio page lists. Every category is placed
+# in exactly one of the two tuples below (a unit test fails when a new intake
+# category is in neither), so a new category is never listed by accident.
+# Portfolio shows what the family owns that is invested or held for value:
+# investments, retirement, alternatives and digital currency. Cash and bank
+# accounts stay on Finances, which lists them with their reconciliation dates.
+# The intake model has no liability or property category yet; when one is
+# added it must go in ``NON_PORTFOLIO_CATEGORIES`` (loans are not assets) or be
+# placed deliberately.
+# #ASSUME: financial: these four categories are the asset accounts the family
+# expects on Portfolio, and a category the collector spells differently is
+# rejected by the intake model before it is stored.
+# #VERIFY: confirm the list with the owner against the first real delivery.
+PORTFOLIO_CATEGORIES: tuple[str, ...] = (
+    "Investments",
+    "Retirement",
+    "Alternatives",
+    "Digital currency",
+)
+NON_PORTFOLIO_CATEGORIES: tuple[str, ...] = ("Cash",)
 TREND_DAYS = 90
 
 
@@ -299,7 +320,8 @@ def is_older_than(latest: datetime | None, threshold_hours: int) -> bool:
     """Report whether a freshness time is missing or older than the threshold.
 
     Args:
-        latest (datetime | None): Value from ``last_fetched_at``.
+        latest (datetime | None): A freshness time (for example from
+            ``last_fetched_at``), or None.
         threshold_hours (int): Maximum acceptable age in hours.
 
     Returns:
@@ -428,6 +450,46 @@ class CashAccount:
     value: Decimal
     as_of: str
     reconciled_through: str | None
+
+
+@dataclass(frozen=True)
+class PortfolioAccount:
+    """An investment-type account for the Portfolio page.
+
+    Attributes:
+        name (str): Account name shown to people.
+        category (str): Balance category, one of ``PORTFOLIO_CATEGORIES``.
+        value (Decimal): Balance in dollars.
+        as_of (str): Date the balance is true for, ``YYYY-MM-DD``.
+        fetched_at (datetime | None): When the account's provider last
+            delivered it; None when the stored time is empty or unreadable,
+            which callers treat as "not updated yet".
+    """
+
+    name: str
+    category: str
+    value: Decimal
+    as_of: str
+    fetched_at: datetime | None
+
+
+def _parse_timestamp_or_none(value: object) -> datetime | None:
+    """Parse a stored fetch time, returning None when it is empty or unreadable.
+
+    The only writer stores an offset-aware UTC ISO 8601 string in a NOT NULL
+    column, so None is not expected; it keeps one damaged row from failing the
+    whole page, which shows "Not updated yet" and the out-of-date style.
+
+    Args:
+        value (object): ``fetched_at`` as read from SQLite.
+
+    Returns:
+        datetime | None: The time, or None.
+    """
+    try:
+        return _parse_timestamp(str(value))
+    except ValueError:
+        return None
 
 
 def _dollars(cents: object) -> Decimal:
@@ -610,3 +672,64 @@ async def get_cash_accounts() -> list[CashAccount]:
         )
         for r in rows
     ]
+
+
+async def get_portfolio_accounts() -> list[PortfolioAccount]:
+    """Return USD accounts in the Portfolio categories, largest first.
+
+    The categories are ``PORTFOLIO_CATEGORIES``; cash is left out. Rows are
+    filtered here, not in SQL, so the category list stays a single tuple and
+    the query stays one fixed SQL string with no parameters. Equal values are
+    ordered by name using SQLite's default BINARY collation (case-sensitive,
+    by code point), the same as ``get_cash_accounts``. A negative balance sorts
+    last.
+
+    #ASSUME: financial: the balance feed is USD only for now, so only USD rows
+    are listed; other currencies are counted by
+    ``count_non_usd_portfolio_accounts``, not converted.
+    #VERIFY: add conversion before any non-USD account is delivered.
+
+    Returns:
+        list[PortfolioAccount]: Investment-type accounts, ties by name.
+    """
+    rows = await _fetch_all(
+        "SELECT account_name, category, value_cents, as_of, fetched_at "
+        "FROM account_balances WHERE currency = 'USD' "
+        "ORDER BY value_cents DESC, account_name"
+    )
+    return [
+        PortfolioAccount(
+            name=str(r["account_name"]),
+            category=str(r["category"]),
+            value=_dollars(r["value_cents"]),
+            as_of=str(r["as_of"]),
+            fetched_at=_parse_timestamp_or_none(r["fetched_at"]),
+        )
+        for r in rows
+        if r["category"] in PORTFOLIO_CATEGORIES
+    ]
+
+
+async def count_non_usd_portfolio_accounts() -> int:
+    """Count accounts in the Portfolio categories that are not in USD.
+
+    Portfolio lists USD accounts only, so these are left out; the page says
+    how many, as Finances does.
+
+    Returns:
+        int: Number of non-USD rows in ``PORTFOLIO_CATEGORIES``.
+    """
+    rows = await _fetch_all(
+        "SELECT category FROM account_balances WHERE currency != 'USD'"
+    )
+    return sum(1 for r in rows if r["category"] in PORTFOLIO_CATEGORIES)
+
+
+async def has_balances() -> bool:
+    """Report whether any balance row is cached, in any currency or category.
+
+    Returns:
+        bool: True when ``account_balances`` has at least one row.
+    """
+    rows = await _fetch_all("SELECT EXISTS(SELECT 1 FROM account_balances) AS present")
+    return bool(rows[0]["present"])

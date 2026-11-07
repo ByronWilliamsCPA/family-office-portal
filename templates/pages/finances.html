@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/freshness.html" import freshness %}
 {% from "partials/as_of.html" import as_of_note %}
-{% from "partials/not_connected.html" import not_connected %}
 {% from "partials/balance_breakdown.html" import held, trend, sources, cash, chart_scripts %}
 {% block title %}Finances - Family Office{% endblock %}
 {% block content %}
@@ -29,7 +28,11 @@
 <section class="bg-white rounded-xl border border-stone-200 p-6" aria-labelledby="crypto-heading">
   <h2 id="crypto-heading" class="text-xl font-semibold mb-3">Digital currency</h2>
   {% if not connected.xero_crypto %}
-  {{ not_connected("Digital currency") }}
+  {% if categories | selectattr('name', 'equalto', 'Digital currency') | list %}
+  <p class="text-slate-600">The account totals above include digital currency. A list of each coin or token is not available yet.</p>
+  {% else %}
+  <p class="text-slate-600">A list of each coin or token is not available yet.</p>
+  {% endif %}
   {% elif positions %}
   <table class="w-full text-left">
     <thead><tr class="text-slate-500"><th class="py-2">Asset</th><th class="py-2 text-right">Value</th></tr></thead>
