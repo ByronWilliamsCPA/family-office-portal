@@ -306,8 +306,7 @@ def _clear_scheduler_shutdown_flag() -> Iterator[None]:
     The app lifespan sets it on exit, and a set flag would make the next
     rate-limited retry in the same process fail at once.
     """
-    from app.scheduler import clear_shutdown  # noqa: PLC0415  # needs the test env
-
-    clear_shutdown()
+    scheduler = importlib.import_module("app.scheduler")
+    scheduler.clear_shutdown()
     yield
-    clear_shutdown()
+    scheduler.clear_shutdown()
