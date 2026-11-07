@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import time
 from datetime import datetime, timezone, tzinfo
 from typing import TYPE_CHECKING, Any, cast
 
@@ -76,14 +75,30 @@ _MAX_PAGES = 50
 # real refreshes, and confirm the backend's limit and header with its owner.
 # #EDGE: timing: a retry sleeps inside the scheduler thread while holding the
 # per-service lock (not the write lock), so a manual trigger for that service
-# is skipped as already running until the refresh ends.
-# #VERIFY: the longest block is retries times cap (3 x 60 s); confirm it stays
-# well inside the shortest job interval in ``JOB_INTERVAL_HOURS``.
+# is skipped as already running until the refresh ends (the route still
+# answers 202). The wait is ``threading.Event.wait``: the app lifespan sets
+# the shutdown flag before ``scheduler.shutdown(wait=False)``, which ends any
+# sleeping retry at once and fails that refresh without writing, so a sleep
+# cannot hold the process open past ``docker stop``. A request already in
+# flight still runs to its own timeout.
+# #VERIFY: the longest block is retries times cap (3 x 60 s) plus request
+# time, up to 4 requests per refresh at roughly ``BACKEND_TIMEOUT_SECONDS``
+# each (httpx applies that timeout per connect, read and write phase, so it is
+# a rough figure); confirm the total stays well inside the shortest job
+# interval in ``JOB_INTERVAL_HOURS``, and that a stop during a retry wait ends
+# the process within the stop grace period.
 RATE_LIMIT_MAX_RETRIES = 3
 RATE_LIMIT_MAX_WAIT_SECONDS = 60
 RATE_LIMIT_DEFAULT_WAIT_SECONDS = 30
 _RATE_LIMIT_MIN_WAIT_SECONDS = 1
 _HTTP_TOO_MANY_REQUESTS = 429
+# Longest run of digits that can still be a wait below the cap; anything
+# longer is the cap, so no oversized number reaches ``int``.
+_MAX_WAIT_DIGITS = len(str(RATE_LIMIT_MAX_WAIT_SECONDS))
+
+# Set by the app lifespan just before the scheduler is shut down, so a retry
+# that is sleeping on a 429 ends at once instead of holding the process open.
+_SHUTDOWN = threading.Event()
 
 # Seconds a job may start late and still run. The daily snapshot gets a long
 # grace so a run delayed by a busy or briefly paused process is coalesced into
@@ -186,13 +201,44 @@ def _record(
         logger.exception("refresh_log_write_failed", service=service)
 
 
+class RefreshInterruptedError(Exception):
+    """A refresh was stopped by app shutdown while it waited on a rate limit."""
+
+
+def request_shutdown() -> None:
+    """Tell sleeping refresh retries to stop; called before the scheduler stops."""
+    _SHUTDOWN.set()
+
+
+def clear_shutdown() -> None:
+    """Clear the shutdown flag; called at app start so a restart waits again."""
+    _SHUTDOWN.clear()
+
+
+def shutdown_requested() -> bool:
+    """Report whether a shutdown has been requested.
+
+    Returns:
+        bool: True after ``request_shutdown`` and before ``clear_shutdown``.
+    """
+    return _SHUTDOWN.is_set()
+
+
 def _sleep(seconds: float) -> None:
-    """Block the scheduler thread; tests replace this so they never wait.
+    """Wait for a retry, ending early if the app is shutting down.
+
+    Tests replace this so they never wait.
 
     Args:
         seconds (float): How long to wait.
+
+    Raises:
+        RefreshInterruptedError: If shutdown was requested before or during
+            the wait. The refresh then fails and writes nothing.
     """
-    time.sleep(seconds)
+    if _SHUTDOWN.wait(seconds):
+        msg = "Stopped by shutdown while waiting on a rate limit"
+        raise RefreshInterruptedError(msg)
 
 
 def retry_after_seconds(header: str | None) -> float:
@@ -202,6 +248,10 @@ def retry_after_seconds(header: str | None) -> float:
     a negative, fractional or otherwise malformed value gets
     ``RATE_LIMIT_DEFAULT_WAIT_SECONDS``. The result is at least one second
     and at most ``RATE_LIMIT_MAX_WAIT_SECONDS``.
+
+    This parser is deliberately separate from the one in
+    ``app/retrieval/embeddings.py``: that one accepts fractional seconds and
+    has its own cap and default, while this one takes whole seconds only.
 
     Args:
         header (str | None): The raw header value, or None when absent.
@@ -214,7 +264,14 @@ def retry_after_seconds(header: str | None) -> float:
         text = header.strip()
         # ``str.isdigit`` also accepts non-ASCII digits; require ASCII.
         if text.isascii() and text.isdigit():
-            wait = int(text)
+            digits = text.lstrip("0") or "0"
+            # A long run of digits is above the cap; skip ``int`` so a huge
+            # value cannot hit Python's integer-string length limit.
+            wait = (
+                RATE_LIMIT_MAX_WAIT_SECONDS
+                if len(digits) > _MAX_WAIT_DIGITS
+                else int(digits)
+            )
     return float(
         max(_RATE_LIMIT_MIN_WAIT_SECONDS, min(wait, RATE_LIMIT_MAX_WAIT_SECONDS))
     )
@@ -258,6 +315,7 @@ def _get_json(
         wait = retry_after_seconds(response.headers.get("Retry-After"))
         logger.warning(
             "backend_rate_limited",
+            path=httpx.URL(url).path,
             wait_seconds=wait,
             retries_left=budget.remaining,
         )
@@ -371,7 +429,13 @@ def _refresh_once(
             headers=headers,
         ) as client:
             payload = fetch(client, connection.url.rstrip("/"))
-    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+    except (
+        httpx.HTTPError,
+        RefreshInterruptedError,
+        ValueError,
+        TypeError,
+        KeyError,
+    ) as exc:
         logger.warning("refresh_failed", service=service, error=type(exc).__name__)
         _record(service, "error", message=f"{type(exc).__name__}: {exc}")
         return

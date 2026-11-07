@@ -14,17 +14,21 @@ The sleep is replaced in every test, so none of them waits. Responses are real
 
 from __future__ import annotations
 
+import importlib
 import sqlite3
-from typing import TYPE_CHECKING, Any
+import time
+from contextlib import closing
+from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 
 from app import db, scheduler
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 _REQUEST = httpx.Request("GET", "http://llc-manager.test/api/v1/entities")
@@ -80,12 +84,12 @@ def _client(*responses: httpx.Response) -> MagicMock:
 
 
 def _entity_ids(db_path: Path) -> set[str]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         return {row[0] for row in conn.execute("SELECT id FROM entities")}
 
 
 def _last_log(db_path: Path, service: str) -> tuple[str, str | None]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         row = conn.execute(
             "SELECT status, message FROM refresh_log WHERE service = ? "
             "ORDER BY id DESC LIMIT 1",
@@ -96,7 +100,7 @@ def _last_log(db_path: Path, service: str) -> tuple[str, str | None]:
 
 
 def _seed_cached_entity(db_path: Path) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             "INSERT INTO entities (id, name, fetched_at) "
             "VALUES ('cached', 'Cached LLC', '2026-01-01T00:00:00+00:00')"
@@ -130,6 +134,10 @@ def _run(job: Callable[[], None], client: MagicMock) -> None:
         ("1.5", None),
         ("٣", None),
         ("1e3", None),
+        ("0005", 5.0),
+        ("0" * 5000 + "7", 7.0),
+        ("9" * 5000, float(scheduler.RATE_LIMIT_MAX_WAIT_SECONDS)),
+        ("1000", float(scheduler.RATE_LIMIT_MAX_WAIT_SECONDS)),
     ],
 )
 def test_retry_after_wait_parsing(header: str | None, expected: float | None) -> None:
@@ -246,7 +254,7 @@ def test_documents_429_then_200_succeeds(
     client = _client(_limited("4"), _response(200, [item]))
     _run(scheduler.refresh_documents, client)
     assert sleeps == [4.0]
-    with sqlite3.connect(initialized_db) as conn:
+    with closing(sqlite3.connect(initialized_db)) as conn:
         ids = {row[0] for row in conn.execute("SELECT id FROM documents")}
     assert ids == {"d1"}
     assert _last_log(initialized_db, "llc-manager-documents")[0] == "success"
@@ -256,7 +264,7 @@ def test_documents_retries_exhausted_keeps_cache(
     initialized_db: Path, sleeps: list[float]
 ) -> None:
     """A document refresh that stays limited leaves cached documents alone."""
-    with sqlite3.connect(initialized_db) as conn:
+    with closing(sqlite3.connect(initialized_db)) as conn:
         conn.execute(
             "INSERT INTO documents (id, name, category, is_confidential, "
             "proxy_url, fetched_at) VALUES "
@@ -265,7 +273,7 @@ def test_documents_retries_exhausted_keeps_cache(
         conn.commit()
     client = _client(*[_limited() for _ in range(scheduler.RATE_LIMIT_MAX_RETRIES + 1)])
     _run(scheduler.refresh_documents, client)
-    with sqlite3.connect(initialized_db) as conn:
+    with closing(sqlite3.connect(initialized_db)) as conn:
         ids = {row[0] for row in conn.execute("SELECT id FROM documents")}
     assert ids == {"old"}
     assert len(sleeps) == scheduler.RATE_LIMIT_MAX_RETRIES
@@ -336,11 +344,201 @@ def test_retry_budget_is_shared_across_pages(
     assert _last_log(initialized_db, "llc-manager")[0] == "error"
 
 
-def test_default_sleep_delegates_to_time_sleep(
-    monkeypatch: pytest.MonkeyPatch,
+# --------------------------------------------------------------------------- #
+# The same handling on the holdings and positions refreshes
+# --------------------------------------------------------------------------- #
+
+
+class _Case(NamedTuple):
+    job: Callable[[], None]
+    service: str
+    payload: Any
+    ids_sql: str
+    seed: str
+
+
+_HOLDINGS = _Case(
+    scheduler.refresh_holdings,
+    "pp-security-master",
+    {"holdings": [{"id": "h1", "security_name": "Fund A"}], "performance": []},
+    "SELECT id FROM holdings",
+    "INSERT INTO holdings (id, security_name, fetched_at) "
+    "VALUES ('cached', 'Cached Fund', 'x')",
+)
+_POSITIONS = _Case(
+    scheduler.refresh_positions,
+    "xero_crypto",
+    [{"id": "p1", "asset": "BTC"}],
+    "SELECT id FROM positions",
+    "INSERT INTO positions (id, asset, fetched_at) VALUES ('cached', 'ETH', 'x')",
+)
+_CASES = [
+    pytest.param(_HOLDINGS, id="holdings"),
+    pytest.param(_POSITIONS, id="positions"),
+]
+
+
+def _ids(db_path: Path, ids_sql: str) -> set[str]:
+    with closing(sqlite3.connect(db_path)) as conn:
+        return {row[0] for row in conn.execute(ids_sql)}
+
+
+@pytest.mark.parametrize("case", _CASES)
+def test_other_jobs_429_then_200_succeeds(
+    initialized_db: Path, sleeps: list[float], case: _Case
 ) -> None:
-    """The real sleep is a thin wrapper over ``time.sleep``."""
-    waited: list[float] = []
-    monkeypatch.setattr("time.sleep", waited.append)
-    scheduler._sleep(2.5)  # noqa: SLF001  # the default the tests replace
-    assert waited == [2.5]
+    """Holdings and positions also wait out a 429 and then succeed."""
+    client = _client(_limited("6"), _response(200, case.payload))
+    _run(case.job, client)
+    assert sleeps == [6.0]
+    assert client.get.call_count == 2
+    assert _ids(initialized_db, case.ids_sql) != set()
+    assert _last_log(initialized_db, case.service)[0] == "success"
+
+
+@pytest.mark.parametrize("case", _CASES)
+def test_other_jobs_retries_exhausted_keep_cache(
+    initialized_db: Path, sleeps: list[float], case: _Case
+) -> None:
+    """Still limited: the cached rows stay and an error is logged."""
+    with closing(sqlite3.connect(initialized_db)) as conn:
+        conn.execute(case.seed)
+        conn.commit()
+    attempts = scheduler.RATE_LIMIT_MAX_RETRIES + 1
+    client = _client(*[_limited("1") for _ in range(attempts)])
+    _run(case.job, client)
+    assert client.get.call_count == attempts
+    assert len(sleeps) == scheduler.RATE_LIMIT_MAX_RETRIES
+    assert _ids(initialized_db, case.ids_sql) == {"cached"}
+    status, message = _last_log(initialized_db, case.service)
+    assert status == "error"
+    assert message is not None
+    assert "429" in message
+
+
+def test_each_holdings_run_gets_a_full_budget(
+    initialized_db: Path, sleeps: list[float]
+) -> None:
+    """A single-request job starts every run with a fresh retry budget."""
+    payload = _HOLDINGS.payload
+    for _ in range(2):
+        limited = [_limited("1") for _ in range(scheduler.RATE_LIMIT_MAX_RETRIES)]
+        client = _client(*limited, _response(200, payload))
+        _run(scheduler.refresh_holdings, client)
+        assert _last_log(initialized_db, "pp-security-master")[0] == "success"
+    assert len(sleeps) == 2 * scheduler.RATE_LIMIT_MAX_RETRIES
+
+
+# --------------------------------------------------------------------------- #
+# What is logged
+# --------------------------------------------------------------------------- #
+
+
+def test_rate_limit_event_names_the_request_and_nothing_sensitive(
+    initialized_db: Path, sleeps: list[float]
+) -> None:
+    """The warning carries the request path, wait and retries left, no more."""
+    del initialized_db, sleeps
+    client = _client(_limited("3"), _response(200, []))
+    with capture_logs() as logs:
+        _run(scheduler.refresh_entities, client)
+    events = [entry for entry in logs if entry["event"] == "backend_rate_limited"]
+    assert len(events) == 1
+    event = events[0]
+    assert {k: v for k, v in event.items() if k != "log_level"} == {
+        "event": "backend_rate_limited",
+        "path": "/api/v1/entities",
+        "wait_seconds": 3.0,
+        "retries_left": scheduler.RATE_LIMIT_MAX_RETRIES - 1,
+    }
+    assert event["log_level"] == "warning"
+
+
+def test_rate_limit_event_path_has_no_query() -> None:
+    """Only the path is logged, even for a URL that carries a query."""
+    client = _client(_limited("1"), _response(200, []))
+    with capture_logs() as logs, patch("app.scheduler._sleep"):
+        scheduler._get_json(  # noqa: SLF001  # exercised directly: the URL shape is the point
+            client, "http://llc.test/api/v1/x?token=abc", {"page": 1}
+        )
+    event = next(e for e in logs if e["event"] == "backend_rate_limited")
+    assert event["path"] == "/api/v1/x"
+    assert "abc" not in str(event)
+
+
+# --------------------------------------------------------------------------- #
+# Shutdown: a sleeping retry must not hold the process open
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def shutdown_flag() -> Iterator[None]:
+    """Leave the process-wide shutdown flag cleared before and after a test."""
+    scheduler.clear_shutdown()
+    yield
+    scheduler.clear_shutdown()
+
+
+def test_sleep_waits_normally_when_no_shutdown(shutdown_flag: None) -> None:
+    """Without a shutdown request the real sleep waits its time and returns."""
+    del shutdown_flag
+    started = time.monotonic()
+    scheduler._sleep(0.05)  # noqa: SLF001  # the real default the tests replace
+    assert time.monotonic() - started >= 0.04
+
+
+def test_sleep_ends_at_once_on_shutdown(shutdown_flag: None) -> None:
+    """A shutdown request ends the wait immediately and raises."""
+    del shutdown_flag
+    scheduler.request_shutdown()
+    assert scheduler.shutdown_requested()
+    started = time.monotonic()
+    with pytest.raises(scheduler.RefreshInterruptedError):
+        scheduler._sleep(60)  # noqa: SLF001  # the real default the tests replace
+    assert time.monotonic() - started < 5
+
+
+def test_shutdown_during_429_wait_fails_refresh_and_writes_nothing(
+    initialized_db: Path, shutdown_flag: None
+) -> None:
+    """Interrupted while waiting: error logged, no retry, cache untouched."""
+    del shutdown_flag
+    _seed_cached_entity(initialized_db)
+    scheduler.request_shutdown()
+    client = _client(_limited("30"), _response(200, [{"id": "e1", "name": "A"}]))
+    _run(scheduler.refresh_entities, client)
+    assert client.get.call_count == 1
+    assert _entity_ids(initialized_db) == {"cached"}
+    status, message = _last_log(initialized_db, "llc-manager")
+    assert status == "error"
+    assert message is not None
+    assert "RefreshInterruptedError" in message
+
+
+def test_clear_shutdown_restores_waiting(shutdown_flag: None) -> None:
+    """A cleared flag lets later sleeps in the same process wait again."""
+    del shutdown_flag
+    scheduler.request_shutdown()
+    scheduler.clear_shutdown()
+    assert not scheduler.shutdown_requested()
+    scheduler._sleep(0.01)  # noqa: SLF001  # the real default the tests replace
+
+
+async def test_lifespan_clears_then_sets_the_flag(
+    initialized_db: Path, shutdown_flag: None
+) -> None:
+    """Startup clears a stale flag; leaving the app sets it before shutdown."""
+    del initialized_db, shutdown_flag
+    from app import main  # noqa: PLC0415  # app.main exits at import without env
+
+    importlib.reload(main)
+    scheduler.request_shutdown()
+    fake = MagicMock()
+    states: list[bool] = []
+    fake.shutdown.side_effect = lambda **_: states.append(
+        scheduler.shutdown_requested()
+    )
+    with patch.object(main, "build_scheduler", return_value=fake):
+        async with main.lifespan(main.app):
+            assert not scheduler.shutdown_requested()
+    assert states == [True]
