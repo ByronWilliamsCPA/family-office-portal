@@ -348,7 +348,9 @@ contract item 13 and the ADR-005 amendment of 2026-09-29).
 ### Balance intake
 
 `POST /api/v1/balances` is the one route that does not use the signed identity
-token. A collector on the internal network sends the shared key in `X-API-Key`.
+token. A collector sends the shared key in `X-API-Key` through a separate
+internal mutual-TLS Traefik route that has no forward auth. Apart from `/health`
+and `/static/`, this is the only path that is not behind a signed-in identity.
 
 - The middleware lets exactly `POST /api/v1/balances` through to the route
   (routed path, any `root_path` stripped). Every other method and path still
@@ -364,9 +366,11 @@ token. A collector on the internal network sends the shared key in `X-API-Key`.
   and field but never echoes a submitted value, and nothing is stored on any
   error.
 - The key, submitted values, account identifiers and balances are never logged.
-- The collector must reach the portal directly on the internal network, because
-  a forward-auth route in front of the portal would refuse it. See the ADR-005
-  amendment of 2026-10-05.
+- The collector reaches the portal through that separate internal route, not
+  through the portal's public route, because forward auth on the public route
+  would refuse it. The internal route requires a client certificate, matches
+  only `POST` on this exact path, and empties every identity header. See the
+  ADR-005 amendments of 2026-10-05 and 2026-11-04.
 
 ### Authorization
 
