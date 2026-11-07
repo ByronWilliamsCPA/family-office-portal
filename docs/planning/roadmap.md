@@ -3,7 +3,7 @@
 **Note (2026-09-28)**: Documents now come from llc-manager. Where this document
 says otherwise, `CLAUDE.md` takes precedence.
 
-> **Status**: Active | **Updated**: 2026-11-04
+> **Status**: Active | **Updated**: 2026-11-07
 
 ## TL;DR
 
@@ -42,6 +42,9 @@ housekeeping and the checks on the real tablet.
 | 2026-11-04 | #77 | Per-user question rate limit and one question in flight per user (A10) |
 | 2026-11-04 | #78 | Playwright tablet and accessibility suite, 11 templates raised to 44 pixel tap targets (A7) |
 | 2026-11-04 | #79 | Operations runbook in `docs/operations/runbook.md` (A8) |
+| 2026-11-07 | #85 | Tech spec describes the balance intake transport accurately (separate internal mutual-TLS route, no forward auth) |
+| 2026-11-07 | #83 | Portfolio lists non-cash USD asset accounts from the balance feed; the per-security table shows only when its backend is connected (O5) |
+| 2026-11-07 | #84 | Refresh jobs honor HTTP 429 and `Retry-After`: bounded wait and retry, then fail and keep the old cache |
 
 ## Where the code stands (2026-11-04)
 
@@ -52,7 +55,7 @@ housekeeping and the checks on the real tablet.
 | Documents | Built: folders, name search, inline preview, download through the file proxy (ADR-007), confidential documents hidden from Viewers | B3 (llc-manager connected); open a PDF in the tablet's browser; time a large file |
 | Finances | Built on delivered balances: totals, per owner, cash, 90-day trend, manual marks page for admins | Totals exclude home, vehicles and loans (stated on the page); real collector delivery |
 | Entities | List and detail built; the "Next date" column is blank for every entity today because llc-manager returns no `next_date` (verified in its schema, 2026-11-04) | Green, yellow and red status and "due within 60 days" labels, which need llc-manager backend work first (A5) |
-| Portfolio | Built: holdings table from cache only; refresh jobs scheduled every 2 hours; in the initial release | B7 (backends connected); C9; no performance or sector charts |
+| Portfolio | Built: account list from the delivered balances (no backend needed, #83, O5); per-security table from cache only, shown when the holdings backend is connected and holdings exist; refresh jobs scheduled every 2 hours; in the initial release | B4 for the account list; B7 only for the per-security table; C9; no performance or sector charts |
 | Document search and indexer (ADR-006, ADR-008) | Built; off until its settings exist; in the initial release | Search stack deployed (B5) |
 | Question panel (ADR-009) | Built; off unless configured; admins only by default; in the initial release for everyone; per-user rate limit and one question at a time (6 a minute, 60 an hour by default) | Search (B5), model route and instructions file (B6), the real check of the model-down message (C8) |
 | Image and CI | CI builds, smoke-tests, signs and pushes an image from `main` | No deployment definition lives in this repository |
@@ -82,7 +85,11 @@ to, and use without help for the jobs they care about most:
 - Documents: find a document by folder, by name or by what it says, and open or
   download it
 - Finances: account totals from delivered balances
-- Portfolio: holdings from their backend, on the Portfolio page; crypto positions appear in the Digital currency section of the Finances page
+- Portfolio: a list of the non-cash USD asset accounts (Investments, Retirement,
+  Alternatives, Digital currency) from the delivered balances, plus a per-security
+  table only when the holdings backend is connected and holdings exist (O5, chosen
+  provisionally); crypto positions appear in the Digital currency section of the
+  Finances page when their backend is connected
 - Entities: list and detail
 - The question panel, available to every signed-in user (`CHAT_ENABLED_FOR=all`)
 
@@ -90,15 +97,17 @@ Two dependencies follow from this scope:
 
 - The question panel cannot work without document search: with search off, its
   answer says so. B5 is therefore on the critical path for both.
-- Portfolio shows data only when `pp-security-master` and `xero_crypto` are
-  connected (B7); the refresh jobs are scheduled (A11, done). If a backend is
+- The Portfolio account list needs only the balance delivery (B4), not a Portfolio
+  backend (O5). The per-security table and the crypto positions show data only when
+  `pp-security-master` and `xero_crypto` are connected (B7); the refresh jobs are
+  scheduled (A11, done). If a backend is
   down after a successful refresh, the page shows its last cached figures with a
   "last updated" label, never an error. If no refresh has ever succeeded, there
   is no such label: the page shows "Not updated yet", or "Not connected yet"
-  when the backend URL is unset (verified in the templates). **Portfolio is at risk for the initial release (2026-11-04):**
-  read from source, `pp-security-master` serves no HTTP API and `xero_crypto`
-  serves no positions endpoint, so the jobs have nothing to call until the owner
-  chooses a way forward (see B7).
+  when the backend URL is unset (verified in the templates). **The per-security table is at risk for the initial release
+  (2026-11-04):** read from source, `pp-security-master` serves no HTTP API and
+  `xero_crypto` serves no positions endpoint, so the jobs have nothing to call
+  (see B7). Since 2026-11-07 the account list covers the page without them (O5).
 
 Still outside the initial release:
 
@@ -140,7 +149,7 @@ work (B3 and the findings below), and A9 comes last.
 | B4 | The balance collector delivers to the portal through a separate internal route that requires a client certificate and accepts only `POST` on the exact intake path, with no forward auth (verified by reading the infrastructure repository, 2026-11-04; see the ADR-005 amendment of that date). The collector stack and the route are authored; whether they are live is not verified, and what remains is mostly manual work by the owner. Confirm each provider's delivery cadence against the 24-hour staleness threshold (see the risk register) | collector service, homelab-infra |
 | B5 | Search stack: vector store, embedding service, chunk files, the indexer command on a schedule, and the tax-law command, both run from the same image and kept off the web process (ADR-006). Required for search and for the question panel. The definitions are authored in the infrastructure repository; deployment status is not verified from here. Gaps found: the vector store is off by default (its replica count defaults to zero until the owner sets it); the scheduled jobs run from a sidecar loop with a daily time and a trigger file, not from cron (see the runbook); and nothing yet writes the chunk sets: the data-ingestor stack that would is authored, but its own README says no image is published yet | homelab-infra, data_ingestor |
 | B6 | Question panel: model route, the instructions file kept outside the repository, and `CHAT_ENABLED_FOR=all`. The model route and the portal wiring are authored in the infrastructure repository; whether the route is live is not verified from here, and what remains is mostly manual work by the owner | homelab-infra |
-| B7 | **Blocked, owner decision needed (verified in code, 2026-11-04).** pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint, so the holdings and positions refresh jobs have nothing to call. Holdings render on the Portfolio page and crypto positions in the Digital currency section of the Finances page (verified in the routes and templates), so no route or template work is needed. Base URLs and keys alone will not fix this. Two ways forward are listed under "Findings of 2026-11-04"; neither is chosen | owner, pp-security-master, xero_crypto |
+| B7 | **Blocked, owner decision needed (verified in code, 2026-11-04).** pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint, so the holdings and positions refresh jobs have nothing to call. Holdings render on the Portfolio page and crypto positions in the Digital currency section of the Finances page (verified in the routes and templates), so no route or template work is needed. Base URLs and keys alone will not fix this. Two ways forward are listed under "Findings of 2026-11-04"; neither is chosen. For the initial release the Portfolio page does not wait on this: its account list comes from the balance feed (O5). B7 now gates only the per-security table and the crypto positions | owner, pp-security-master, xero_crypto |
 
 ### C. Checks that fakes cannot prove
 
@@ -167,6 +176,7 @@ These need the deployed portal, real data or the real tablet.
 | O2 | The question panel is in the initial release, for everyone (`CHAT_ENABLED_FOR=all`) | B5 and B6 (model route, instructions file outside the repository) are required; A10 (per-user rate limiting) becomes required; verify the behaviour when the model service is down |
 | O3 | Playwright is added as a dev-only dependency | A7 proceeds: tablet size 1024x768, back button, readability with JavaScript off, accessibility basics |
 | O4 | Portfolio is in the initial release | A11 (schedule the holdings and positions jobs, fix the empty-state sentence) and B7 (connect pp-security-master and xero_crypto) are required; pp-security-master stays alpha, so its 500 responses must show as stale data, never as errors. **Update 2026-11-04:** B7 is blocked because the backends do not serve what the jobs call; Portfolio in the initial release is at risk until the owner chooses a way forward |
+| O5 | **Chosen provisionally (2026-11-07); the owner can revisit.** For the initial release the Portfolio page lists the non-cash USD asset accounts (Investments, Retirement, Alternatives, Digital currency) from the balance feed the collector already delivers (#83). A per-security table appears only when the pp backend is connected and holdings exist. Per-security detail for every institution would need the collector to carry holdings, a later and larger piece of work | The page has content without B7. Which categories count as Portfolio is one tuple in `app/cache.py`, with a test that fails when a new intake category is not placed. #ASSUME the collector delivers investment-type accounts in those categories. #VERIFY on the first real delivery (C4, C9) |
 
 ### Findings of 2026-11-04 (backends and infrastructure)
 
@@ -222,6 +232,25 @@ and B5 above.
 7. C5 and C6 on the tablet; tag 0.1.0 (A9). That is the initial release.
 
 Steps 4 to 6 are independent of each other and can run in parallel.
+
+### Open items (2026-11-07)
+
+- **Entity compliance summary (A5, B3).** The llc-manager change that adds a
+  computed compliance summary to entity responses is in review as llc-manager
+  PR #120. It is an enabler for the entity status labels, not the whole answer:
+  open product questions remain, so it is not merged. A5 stays blocked until it
+  lands and the status vocabulary is agreed.
+- **SonarCloud on `main`.** The scan fails only at its Quality Gate step, because
+  no quality gate is assigned to the project in SonarCloud. That is a setting in
+  SonarCloud, not a code problem. #ASSUME the scan itself completes and reports
+  normally. #VERIFY in the SonarCloud project settings, then re-run on `main`.
+- **Balances staleness against collector cadence.** The balances threshold is 24
+  hours and the collector may run daily, so one late delivery turns the Finances
+  section stale (see the risk register). The threshold or the schedule needs a
+  decision; none is made. #ASSUME the collector runs daily. #VERIFY the real
+  cadence per provider (B4).
+- **Portfolio scope (O5).** Chosen provisionally; the owner can revisit it. A
+  per-security table for all institutions needs the collector to carry holdings.
 
 ---
 
@@ -457,10 +486,10 @@ says search is off) and B6 to turn it on, and the checks in C8.
 | Risk | Probability | Impact | Mitigation |
 | --- | --- | --- | --- |
 | Deployment wiring (identity provider, proxy, trusted range) delays the first release | Medium | High | Do B1 and B2 first and check a real header (C1) before anything else |
-| The collector cannot reach the portal directly, because a forward-auth route is in front of it | Medium | High | Deliver on the internal network to the exact intake path (B4) |
+| The collector cannot reach the portal directly, because a forward-auth route is in front of it | Medium | High | The collector delivers over a separate internal mutual-TLS route that is not behind forward auth and accepts only `POST` on the exact intake path (B4; ADR-005 amendments of 2026-10-05 and 2026-11-04; tech spec, "Balance intake"). Whether that route is live is not verified |
 | `llc-manager` entity or document fields differ from what the pages expect | Medium | Medium | Confirm the fields and type strings (B3) before relying on A5 |
 | `pp-security-master` API unstable (alpha) | High | Medium | Portfolio is in the initial release; the cache absorbs failures and a previously populated section shows stale data with a "last updated" label (A6 tests it, #75). Superseded in part by the next row |
-| Portfolio has no data source: pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint (verified in code, 2026-11-04) | High | High | The owner chooses a way forward (B7). Until then no refresh has succeeded, so the Portfolio page and the Digital currency section show no figures, with "Not updated yet" (or "Not connected yet" when the backend URL is unset) and no "last updated" label, never an error page |
+| The per-security table and crypto positions have no data source: pp-security-master serves no HTTP API and xero_crypto serves no positions endpoint (verified in code, 2026-11-04). Reduced since 2026-11-07: the Portfolio account list comes from the balance feed (O5) | High | Medium | The owner chooses a way forward (B7). Until then no refresh has succeeded, so the per-security table is absent and the Digital currency coin list shows no figures, with "Not updated yet" (or "Not connected yet" when the backend URL is unset) and no "last updated" label, never an error page |
 | The 24-hour balances staleness threshold has no margin against a daily collector: freshness is the oldest delivery among providers, so one provider that is late turns the whole Finances section stale (verified in the cache code; collector cadence from its documentation and stack defaults) | Medium | Medium | Owner option: raise the threshold (for example to 36 or 48 hours), or run the collector twice a day. Not decided |
 | Question panel enabled for everyone before a rate limit exists | Low | Medium | Mitigated: the per-user limit and one question at a time are in code (A10, #77). The limiter is in memory, so it assumes one worker, which the Dockerfile sets |
 | Search stack not deployed | Medium | High | B5 is on the critical path; without it search is off and the question panel cannot answer from documents |
