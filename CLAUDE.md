@@ -172,6 +172,11 @@ Key documents to read before making architectural or data-model decisions:
 - **Paging**: refresh jobs read `{items, total}` pages until `total` rows arrive.
   A short or runaway page set fails the refresh and keeps the old cache; never
   replace cached rows with a partial set.
+- **Rate limits**: a refresh request answered with HTTP 429 waits for `Retry-After`
+  (whole seconds; anything else waits `RATE_LIMIT_DEFAULT_WAIT_SECONDS`, capped at
+  `RATE_LIMIT_MAX_WAIT_SECONDS`) and retries, at most `RATE_LIMIT_MAX_RETRIES` times
+  per refresh across all pages. Still limited means the refresh fails and the old
+  cache stays. Tests replace `app.scheduler._sleep`; never sleep for real in tests.
 - **Database**: SQLite via `aiosqlite` for async reads in route handlers; synchronous
   writes in APScheduler refresh jobs. Initialize with `PRAGMA journal_mode=WAL` and
   `PRAGMA busy_timeout=5000`. No ORM; use raw SQL with parameterized queries.
