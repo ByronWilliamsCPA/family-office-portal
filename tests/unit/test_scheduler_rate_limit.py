@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: MIT
 """Rate-limit (HTTP 429) handling in the scheduler refresh jobs.
 
-The llc-manager backend limits callers to 60 requests per minute. A refresh
+The llc-manager backend is expected to allow about 60 requests per minute. A refresh
 that meets a 429 reads ``Retry-After`` (whole seconds only), waits a bounded
 time, and retries a bounded number of times. When the backend is still
 limiting, the refresh fails the normal way: the cached rows stay and
 ``refresh_log`` records an error, so the section shows stale data.
 
-The sleep is replaced in every test, so none of them waits. Responses are real
+The sleep is replaced in every refresh test, so none of them waits; only the
+tests of the sleep itself make real waits, each under a second. Responses are real
 ``httpx.Response`` objects; only the client is faked.
 """
 
@@ -28,7 +29,7 @@ from structlog.testing import capture_logs
 from app import db, scheduler
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
     from pathlib import Path
 
 _REQUEST = httpx.Request("GET", "http://llc-manager.test/api/v1/entities")
@@ -471,25 +472,15 @@ def test_rate_limit_event_path_has_no_query() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.fixture
-def shutdown_flag() -> Iterator[None]:
-    """Leave the process-wide shutdown flag cleared before and after a test."""
-    scheduler.clear_shutdown()
-    yield
-    scheduler.clear_shutdown()
-
-
-def test_sleep_waits_normally_when_no_shutdown(shutdown_flag: None) -> None:
+def test_sleep_waits_normally_when_no_shutdown() -> None:
     """Without a shutdown request the real sleep waits its time and returns."""
-    del shutdown_flag
     started = time.monotonic()
     scheduler._sleep(0.05)  # noqa: SLF001  # the real default the tests replace
     assert time.monotonic() - started >= 0.04
 
 
-def test_sleep_ends_at_once_on_shutdown(shutdown_flag: None) -> None:
+def test_sleep_ends_at_once_on_shutdown() -> None:
     """A shutdown request ends the wait immediately and raises."""
-    del shutdown_flag
     scheduler.request_shutdown()
     assert scheduler.shutdown_requested()
     started = time.monotonic()
@@ -499,10 +490,9 @@ def test_sleep_ends_at_once_on_shutdown(shutdown_flag: None) -> None:
 
 
 def test_shutdown_during_429_wait_fails_refresh_and_writes_nothing(
-    initialized_db: Path, shutdown_flag: None
+    initialized_db: Path,
 ) -> None:
     """Interrupted while waiting: error logged, no retry, cache untouched."""
-    del shutdown_flag
     _seed_cached_entity(initialized_db)
     scheduler.request_shutdown()
     client = _client(_limited("30"), _response(200, [{"id": "e1", "name": "A"}]))
@@ -515,20 +505,17 @@ def test_shutdown_during_429_wait_fails_refresh_and_writes_nothing(
     assert "RefreshInterruptedError" in message
 
 
-def test_clear_shutdown_restores_waiting(shutdown_flag: None) -> None:
+def test_clear_shutdown_restores_waiting() -> None:
     """A cleared flag lets later sleeps in the same process wait again."""
-    del shutdown_flag
     scheduler.request_shutdown()
     scheduler.clear_shutdown()
     assert not scheduler.shutdown_requested()
     scheduler._sleep(0.01)  # noqa: SLF001  # the real default the tests replace
 
 
-async def test_lifespan_clears_then_sets_the_flag(
-    initialized_db: Path, shutdown_flag: None
-) -> None:
+async def test_lifespan_clears_then_sets_the_flag(initialized_db: Path) -> None:
     """Startup clears a stale flag; leaving the app sets it before shutdown."""
-    del initialized_db, shutdown_flag
+    del initialized_db
     from app import main  # noqa: PLC0415  # app.main exits at import without env
 
     importlib.reload(main)
@@ -542,3 +529,19 @@ async def test_lifespan_clears_then_sets_the_flag(
         async with main.lifespan(main.app):
             assert not scheduler.shutdown_requested()
     assert states == [True]
+
+
+async def test_lifespan_sets_the_flag_when_the_scheduler_is_disabled(
+    initialized_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leaving the app sets the flag even with no scheduler to stop."""
+    del initialized_db
+    from app import main  # noqa: PLC0415  # app.main exits at import without env
+
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    importlib.reload(main)
+    with patch.object(main, "build_scheduler") as build:
+        async with main.lifespan(main.app):
+            assert not scheduler.shutdown_requested()
+        build.assert_not_called()
+    assert scheduler.shutdown_requested()

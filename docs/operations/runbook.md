@@ -338,6 +338,10 @@ read `/admin/refresh-status` again to see the result.
 A refresh that meets a rate limit (HTTP 429) waits and retries, so it can take up to
 about 3 minutes plus request time. A repeat trigger for the same service in the
 meantime is skipped as already running, although the route still answers 202.
+A scheduled refresh waiting on a rate limit is stopped when the portal stops. A manual
+refresh is not: the portal waits for it before it shuts down, so stopping the
+container during that wait can take up to about 3 minutes plus request time, or end
+in a forced kill if the stop grace period is shorter.
 
 ## Balance intake
 
@@ -521,7 +525,7 @@ Confirm one delivery succeeds afterwards.
 | A section is empty | Backend not connected, or connected but never refreshed | The page says "Not connected yet" or "Not updated yet"; `/admin/refresh-status` | Set the backend's URL and key pair, or fix the backend and trigger a refresh |
 | "Not connected yet" tiles | The backend URL is unset (or, for Finances balances, nothing has been delivered) | `.env.example` entry for that backend; for balances, the `balances` entry in refresh status | Set the URL and key; for balances, check the collector |
 | "This may be out of date" labels | A refresh has failed for longer than the threshold | `last_error_message` in `/admin/refresh-status`; container log lines `refresh_failed`, `refresh_write_failed` | Fix the backend or the key, then `POST /admin/refresh/{service}`. Holdings failures from pp-security-master are expected now and then |
-| A refresh keeps failing with a rate-limit error | The backend answers HTTP 429 and is still limiting after the retries | `last_error_message` in `/admin/refresh-status` starts with `HTTPStatusError` and mentions 429; container log event `backend_rate_limited`, which carries the request path, the wait in seconds and the retries left, never a header, key or query | Wait for the backend's limit window to pass and trigger the refresh again; if it repeats, check with the backend's owner whether something else is calling it. This handling is covered by tests only; it is not yet seen against the real backends |
+| A refresh keeps failing with a rate-limit error | The backend answers HTTP 429 and is still limiting after the retries | `last_error_message` in `/admin/refresh-status` starts with `HTTPStatusError` and mentions 429; container log event `backend_rate_limited`, which carries the request path, the wait in seconds and the retries left, never a header, key or query | Wait for the backend's limit window to pass and trigger the refresh again; if it repeats, check with the backend's owner whether something else is calling it. This handling is covered by tests only; it is not yet seen against the real backends. A `RefreshInterruptedError` right after a stop or restart is expected (a scheduled retry was cut short by the shutdown); the next run tries again |
 | 403 for everyone | Secret mismatch after a rotation, new provider ID not applied, proxy not forwarding `X-authentik-jwt`, clock skew above 10 seconds, or group names not matching `FO_ADMIN_GROUP` and `FO_VIEWER_GROUP` | The middleware log line names a reason category, never the token | Finish the rotation steps, align `AUTHENTIK_AUDIENCE` and `AUTHENTIK_ISSUER`, check the proxy contract in ADR-005 and the host clock |
 | 403 for one person | Not in either group | Their group membership in Authentik | Add them to the right group; a removed user can keep a role for up to 24 hours |
 | 404 on `/api/v1/balances` | `BALANCE_INTAKE_API_KEY` is unset or blank | Is the setting present in the container environment | Set it (32 or more printable ASCII characters) and restart. A 401 instead means the key is wrong |

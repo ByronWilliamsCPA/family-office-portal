@@ -110,10 +110,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        # End any scheduled refresh sleeping on a rate limit before the
+        # scheduler stops, so that sleep does not hold the process open. Set
+        # whether or not a scheduler runs.
+        request_shutdown()
         if scheduler is not None:
-            # End any refresh sleeping on a rate limit before the scheduler
-            # stops, so the process is not held open by that sleep.
-            request_shutdown()
             scheduler.shutdown(wait=False)  # pyright: ignore[reportUnknownMemberType]
 
 

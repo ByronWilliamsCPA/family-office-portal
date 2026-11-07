@@ -62,8 +62,8 @@ _MAX_MESSAGE_LENGTH = 500
 _PAGE_SIZE = 100
 _MAX_PAGES = 50
 
-# Rate limiting (HTTP 429). llc-manager allows 60 requests per minute per
-# caller. A limited request waits for the server's ``Retry-After`` (whole
+# Rate limiting (HTTP 429). llc-manager is expected to allow about 60 requests
+# per minute per caller. A limited request waits for the server's ``Retry-After`` (whole
 # seconds), never longer than ``RATE_LIMIT_MAX_WAIT_SECONDS``, and a refresh
 # makes at most ``RATE_LIMIT_MAX_RETRIES`` retries in total, shared by every
 # page it reads, so the longest wait is the product of the two.
@@ -77,27 +77,34 @@ _MAX_PAGES = 50
 # per-service lock (not the write lock), so a manual trigger for that service
 # is skipped as already running until the refresh ends (the route still
 # answers 202). The wait is ``threading.Event.wait``: the app lifespan sets
-# the shutdown flag before ``scheduler.shutdown(wait=False)``, which ends any
-# sleeping retry at once and fails that refresh without writing, so a sleep
-# cannot hold the process open past ``docker stop``. A request already in
-# flight still runs to its own timeout.
+# the shutdown flag before ``scheduler.shutdown(wait=False)``, which ends a
+# sleeping retry of a SCHEDULED run at once and fails that refresh without
+# writing. A MANUAL trigger is not covered: ``POST /admin/refresh/{service}``
+# runs the job as a background task inside the request, and uvicorn waits for
+# request tasks before it runs the lifespan shutdown, so the flag is set too
+# late. A manual refresh waiting on a rate limit therefore keeps shutdown
+# waiting until its wait ends or the container is force-killed, up to about
+# 3 minutes plus request time. A request already in flight also runs to its
+# own timeout.
 # #VERIFY: the longest block is retries times cap (3 x 60 s) plus request
 # time, up to 4 requests per refresh at roughly ``BACKEND_TIMEOUT_SECONDS``
 # each (httpx applies that timeout per connect, read and write phase, so it is
 # a rough figure); confirm the total stays well inside the shortest job
-# interval in ``JOB_INTERVAL_HOURS``, and that a stop during a retry wait ends
-# the process within the stop grace period.
+# interval in ``JOB_INTERVAL_HOURS``, that a stop during a scheduled run's
+# retry wait ends the process within the stop grace period, and how long a
+# stop takes during a manual refresh's retry wait (it is not interrupted).
 RATE_LIMIT_MAX_RETRIES = 3
 RATE_LIMIT_MAX_WAIT_SECONDS = 60
 RATE_LIMIT_DEFAULT_WAIT_SECONDS = 30
 _RATE_LIMIT_MIN_WAIT_SECONDS = 1
 _HTTP_TOO_MANY_REQUESTS = 429
-# Longest run of digits that can still be a wait below the cap; anything
-# longer is the cap, so no oversized number reaches ``int``.
+# Longest digit run that can be at or below the cap; anything longer is
+# clamped to the cap without calling ``int``.
 _MAX_WAIT_DIGITS = len(str(RATE_LIMIT_MAX_WAIT_SECONDS))
 
-# Set by the app lifespan just before the scheduler is shut down, so a retry
-# that is sleeping on a 429 ends at once instead of holding the process open.
+# Set by the app lifespan just before the scheduler is shut down, so a
+# scheduled run's retry that is sleeping on a 429 ends at once. A manual
+# trigger is not interrupted (see the #EDGE note above).
 _SHUTDOWN = threading.Event()
 
 # Seconds a job may start late and still run. The daily snapshot gets a long
@@ -227,7 +234,8 @@ def shutdown_requested() -> bool:
 def _sleep(seconds: float) -> None:
     """Wait for a retry, ending early if the app is shutting down.
 
-    Tests replace this so they never wait.
+    Refresh tests replace this; only the tests of this function itself make
+    real waits, each under a second.
 
     Args:
         seconds (float): How long to wait.
