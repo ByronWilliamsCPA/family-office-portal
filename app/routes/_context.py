@@ -71,6 +71,20 @@ async def freshness(dataset: str) -> dict[str, Any]:
 AS_OF_WARN_DAYS = 35
 
 
+def as_of_is_stale(oldest: str | None) -> bool:
+    """Return True when the oldest as-of date is past ``AS_OF_WARN_DAYS``.
+
+    Args:
+        oldest (str | None): Oldest as-of date as ``YYYY-MM-DD``, or None.
+
+    Returns:
+        bool: False when there is no date.
+    """
+    if oldest is None:
+        return False
+    return (local_today() - date.fromisoformat(oldest)).days > AS_OF_WARN_DAYS
+
+
 async def balances_summary() -> dict[str, Any]:
     """Return the current USD account total with its fetch and as-of freshness.
 
@@ -99,18 +113,39 @@ async def balances_summary() -> dict[str, Any]:
     count = int(row["n"] or 0) if row is not None else 0
     total = None if row is None or count == 0 else from_cents(int(row["cents"]))
     oldest = str(row["oldest"]) if row is not None and row["oldest"] else None
-    as_of_stale = False
-    if oldest is not None:
-        age = local_today() - date.fromisoformat(oldest)
-        as_of_stale = age.days > AS_OF_WARN_DAYS
     state = await freshness("balances")
     return {
         "total_value": total,
         "balances_updated": state["updated"],
         "balances_stale": state["stale"],
         "oldest_as_of": oldest,
-        "as_of_stale": as_of_stale,
+        "as_of_stale": as_of_is_stale(oldest),
         "excluded_currency_count": int(row["other"] or 0) if row is not None else 0,
+    }
+
+
+async def portfolio_accounts() -> dict[str, Any]:
+    """Return the Portfolio account list with the balance feed's freshness.
+
+    Freshness is the same per-provider rule the Finances page uses
+    (``freshness("balances")``): one provider that stopped reporting marks the
+    list out of date while its last values stay on the page. The as-of note
+    covers only the accounts listed here, not cash.
+
+    Returns:
+        dict[str, Any]: ``accounts`` (``cache.PortfolioAccount`` list, largest
+        first), ``balances_updated``, ``balances_stale``, ``oldest_as_of``
+        (date text or None) and ``as_of_stale`` (bool).
+    """
+    accounts = await cache.get_portfolio_accounts()
+    oldest = min((a.as_of for a in accounts), default=None)
+    state = await freshness("balances")
+    return {
+        "accounts": accounts,
+        "balances_updated": state["updated"],
+        "balances_stale": state["stale"],
+        "oldest_as_of": oldest,
+        "as_of_stale": as_of_is_stale(oldest),
     }
 
 

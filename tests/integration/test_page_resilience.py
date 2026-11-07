@@ -401,8 +401,16 @@ STALE_PAGES = [
     Page("/finances", FINANCE_VALUES, (BALANCES_LABEL, POSITIONS_LABEL)),
     Page(
         "/portfolio",
-        ("Example Index Fund", "Sample Bond Fund", "$1,250,000", "Equities"),
-        (HOLDINGS_LABEL,),
+        (
+            "Example Brokerage",
+            "Example Land Partnership",
+            "$1,000,000",
+            "Example Index Fund",
+            "Sample Bond Fund",
+            "$1,250,000",
+            "Equities",
+        ),
+        (BALANCES_LABEL, HOLDINGS_LABEL),
     ),
     Page("/entities", ENTITY_VALUES, (ENTITIES_LABEL,)),
     Page(
@@ -492,6 +500,25 @@ async def test_finances_flags_only_the_stale_section(
     assert "Example Coin" in html
 
 
+async def test_stale_portfolio_without_backend_still_lists_accounts(
+    client: httpx.AsyncClient,
+    viewer_headers: dict[str, str],
+    tmp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No holdings backend and old balances: last values plus the label, no error."""
+    monkeypatch.delenv("BACKEND_PP_SECURITY_URL")
+    _seed(tmp_db_path)
+    html = await _get(client, "/portfolio", viewer_headers)
+    assert "Example Brokerage" in html
+    assert "$1,000,000" in html
+    assert "Example Checking" not in html
+    assert "Example Index Fund" not in html
+    assert BALANCES_LABEL in html
+    assert html.count(OUT_OF_DATE) == 1
+    assert "Not connected yet" not in html
+
+
 async def test_stale_balances_flag_the_oldest_provider(
     client: httpx.AsyncClient,
     viewer_headers: dict[str, str],
@@ -560,8 +587,13 @@ JOB_CASES = [
         ("holdings", "performance"),
         Page(
             "/portfolio",
-            ("Example Index Fund", "Sample Bond Fund", "$1,250,000"),
-            (HOLDINGS_LABEL,),
+            (
+                "Example Brokerage",
+                "Example Index Fund",
+                "Sample Bond Fund",
+                "$1,250,000",
+            ),
+            (BALANCES_LABEL, HOLDINGS_LABEL),
         ),
     ),
     JobCase(
@@ -683,8 +715,6 @@ class EmptyPage:
         return self.path
 
 
-# The Portfolio sentence is deliberately not asserted: only status, no error
-# text and the label.
 EMPTY_PAGES = [
     EmptyPage(
         "/",
@@ -708,7 +738,11 @@ EMPTY_PAGES = [
         ),
         2,
     ),
-    EmptyPage("/portfolio", (), 1),
+    EmptyPage(
+        "/portfolio",
+        ("Your investment accounts will appear here after the next update.",),
+        1,
+    ),
     EmptyPage("/entities", ("No entities to show yet.",), 1),
 ]
 

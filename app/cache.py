@@ -76,6 +76,27 @@ _FRESHNESS_AGGREGATE: dict[str, str] = {"balances": "MIN"}
 # category list. Anything else follows alphabetically.
 CATEGORY_ORDER: tuple[str, ...] = get_args(BALANCE_CATEGORIES)
 UNKNOWN_ENTITY = "Unknown entity"
+
+# Which balance categories the Portfolio page lists. Every category is placed
+# in exactly one of the two tuples below (a unit test fails when a new intake
+# category is in neither), so a new category is never listed by accident.
+# Portfolio shows what the family owns that is invested or held for value:
+# investments, retirement, alternatives and digital currency. Cash and bank
+# accounts stay on Finances, which lists them with their reconciliation dates.
+# The intake model has no liability or property category yet; when one is
+# added it must go in ``NON_PORTFOLIO_CATEGORIES`` (loans are not assets) or be
+# placed deliberately.
+# #ASSUME: financial: these four categories are the asset accounts the family
+# expects on Portfolio, and a category the collector spells differently is
+# rejected by the intake model before it is stored.
+# #VERIFY: confirm the list with the owner against the first real delivery.
+PORTFOLIO_CATEGORIES: tuple[str, ...] = (
+    "Investments",
+    "Retirement",
+    "Alternatives",
+    "Digital currency",
+)
+NON_PORTFOLIO_CATEGORIES: tuple[str, ...] = ("Cash",)
 TREND_DAYS = 90
 
 
@@ -430,6 +451,23 @@ class CashAccount:
     reconciled_through: str | None
 
 
+@dataclass(frozen=True)
+class PortfolioAccount:
+    """An investment-type account for the Portfolio page.
+
+    Attributes:
+        name (str): Account name shown to people.
+        category (str): Balance category, one of ``PORTFOLIO_CATEGORIES``.
+        value (Decimal): Balance in dollars.
+        as_of (str): Date the balance is true for, ``YYYY-MM-DD``.
+    """
+
+    name: str
+    category: str
+    value: Decimal
+    as_of: str
+
+
 def _dollars(cents: object) -> Decimal:
     """Convert an integer cent amount read from SQLite to Decimal dollars.
 
@@ -609,4 +647,31 @@ async def get_cash_accounts() -> list[CashAccount]:
             ),
         )
         for r in rows
+    ]
+
+
+async def get_portfolio_accounts() -> list[PortfolioAccount]:
+    """Return USD accounts in the Portfolio categories, largest first.
+
+    The categories are ``PORTFOLIO_CATEGORIES``; cash is left out. Rows are
+    filtered here, not in SQL, so the category list stays a single tuple and
+    the query stays one fixed parameterized string.
+
+    Returns:
+        list[PortfolioAccount]: Investment-type accounts, ties by name.
+    """
+    rows = await _fetch_all(
+        "SELECT account_name, category, value_cents, as_of "
+        "FROM account_balances WHERE currency = 'USD' "
+        "ORDER BY value_cents DESC, account_name"
+    )
+    return [
+        PortfolioAccount(
+            name=str(r["account_name"]),
+            category=str(r["category"]),
+            value=_dollars(r["value_cents"]),
+            as_of=str(r["as_of"]),
+        )
+        for r in rows
+        if r["category"] in PORTFOLIO_CATEGORIES
     ]

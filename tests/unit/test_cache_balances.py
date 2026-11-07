@@ -361,6 +361,64 @@ async def test_cash_accounts_carry_reconciled_through(db_path: Path) -> None:
     ]
 
 
+def test_every_category_is_either_in_the_portfolio_or_deliberately_left_out() -> None:
+    """A new intake category must be placed on purpose, not by accident.
+
+    Adding a category to the intake model fails this test until it is put in
+    ``PORTFOLIO_CATEGORIES`` or ``NON_PORTFOLIO_CATEGORIES``.
+    """
+    portfolio = set(cache.PORTFOLIO_CATEGORIES)
+    left_out = set(cache.NON_PORTFOLIO_CATEGORIES)
+    assert portfolio.isdisjoint(left_out)
+    assert portfolio | left_out == set(cache.CATEGORY_ORDER)
+    assert "Cash" in left_out
+
+
+async def test_portfolio_accounts_are_non_cash_usd_largest_first(
+    db_path: Path,
+) -> None:
+    """Investments, retirement, alternatives and digital currency, biggest first."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(conn, "pp:a", 100_000, category="Investments", name="Example Fund")
+        _balance(conn, "pp:b", 900_000, category="Retirement", name="Example IRA")
+        _balance(conn, "pp:c", 500_000, category="Alternatives", name="Example Land")
+        _balance(
+            conn, "crypto:d", 300_000, category="Digital currency", name="Example Coin"
+        )
+        _balance(conn, "xero:e", 999_999_999, category="Cash", name="Example Bank")
+        _balance(conn, "pp:f", 9_999_999, category="Investments", currency="EUR")
+    accounts = await cache.get_portfolio_accounts()
+    assert [(a.name, a.category, a.value) for a in accounts] == [
+        ("Example IRA", "Retirement", Decimal("9000.00")),
+        ("Example Land", "Alternatives", Decimal("5000.00")),
+        ("Example Coin", "Digital currency", Decimal("3000.00")),
+        ("Example Fund", "Investments", Decimal("1000.00")),
+    ]
+
+
+async def test_portfolio_accounts_break_ties_by_name_and_carry_as_of(
+    db_path: Path,
+) -> None:
+    """Equal values are listed by name; each account carries its as-of date."""
+    with sqlite3.connect(db_path) as conn:
+        _balance(
+            conn, "pp:a", 100, category="Investments", name="Beta", as_of="2026-09-01"
+        )
+        _balance(
+            conn, "pp:b", 100, category="Investments", name="Alpha", as_of="2026-09-02"
+        )
+    accounts = await cache.get_portfolio_accounts()
+    assert [(a.name, a.as_of) for a in accounts] == [
+        ("Alpha", "2026-09-02"),
+        ("Beta", "2026-09-01"),
+    ]
+
+
+async def test_portfolio_accounts_empty_when_nothing_cached(db_path: Path) -> None:
+    """No balances at all is an empty list, not an error."""
+    assert await cache.get_portfolio_accounts() == []
+
+
 async def test_balances_freshness_follows_the_oldest_provider(db_path: Path) -> None:
     """A provider that stops reporting makes the whole section look stale.
 

@@ -89,7 +89,13 @@ PAGES: tuple[PageSpec, ...] = (
         "portfolio",
         "/portfolio",
         "Portfolio",
-        ("Example Total Market Fund", "Example Bond Fund"),
+        (
+            "Our investment accounts",
+            "Example Brokerage",
+            "Example Retirement",
+            "Example Total Market Fund",
+            "Example Bond Fund",
+        ),
     ),
     PageSpec(
         "entities",

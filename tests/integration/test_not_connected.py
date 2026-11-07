@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -33,8 +34,15 @@ PAGES = [
     ("/", "BACKEND_LLC_MANAGER_URL"),
 ]
 
+# Finances and Portfolio never say "not connected" to a primary user: their
+# main content comes from the balance feed, and the backend that is not
+# connected only adds per-asset or per-security detail (see
+# ``test_portfolio_accounts.py`` and the digital currency tests below).
+BALANCE_FED_PAGES = {"/finances", "/portfolio"}
+NOT_CONNECTED_PAGES = [p for p in PAGES if p[0] not in BALANCE_FED_PAGES]
 
-@pytest.mark.parametrize(("path", "url_var"), PAGES)
+
+@pytest.mark.parametrize(("path", "url_var"), NOT_CONNECTED_PAGES)
 async def test_page_says_not_connected_when_url_is_unset(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch, path: str, url_var: str
 ) -> None:
@@ -77,7 +85,7 @@ async def test_page_has_no_not_connected_note_when_connected(
     assert NOT_CONNECTED not in response.text
 
 
-@pytest.mark.parametrize(("path", "url_var"), PAGES)
+@pytest.mark.parametrize(("path", "url_var"), NOT_CONNECTED_PAGES)
 async def test_blank_url_is_treated_as_not_connected(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch, path: str, url_var: str
 ) -> None:
@@ -87,6 +95,85 @@ async def test_blank_url_is_treated_as_not_connected(
         response = await ac.get(path)
     assert response.status_code == 200
     assert NOT_CONNECTED in response.text
+
+
+@pytest.mark.parametrize("path", sorted(BALANCE_FED_PAGES))
+async def test_balance_fed_pages_never_say_not_connected(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """With the detail backend unset or blank these pages stay plain, never failed."""
+    monkeypatch.delenv("BACKEND_PP_SECURITY_URL")
+    monkeypatch.setenv("BACKEND_XERO_CRYPTO_URL", "")
+    async with client as ac:
+        response = await ac.get(path)
+    assert response.status_code == 200
+    assert NOT_CONNECTED not in response.text
+
+
+def _seed_digital_currency(path: Path, *, with_account: bool) -> None:
+    """Cache one made-up digital currency position and, optionally, account.
+
+    Args:
+        path: SQLite file to seed.
+        with_account: Also cache a Digital currency account balance.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO positions (id, asset, quantity, usd_value, fetched_at) "
+            "VALUES ('p1', 'Example Coin', 2, 200.0, ?)",
+            (now,),
+        )
+        if with_account:
+            conn.execute(
+                "INSERT INTO account_balances (account_id, account_name, "
+                "entity_id, category, source, value_cents, as_of, fetched_at, "
+                "currency) VALUES ('crypto:acct-1', 'Example Wallet', "
+                "'11111111-2222-4333-8444-555555555555', 'Digital currency', "
+                "'crypto_tracker', 700000, '2026-09-26', ?, 'USD')",
+                (now,),
+            )
+
+
+async def test_digital_currency_box_explains_totals_include_it(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_db_path: Path
+) -> None:
+    """Unconnected detail plus digital currency in the totals says exactly that."""
+    monkeypatch.delenv("BACKEND_XERO_CRYPTO_URL")
+    _seed_digital_currency(tmp_db_path, with_account=True)
+    async with client as ac:
+        html = (await ac.get("/finances")).text
+    assert "Digital currency" in html
+    assert (
+        "The account totals above include digital currency. "
+        "A list of each coin or token is not available yet." in html
+    )
+    assert NOT_CONNECTED not in html
+    assert "Example Coin" not in html
+    assert "11111111-2222-4333-8444-555555555555" not in html
+
+
+async def test_digital_currency_box_without_any_digital_accounts(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no digital currency in the totals the box does not claim there is."""
+    monkeypatch.delenv("BACKEND_XERO_CRYPTO_URL")
+    async with client as ac:
+        html = (await ac.get("/finances")).text
+    assert "A list of each coin or token is not available yet." in html
+    assert "totals above include digital currency" not in html
+    assert NOT_CONNECTED not in html
+
+
+async def test_digital_currency_box_unchanged_when_connected(
+    client: AsyncClient, tmp_db_path: Path
+) -> None:
+    """Connected, the per-asset table shows and the new wording does not."""
+    _seed_digital_currency(tmp_db_path, with_account=True)
+    async with client as ac:
+        html = (await ac.get("/finances")).text
+    assert "Example Coin" in html
+    assert "not available yet" not in html
 
 
 async def test_unconnected_backend_does_not_affect_other_pages(
